@@ -1,15 +1,12 @@
 """Tests for core Cortiva functionality."""
 
-import asyncio
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import pytest
 
+from cortiva.adapters.memory.inmemory import InMemoryAdapter
 from cortiva.core.agent import Agent, AgentState
 from cortiva.core.fabric import Fabric
-from cortiva.adapters.memory.inmemory import InMemoryAdapter
-
 
 # ---------------------------------------------------------------------------
 # Agent tests
@@ -168,6 +165,19 @@ class TestFabric:
         agent = await fabric.sleep("test-01")
         assert agent.state == AgentState.SLEEPING
 
+    @pytest.mark.asyncio
+    async def test_start_and_stop(self, tmp_path: Path) -> None:
+        fabric = self._make_fabric(tmp_path)
+        fabric.register_agent("runner-01")
+
+        await fabric.start()
+        assert fabric._running is True
+        assert "runner-01" in fabric.agents
+
+        await fabric.stop()
+        assert fabric._running is False
+        assert fabric.agents["runner-01"].state == AgentState.SLEEPING
+
 
 # ---------------------------------------------------------------------------
 # Mock adapters for testing
@@ -189,7 +199,7 @@ class MockConsciousness:
         from cortiva.adapters.protocols import ConsciousResponse
         return ConsciousResponse(
             content=f"# {agent_id}\n\nCompleted a productive day.",
-            reflection=f"Today went well. Processed tasks efficiently.",
+            reflection="Today went well. Processed tasks efficiently.",
             tokens_in=200,
             tokens_out=100,
             model="mock",

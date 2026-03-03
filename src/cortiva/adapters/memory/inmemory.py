@@ -8,10 +8,9 @@ Useful for unit tests and local development before wiring up real storage.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import Any
 
-from cortiva.adapters.protocols import MemoryAdapter, MemoryRecord
+from cortiva.adapters.protocols import MemoryRecord
 
 
 class InMemoryAdapter:

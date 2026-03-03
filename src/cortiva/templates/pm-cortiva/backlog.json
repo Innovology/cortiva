@@ -1,0 +1,167 @@
+{
+  "version": "0.1.0",
+  "items": [
+    {
+      "id": "CORT-001",
+      "title": "Agent template system",
+      "priority": "P1",
+      "effort": "M",
+      "status": "done",
+      "assignee": "dev-cortiva",
+      "description": "Bundled templates (dev, qa, pm) with apply_template() and CLI integration."
+    },
+    {
+      "id": "CORT-002",
+      "title": "Config loader and adapter registry",
+      "priority": "P1",
+      "effort": "M",
+      "status": "done",
+      "assignee": "dev-cortiva",
+      "description": "load_config() reads cortiva.yaml, build_fabric() instantiates adapters via dict registry."
+    },
+    {
+      "id": "CORT-003",
+      "title": "cortiva start command",
+      "priority": "P1",
+      "effort": "S",
+      "status": "done",
+      "assignee": "dev-cortiva",
+      "description": "CLI command that loads config, builds fabric, runs heartbeat with signal handling."
+    },
+    {
+      "id": "CORT-004",
+      "title": "Slack channel adapter",
+      "priority": "P1",
+      "effort": "M",
+      "status": "done",
+      "assignee": "dev-cortiva",
+      "description": "Polling-based adapter using AsyncWebClient for send/receive/listen."
+    },
+    {
+      "id": "CORT-005",
+      "title": "Routine adapter (Ollama)",
+      "priority": "P2",
+      "effort": "M",
+      "status": "ready",
+      "assignee": null,
+      "description": "Subconscious layer using local Ollama models for triage and context assembly."
+    },
+    {
+      "id": "CORT-006",
+      "title": "Familiarity signal computation",
+      "priority": "P2",
+      "effort": "M",
+      "status": "ready",
+      "assignee": null,
+      "description": "Compute familiarity from memory search results to route tasks between conscious/routine."
+    },
+    {
+      "id": "CORT-007",
+      "title": "Memory integration in fabric cycle",
+      "priority": "P2",
+      "effort": "M",
+      "status": "ready",
+      "assignee": null,
+      "description": "Retrieve relevant memories during cycle() and inject into execution context."
+    },
+    {
+      "id": "CORT-008",
+      "title": "Agent-to-agent messaging",
+      "priority": "P2",
+      "effort": "M",
+      "status": "ready",
+      "assignee": null,
+      "description": "Allow agents to send messages to each other via the channel adapter."
+    },
+    {
+      "id": "CORT-009",
+      "title": "Consciousness budget dashboard",
+      "priority": "P3",
+      "effort": "S",
+      "status": "ready",
+      "assignee": null,
+      "description": "CLI command to show per-agent consciousness usage and remaining budget."
+    },
+    {
+      "id": "CORT-010",
+      "title": "Journal viewer CLI",
+      "priority": "P3",
+      "effort": "S",
+      "status": "ready",
+      "assignee": null,
+      "description": "CLI command to read and display agent journal entries."
+    },
+    {
+      "id": "CORT-011",
+      "title": "OpenAI consciousness adapter",
+      "priority": "P3",
+      "effort": "M",
+      "status": "ready",
+      "assignee": null,
+      "description": "Alternative consciousness adapter using OpenAI API."
+    },
+    {
+      "id": "CORT-012",
+      "title": "Discord channel adapter",
+      "priority": "P3",
+      "effort": "M",
+      "status": "ready",
+      "assignee": null,
+      "description": "Channel adapter for Discord bot integration."
+    },
+    {
+      "id": "CORT-013",
+      "title": "Neo4j memory adapter",
+      "priority": "P3",
+      "effort": "L",
+      "status": "ready",
+      "assignee": null,
+      "description": "Graph-based memory adapter for relationship-aware recall."
+    },
+    {
+      "id": "CORT-014",
+      "title": "Agent cloning",
+      "priority": "P4",
+      "effort": "M",
+      "status": "ready",
+      "assignee": null,
+      "description": "Clone an agent's identity files to create a new agent with inherited experience."
+    },
+    {
+      "id": "CORT-015",
+      "title": "Adversarial QA auditing",
+      "priority": "P4",
+      "effort": "L",
+      "status": "ready",
+      "assignee": null,
+      "description": "Automated adversarial testing of agent outputs for safety and correctness."
+    },
+    {
+      "id": "CORT-016",
+      "title": "Persona evolution tracking",
+      "priority": "P4",
+      "effort": "M",
+      "status": "ready",
+      "assignee": null,
+      "description": "Track how agent identity files change over time with diff history."
+    },
+    {
+      "id": "CORT-017",
+      "title": "Multi-workspace support",
+      "priority": "P4",
+      "effort": "L",
+      "status": "ready",
+      "assignee": null,
+      "description": "Allow multiple Cortiva workspaces with shared agent identities."
+    },
+    {
+      "id": "CORT-018",
+      "title": "Web dashboard",
+      "priority": "P4",
+      "effort": "L",
+      "status": "ready",
+      "assignee": null,
+      "description": "Browser-based dashboard for monitoring agent status and reading journals."
+    }
+  ]
+}

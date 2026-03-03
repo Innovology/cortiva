@@ -18,7 +18,6 @@ from typing import Any
 from cortiva.adapters.protocols import (
     ChannelAdapter,
     ConsciousnessAdapter,
-    FamiliaritySignal,
     MemoryAdapter,
     Priority,
     RoutineAdapter,

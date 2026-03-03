@@ -10,10 +10,9 @@ Install: pip install engram-core
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import Any
 
-from cortiva.adapters.protocols import MemoryAdapter, MemoryRecord
+from cortiva.adapters.protocols import MemoryRecord
 
 
 class EngramMemoryAdapter:

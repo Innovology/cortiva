@@ -2,21 +2,25 @@
 Cortiva CLI — manage your agent organisation from the terminal.
 
 Usage:
-    cortiva init <name>              Initialise a new workspace
-    cortiva start                    Start the fabric
-    cortiva stop                     Stop the fabric
-    cortiva status                   Show agent status
-    cortiva agent create <id>        Register a new agent
-    cortiva agent wake <id>          Wake an agent
-    cortiva agent sleep <id>         Put an agent to sleep
-    cortiva agent list               List all agents
-    cortiva config set <key> <val>   Set configuration
+    cortiva init <name>                  Initialise a new workspace
+    cortiva start                        Start the fabric
+    cortiva stop                         Stop the fabric
+    cortiva status                       Show agent status
+    cortiva agent create <id>            Register a new agent
+    cortiva agent create <id> -t <tpl>   Create agent from template
+    cortiva agent wake <id>              Wake an agent
+    cortiva agent sleep <id>             Put an agent to sleep
+    cortiva agent list                   List all agents
+    cortiva template list                List available templates
+    cortiva config set <key> <val>       Set configuration
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import asyncio
+import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -88,7 +92,10 @@ def cmd_status(args: argparse.Namespace) -> None:
         print("No agents directory found.")
         return
 
-    agents = sorted(p.name for p in agents_dir.iterdir() if p.is_dir() and not p.name.startswith("."))
+    agents = sorted(
+        p.name for p in agents_dir.iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    )
 
     if not agents:
         print("No agents registered.")
@@ -105,7 +112,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 
 def cmd_agent_create(args: argparse.Namespace) -> None:
-    """Register a new agent."""
+    """Register a new agent, optionally from a template."""
     config_path = Path("cortiva.yaml")
     if not config_path.exists():
         print("Not a Cortiva workspace. Run 'cortiva init <name>' first.")
@@ -116,33 +123,125 @@ def cmd_agent_create(args: argparse.Namespace) -> None:
         print(f"Agent '{args.id}' already exists.")
         sys.exit(1)
 
-    agent_dir.mkdir(parents=True)
-    (agent_dir / "journal").mkdir()
+    template_name = getattr(args, "template", None)
 
-    files = {
-        "identity.md": f"# {args.id}\n\nNewly created agent. No experiences yet.\n",
-        "soul.md": f"# {args.id} — Persona\n\nDefault persona. Configure disposition parameters.\n",
-        "skills.md": f"# {args.id} — Skills\n\nNo skills defined yet.\n",
-        "responsibilities.md": f"# {args.id} — Responsibilities\n\n## Primary\n\n## Secondary\n\n## Escalation\n",
-        "procedures.md": f"# {args.id} — Procedures\n\nNo procedures promoted yet.\n",
-        "plan.md": f"# {args.id} — Plan\n\nNo plan yet. Awaiting first wake cycle.\n",
-    }
+    if template_name:
+        from cortiva.templates import apply_template
 
-    for filename, content in files.items():
-        (agent_dir / filename).write_text(content)
+        try:
+            written = apply_template(template_name, agent_dir)
+        except KeyError as exc:
+            print(str(exc))
+            sys.exit(1)
 
-    print(f"Created agent: {args.id}")
-    print(f"  Directory: {agent_dir}/")
-    print()
-    print(f"Edit the identity files to configure this agent:")
-    print(f"  {agent_dir}/soul.md              — personality and disposition")
-    print(f"  {agent_dir}/skills.md            — domain knowledge")
-    print(f"  {agent_dir}/responsibilities.md  — authority boundaries")
+        print(f"Created agent: {args.id} (from template '{template_name}')")
+        print(f"  Directory: {agent_dir}/")
+        print(f"  Files: {', '.join(written)}")
+    else:
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "journal").mkdir()
+
+        aid = args.id
+        files = {
+            "identity.md": f"# {aid}\n\nNewly created agent. No experiences yet.\n",
+            "soul.md": (
+                f"# {aid} — Persona\n\n"
+                "Default persona. Configure disposition parameters.\n"
+            ),
+            "skills.md": f"# {aid} — Skills\n\nNo skills defined yet.\n",
+            "responsibilities.md": (
+                f"# {aid} — Responsibilities\n\n"
+                "## Primary\n\n## Secondary\n\n## Escalation\n"
+            ),
+            "procedures.md": f"# {aid} — Procedures\n\nNo procedures promoted yet.\n",
+            "plan.md": (
+                f"# {aid} — Plan\n\n"
+                "No plan yet. Awaiting first wake cycle.\n"
+            ),
+        }
+
+        for filename, content in files.items():
+            (agent_dir / filename).write_text(content)
+
+        print(f"Created agent: {args.id}")
+        print(f"  Directory: {agent_dir}/")
+        print()
+        print("Edit the identity files to configure this agent:")
+        print(f"  {agent_dir}/soul.md              — personality and disposition")
+        print(f"  {agent_dir}/skills.md            — domain knowledge")
+        print(f"  {agent_dir}/responsibilities.md  — authority boundaries")
 
 
 def cmd_agent_list(args: argparse.Namespace) -> None:
     """List all agents."""
     cmd_status(args)
+
+
+def cmd_template_list(args: argparse.Namespace) -> None:
+    """List available agent templates."""
+    from cortiva.templates import list_templates
+
+    templates = list_templates()
+    if not templates:
+        print("No templates available.")
+        return
+
+    print(f"Available templates ({len(templates)}):\n")
+    for name in templates:
+        print(f"  {name}")
+    print()
+    print("Use: cortiva agent create <id> --template <name>")
+
+
+def cmd_start(args: argparse.Namespace) -> None:
+    """Start the Cortiva fabric."""
+    config_path = Path("cortiva.yaml")
+    if not config_path.exists():
+        print("Not a Cortiva workspace. Run 'cortiva init <name>' first.")
+        sys.exit(1)
+
+    from cortiva.core.config import load_and_build
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    try:
+        fabric = load_and_build(config_path)
+    except Exception as exc:
+        print(f"Failed to load config: {exc}")
+        sys.exit(1)
+
+    loop = asyncio.new_event_loop()
+
+    def _shutdown(signum: int, frame: object) -> None:
+        print("\nShutting down...")
+        loop.call_soon_threadsafe(loop.stop)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    async def _run() -> None:
+        await fabric.start()
+        print(f"Cortiva fabric running ({len(fabric.agents)} agents). Press Ctrl+C to stop.")
+        try:
+            while fabric._running:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await fabric.stop()
+            print("Fabric stopped.")
+
+    try:
+        loop.run_until_complete(_run())
+    except RuntimeError:
+        # Loop was stopped by signal handler
+        loop.run_until_complete(fabric.stop())
+        print("Fabric stopped.")
+    finally:
+        loop.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -156,6 +255,12 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init", help="Initialise a new workspace")
     init_parser.add_argument("name", help="Workspace name")
 
+    # start
+    subparsers.add_parser("start", help="Start the fabric")
+
+    # stop
+    subparsers.add_parser("stop", help="Stop the fabric (sends signal to running instance)")
+
     # status
     subparsers.add_parser("status", help="Show agent status")
 
@@ -165,6 +270,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     create_parser = agent_sub.add_parser("create", help="Register a new agent")
     create_parser.add_argument("id", help="Agent ID")
+    create_parser.add_argument(
+        "-t", "--template",
+        help="Create agent from a bundled template",
+    )
 
     agent_sub.add_parser("list", help="List all agents")
 
@@ -173,6 +282,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sleep_parser = agent_sub.add_parser("sleep", help="Put an agent to sleep")
     sleep_parser.add_argument("id", help="Agent ID")
+
+    # template
+    template_parser = subparsers.add_parser("template", help="Template management")
+    template_sub = template_parser.add_subparsers(dest="template_command")
+    template_sub.add_parser("list", help="List available templates")
 
     return parser
 
@@ -183,6 +297,10 @@ def main() -> None:
 
     if args.command == "init":
         cmd_init(args)
+    elif args.command == "start":
+        cmd_start(args)
+    elif args.command == "stop":
+        print("Send SIGINT or SIGTERM to the running 'cortiva start' process.")
     elif args.command == "status":
         cmd_status(args)
     elif args.command == "agent":
@@ -191,9 +309,17 @@ def main() -> None:
         elif args.agent_command == "list":
             cmd_agent_list(args)
         elif args.agent_command in ("wake", "sleep"):
-            print(f"Agent {args.agent_command} requires a running fabric. Use 'cortiva start' first.")
+            print(
+                f"Agent {args.agent_command} requires a running fabric."
+                " Use 'cortiva start' first."
+            )
         else:
             parser.parse_args(["agent", "--help"])
+    elif args.command == "template":
+        if args.template_command == "list":
+            cmd_template_list(args)
+        else:
+            parser.parse_args(["template", "--help"])
     else:
         parser.print_help()
 
