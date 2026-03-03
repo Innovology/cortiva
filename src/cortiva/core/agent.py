@@ -1,0 +1,155 @@
+"""
+Cortiva Agent — a persistent identity with cognitive state.
+
+An agent is not a function that runs and disposes. It's an entity that
+sleeps, wakes, plans, works, reflects, and learns. Identity persists
+across sleep cycles via markdown files on disk.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Any
+
+
+class AgentState(Enum):
+    """Lifecycle states. Agents don't start/stop — they sleep/wake."""
+    ONBOARDING = "onboarding"    # First-time setup, no experience yet
+    SLEEPING = "sleeping"        # Idle, identity persists on disk
+    WAKING = "waking"            # Loading identity, checking queue
+    PLANNING = "planning"        # Building today's plan (conscious)
+    EXECUTING = "executing"      # Working through plan
+    REPLANNING = "replanning"    # Adjusting plan mid-cycle (conscious)
+    REFLECTING = "reflecting"    # End-of-day review (conscious)
+
+
+# Standard identity file names
+IDENTITY_FILES = {
+    "identity": "identity.md",           # Living Summary
+    "soul": "soul.md",                   # Persona parameters
+    "skills": "skills.md",               # Domain knowledge
+    "responsibilities": "responsibilities.md",  # R&R authority
+    "procedures": "procedures.md",       # Promoted procedural knowledge
+    "plan": "plan.md",                   # Current plan
+}
+
+
+@dataclass
+class Agent:
+    """
+    A Cortiva agent. Represents a persistent identity with state.
+
+    The agent's 'self' is the collection of markdown files in its
+    directory. These are human-readable, agent-editable, and form
+    the context package that the conscious layer reads.
+    """
+
+    id: str
+    directory: Path
+    state: AgentState = AgentState.SLEEPING
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    last_wake: datetime | None = None
+    last_sleep: datetime | None = None
+
+    # Runtime state (not persisted, rebuilt on wake)
+    consciousness_budget_used: int = 0
+    consciousness_budget_limit: int = 50
+    tasks_completed_today: int = 0
+    tasks_escalated_today: int = 0
+
+    # ----- Identity file access -----
+
+    def identity_path(self, file_key: str) -> Path:
+        """Get path to an identity file."""
+        if file_key not in IDENTITY_FILES:
+            raise ValueError(f"Unknown identity file: {file_key}")
+        return self.directory / IDENTITY_FILES[file_key]
+
+    def journal_path(self, date: datetime | None = None) -> Path:
+        """Get path to journal entry for a date."""
+        d = date or datetime.utcnow()
+        journal_dir = self.directory / "journal"
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        return journal_dir / f"{d.strftime('%Y-%m-%d')}.md"
+
+    def read_identity(self, file_key: str) -> str:
+        """Read an identity file. Returns empty string if missing."""
+        path = self.identity_path(file_key)
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        return ""
+
+    def write_identity(self, file_key: str, content: str) -> None:
+        """Write an identity file."""
+        path = self.identity_path(file_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def read_all_identity(self) -> dict[str, str]:
+        """Read all identity files into a dict."""
+        return {key: self.read_identity(key) for key in IDENTITY_FILES}
+
+    # ----- State transitions -----
+
+    def can_transition(self, target: AgentState) -> bool:
+        """Check if a state transition is valid."""
+        valid = {
+            AgentState.ONBOARDING: {AgentState.SLEEPING},
+            AgentState.SLEEPING: {AgentState.WAKING},
+            AgentState.WAKING: {AgentState.PLANNING, AgentState.SLEEPING},
+            AgentState.PLANNING: {AgentState.EXECUTING, AgentState.SLEEPING},
+            AgentState.EXECUTING: {AgentState.REPLANNING, AgentState.REFLECTING, AgentState.SLEEPING},
+            AgentState.REPLANNING: {AgentState.EXECUTING, AgentState.REFLECTING, AgentState.SLEEPING},
+            AgentState.REFLECTING: {AgentState.SLEEPING},
+        }
+        return target in valid.get(self.state, set())
+
+    def transition(self, target: AgentState) -> None:
+        """Transition to a new state."""
+        if not self.can_transition(target):
+            raise ValueError(
+                f"Invalid transition: {self.state.value} → {target.value}"
+            )
+        if target == AgentState.WAKING:
+            self.last_wake = datetime.utcnow()
+            self.consciousness_budget_used = 0
+            self.tasks_completed_today = 0
+            self.tasks_escalated_today = 0
+        elif target == AgentState.SLEEPING:
+            self.last_sleep = datetime.utcnow()
+        self.state = target
+
+    # ----- Consciousness budget -----
+
+    @property
+    def consciousness_remaining(self) -> int:
+        return max(0, self.consciousness_budget_limit - self.consciousness_budget_used)
+
+    def spend_consciousness(self, amount: int = 1) -> bool:
+        """Spend from consciousness budget. Returns False if over budget."""
+        if self.consciousness_budget_used + amount > self.consciousness_budget_limit:
+            return False
+        self.consciousness_budget_used += amount
+        return True
+
+    # ----- Serialisation -----
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "directory": str(self.directory),
+            "state": self.state.value,
+            "created_at": self.created_at.isoformat(),
+            "last_wake": self.last_wake.isoformat() if self.last_wake else None,
+            "last_sleep": self.last_sleep.isoformat() if self.last_sleep else None,
+            "consciousness_budget_limit": self.consciousness_budget_limit,
+        }
+
+    @classmethod
+    def from_directory(cls, directory: Path) -> Agent:
+        """Load an agent from its directory."""
+        agent_id = directory.name
+        return cls(id=agent_id, directory=directory)

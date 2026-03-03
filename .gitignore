@@ -1,0 +1,35 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.venv/
+venv/
+env/
+.env
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Agent journals and plans (generated at runtime, not tracked)
+# Uncomment if you want to track agent identity in git:
+# !agents/*/identity.md
+# !agents/*/soul.md
+# !agents/*/skills.md
+# !agents/*/responsibilities.md

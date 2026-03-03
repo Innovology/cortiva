@@ -1,0 +1,94 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cortiva"
+version = "0.1.0-dev"
+description = "The organisational fabric for autonomous agent teams"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Cortiva Contributors" },
+]
+keywords = [
+    "ai",
+    "agents",
+    "autonomous",
+    "multi-agent",
+    "orchestration",
+    "framework",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Memory adapters
+engram = ["engram-core"]
+mem0 = ["mem0ai"]
+neo4j = ["neo4j>=5.0"]
+
+# Consciousness adapters
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.0"]
+
+# Routine adapters
+ollama = ["ollama"]
+
+# Channel adapters
+slack = ["slack-sdk>=3.0"]
+
+# Development
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+# All adapters
+all = [
+    "engram-core",
+    "anthropic>=0.40",
+    "ollama",
+    "slack-sdk>=3.0",
+]
+
+[project.scripts]
+cortiva = "cortiva.cli.main:main"
+
+[project.urls]
+Homepage = "https://cortiva.dev"
+Repository = "https://github.com/cortiva-dev/cortiva"
+Documentation = "https://cortiva.dev/docs"
+Issues = "https://github.com/cortiva-dev/cortiva/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cortiva"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
