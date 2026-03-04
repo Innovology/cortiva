@@ -15,6 +15,25 @@ from typing import Any
 
 from cortiva.adapters.protocols import ConsciousResponse, Priority
 
+REFLECTION_SUFFIX_INSTRUCTIONS = """\
+
+After completing the task, you may optionally append a structured reflection \
+suffix to your response. Place it after your main response, separated by the \
+exact delimiter line shown below. The suffix must be valid JSON.
+
+---REFLECTION---
+{
+  "outcome": "One-sentence summary of what you accomplished",
+  "learned": "Key insight or lesson from this task (stored as a memory)",
+  "prediction_error": "What surprised you or differed from expectations",
+  "procedure_update": "New or revised procedure step to add to your procedures",
+  "messages": [{"to": "agent-id", "content": "message body"}],
+  "escalation": "Issue requiring human or supervisor attention"
+}
+
+All fields are optional — include only those that apply. \
+Do NOT include the reflection suffix if you have nothing meaningful to report."""
+
 
 class AnthropicConsciousnessAdapter:
     """
@@ -68,11 +87,15 @@ class AnthropicConsciousnessAdapter:
             f"{context}"
         )
 
+        effective_prompt = prompt
+        if metadata and metadata.get("task_execution"):
+            effective_prompt = prompt + "\n\n" + REFLECTION_SUFFIX_INSTRUCTIONS
+
         message = client.messages.create(
             model=self.model,
             max_tokens=max_tokens or self.max_tokens,
             system=system_prompt,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": effective_prompt}],
         )
 
         content = ""
