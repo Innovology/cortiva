@@ -9,6 +9,7 @@ from cortiva.adapters.memory.inmemory import InMemoryAdapter
 from cortiva.adapters.protocols import ConsciousResponse
 from cortiva.core.agent import AgentState
 from cortiva.core.budget import (
+    AgentBudgetStatus,
     BackendBudget,
     BackendType,
     ConsciousnessBudgetManager,
@@ -181,11 +182,111 @@ class TestBudgetManager:
         assert status.task_attempts == 0
         assert status.consciousness_calls == 0
 
+    def test_high_priority_preempts_when_scarce(self) -> None:
+        """When API has <=20% capacity, normal falls back to LOCAL but high gets API."""
+        mgr = self._make_manager()  # API calls_limit=5, LOCAL calls_limit=100
+        mgr.register_agent("agent-01")
+        # Use 4 of 5 API calls (20% remaining = at threshold)
+        for _ in range(4):
+            mgr.record_usage("agent-01", BackendType.API, 10, 10)
+        # Normal request should skip API (<=20%) and fall back to LOCAL
+        normal = mgr.request_budget("agent-01", "normal")
+        assert normal.approved is True
+        assert normal.backend == BackendType.LOCAL
+        assert normal.fallback_used is True
+        # High request should still get API
+        high = mgr.request_budget("agent-01", "high")
+        assert high.approved is True
+        assert high.backend == BackendType.API
+
+    def test_normal_still_works_above_threshold(self) -> None:
+        """When capacity > 20%, normal requests are approved on primary backend."""
+        mgr = self._make_manager()  # API calls_limit=5
+        mgr.register_agent("agent-01")
+        # Use 3 of 5 (40% remaining > 20%)
+        for _ in range(3):
+            mgr.record_usage("agent-01", BackendType.API, 10, 10)
+        result = mgr.request_budget("agent-01", "normal")
+        assert result.approved is True
+        assert result.backend == BackendType.API
+
     def test_unregistered_agent(self) -> None:
         mgr = self._make_manager()
         result = mgr.request_budget("unknown", "normal")
         assert result.approved is False
         assert "not registered" in result.reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# Budget alert tests
+# ---------------------------------------------------------------------------
+
+
+class TestBudgetAlert:
+    def test_alert_fires_on_threshold(self) -> None:
+        alerts: list[tuple[str, str, AgentBudgetStatus]] = []
+        mgr = ConsciousnessBudgetManager(
+            default_backend=BackendType.API,
+            fallback_chain=[BackendType.API],
+            backend_configs={BackendType.API: {"calls_limit": 10}},
+            alert_threshold=0.8,
+            on_alert=lambda aid, msg, status: alerts.append((aid, msg, status)),
+        )
+        mgr.register_agent("agent-01")
+        # Record 7 calls — below 80%
+        for _ in range(7):
+            mgr.record_usage("agent-01", BackendType.API, 10, 10)
+        assert len(alerts) == 0
+        # 8th call crosses 80%
+        mgr.record_usage("agent-01", BackendType.API, 10, 10)
+        assert len(alerts) == 1
+
+    def test_alert_not_fired_below_threshold(self) -> None:
+        alerts: list[tuple[str, str, AgentBudgetStatus]] = []
+        mgr = ConsciousnessBudgetManager(
+            default_backend=BackendType.API,
+            fallback_chain=[BackendType.API],
+            backend_configs={BackendType.API: {"calls_limit": 10}},
+            alert_threshold=0.8,
+            on_alert=lambda aid, msg, status: alerts.append((aid, msg, status)),
+        )
+        mgr.register_agent("agent-01")
+        for _ in range(7):
+            mgr.record_usage("agent-01", BackendType.API, 10, 10)
+        assert len(alerts) == 0
+
+    def test_alert_includes_agent_info(self) -> None:
+        alerts: list[tuple[str, str, AgentBudgetStatus]] = []
+        mgr = ConsciousnessBudgetManager(
+            default_backend=BackendType.API,
+            fallback_chain=[BackendType.API],
+            backend_configs={BackendType.API: {"calls_limit": 5}},
+            alert_threshold=0.8,
+            on_alert=lambda aid, msg, status: alerts.append((aid, msg, status)),
+        )
+        mgr.register_agent("agent-01")
+        for _ in range(4):
+            mgr.record_usage("agent-01", BackendType.API, 10, 10)
+        assert len(alerts) == 1
+        agent_id, message, status = alerts[0]
+        assert agent_id == "agent-01"
+        assert "agent-01" in message
+        assert "api" in message
+        assert status.agent_id == "agent-01"
+
+    def test_alert_fires_only_once_per_backend(self) -> None:
+        alerts: list[tuple[str, str, AgentBudgetStatus]] = []
+        mgr = ConsciousnessBudgetManager(
+            default_backend=BackendType.API,
+            fallback_chain=[BackendType.API],
+            backend_configs={BackendType.API: {"calls_limit": 5}},
+            alert_threshold=0.8,
+            on_alert=lambda aid, msg, status: alerts.append((aid, msg, status)),
+        )
+        mgr.register_agent("agent-01")
+        for _ in range(5):
+            mgr.record_usage("agent-01", BackendType.API, 10, 10)
+        assert len(alerts) == 1  # Only fires once even though threshold crossed multiple times
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +385,41 @@ class TestFabricBudgetIntegration:
 
         result = await fabric.cycle("legacy-01")
         assert result["action"] == "executed_task"
+
+    @pytest.mark.asyncio
+    async def test_budget_alert_posts_to_channel(self, tmp_path: Path) -> None:
+        """When budget crosses alert threshold, fabric wires on_alert to channel."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mgr = ConsciousnessBudgetManager(
+            default_backend=BackendType.API,
+            fallback_chain=[BackendType.API],
+            backend_configs={BackendType.API: {"calls_limit": 5}},
+            alert_threshold=0.8,
+        )
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock()
+        mock_channel.receive = AsyncMock(return_value=[])
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=MockConsciousness(),
+            channel=mock_channel,
+            budget_manager=mgr,
+        )
+        # Verify on_alert was wired
+        assert mgr.on_alert is not None
+        fabric.register_agent("worker-01")
+        # Record usage to cross 80% threshold (4 of 5)
+        for _ in range(4):
+            mgr.record_usage("worker-01", BackendType.API, 10, 10)
+        # Allow the ensure_future coroutine to run
+        import asyncio
+        await asyncio.sleep(0)
+        mock_channel.send.assert_called_once()
+        assert "worker-01" in mock_channel.send.call_args.kwargs.get(
+            "content", mock_channel.send.call_args[1].get("content", "")
+        )
 
     @pytest.mark.asyncio
     async def test_status_includes_budget(self, tmp_path: Path) -> None:

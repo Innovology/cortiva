@@ -8,9 +8,12 @@ walks fallback chains, and degrades gracefully when budgets are exhausted.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+PRIORITY_RANK: dict[str, int] = {"low": 0, "normal": 1, "high": 2, "critical": 3}
 
 
 class BackendType(Enum):
@@ -93,14 +96,19 @@ class ConsciousnessBudgetManager:
         default_backend: BackendType = BackendType.API,
         fallback_chain: list[BackendType] | None = None,
         backend_configs: dict[BackendType, dict[str, Any]] | None = None,
+        alert_threshold: float = 0.8,
+        on_alert: Callable[[str, str, AgentBudgetStatus], None] | None = None,
     ):
         self.default_backend = default_backend
         self.fallback_chain = fallback_chain or [default_backend]
         self.backend_configs = backend_configs or {}
+        self.alert_threshold = alert_threshold
+        self.on_alert = on_alert
         self._agents: dict[str, dict[BackendType, BackendBudget]] = {}
         self._task_attempts: dict[str, int] = {}
         self._consciousness_calls: dict[str, int] = {}
         self._priority_counts: dict[str, dict[str, int]] = {}
+        self._alerted: dict[str, set[BackendType]] = {}
 
     def register_agent(self, agent_id: str) -> None:
         """Create per-backend budgets for an agent from config."""
@@ -117,6 +125,7 @@ class ConsciousnessBudgetManager:
         self._task_attempts[agent_id] = 0
         self._consciousness_calls[agent_id] = 0
         self._priority_counts[agent_id] = {}
+        self._alerted[agent_id] = set()
 
     def reset_agent(self, agent_id: str) -> None:
         """Reset counters for an agent (called on wake)."""
@@ -129,6 +138,7 @@ class ConsciousnessBudgetManager:
         self._task_attempts[agent_id] = 0
         self._consciousness_calls[agent_id] = 0
         self._priority_counts[agent_id] = {}
+        self._alerted[agent_id] = set()
 
     def request_budget(
         self,
@@ -147,6 +157,7 @@ class ConsciousnessBudgetManager:
         counts[priority] = counts.get(priority, 0) + 1
 
         is_critical = priority == "critical"
+        priority_rank = PRIORITY_RANK.get(priority, 1)
         budgets = self._agents[agent_id]
 
         for i, backend_type in enumerate(self.fallback_chain):
@@ -157,6 +168,15 @@ class ConsciousnessBudgetManager:
             budget.check_window_reset()
 
             if not budget.is_exhausted:
+                # Priority preemption: when <= 20% capacity remains,
+                # only high/critical requests are approved on this backend.
+                if (
+                    budget.calls_limit > 0
+                    and budget.calls_remaining / budget.calls_limit <= 0.2
+                    and priority_rank < PRIORITY_RANK["high"]
+                ):
+                    continue
+
                 self._consciousness_calls[agent_id] = (
                     self._consciousness_calls.get(agent_id, 0) + 1
                 )
@@ -199,6 +219,27 @@ class ConsciousnessBudgetManager:
         budget = self._agents[agent_id].get(backend)
         if budget is not None:
             budget.record_usage(tokens_in, tokens_out)
+            self._maybe_alert(agent_id, backend, budget)
+
+    def _maybe_alert(
+        self, agent_id: str, backend: BackendType, budget: BackendBudget
+    ) -> None:
+        """Fire on_alert callback if a backend crossed the alert threshold."""
+        if self.on_alert is None or budget.calls_limit == 0:
+            return
+        usage_ratio = budget.calls_used / budget.calls_limit
+        if usage_ratio < self.alert_threshold:
+            return
+        alerted = self._alerted.setdefault(agent_id, set())
+        if backend in alerted:
+            return
+        alerted.add(backend)
+        status = self.agent_status(agent_id)
+        message = (
+            f"Budget alert for {agent_id}: {backend.value} backend at "
+            f"{usage_ratio:.0%} capacity ({budget.calls_used}/{budget.calls_limit} calls)"
+        )
+        self.on_alert(agent_id, message, status)
 
     def record_task_attempt(self, agent_id: str) -> None:
         """Record a task execution attempt for escalation ratio."""
