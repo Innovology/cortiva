@@ -185,6 +185,38 @@ class Agent:
         """Return path to a file in the workspace/ subdirectory."""
         return self.directory / "workspace" / filename
 
+    def read_today(self, filename: str) -> str:
+        """Read a file from the today/ subdirectory. Returns empty string if missing."""
+        path = self.today_path(filename)
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        return ""
+
+    def write_today(self, filename: str, content: str) -> None:
+        """Write a file to the today/ subdirectory."""
+        path = self.today_path(filename)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def read_outbox(self, filename: str) -> str:
+        """Read a file from the outbox/ subdirectory. Returns empty string if missing."""
+        path = self.outbox_path(filename)
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        return ""
+
+    def flush_outbox(self) -> dict[str, str]:
+        """Read all files in outbox/, return as {filename: content}, then delete them."""
+        outbox_dir = self.directory / "outbox"
+        if not outbox_dir.is_dir():
+            return {}
+        result: dict[str, str] = {}
+        for path in sorted(outbox_dir.iterdir()):
+            if path.is_file():
+                result[path.name] = path.read_text(encoding="utf-8")
+                path.unlink()
+        return result
+
     # ----- State transitions -----
 
     def can_transition(self, target: AgentState) -> bool:
