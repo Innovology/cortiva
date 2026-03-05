@@ -29,6 +29,13 @@ class TestSlackSend:
         adapter._client.chat_postMessage.assert_called_once_with(
             channel="C001",
             text="Hello from agent",
+            metadata={
+                "event_type": "cortiva_agent_message",
+                "event_payload": {
+                    "sender_agent_id": "agent-01",
+                    "recipient": "human",
+                },
+            },
         )
         assert msg.id == "1234567890.123456"
         assert msg.sender == "agent-01"
@@ -48,6 +55,13 @@ class TestSlackSend:
         adapter._client.chat_postMessage.assert_called_once_with(
             channel="C001",
             text="reply",
+            metadata={
+                "event_type": "cortiva_agent_message",
+                "event_payload": {
+                    "sender_agent_id": "agent-01",
+                    "recipient": "human",
+                },
+            },
             thread_ts="000.111",
         )
         assert msg.thread_id == "111.222"
@@ -61,6 +75,13 @@ class TestSlackSend:
         adapter._client.chat_postMessage.assert_called_once_with(
             channel="C999",
             text="hi",
+            metadata={
+                "event_type": "cortiva_agent_message",
+                "event_payload": {
+                    "sender_agent_id": "agent-01",
+                    "recipient": "human",
+                },
+            },
         )
 
 
@@ -84,7 +105,7 @@ class TestSlackReceive:
         assert messages[1].content == "world"
 
     @pytest.mark.asyncio
-    async def test_receive_skips_bot_messages(self) -> None:
+    async def test_receive_skips_non_cortiva_bot_messages(self) -> None:
         adapter = _make_adapter()
         await adapter.listen("agent-01", ["C001"])
 
@@ -177,3 +198,212 @@ class TestSlackInit:
             adapter._client = None
             with pytest.raises((ImportError, ModuleNotFoundError)):
                 adapter._get_client()
+
+
+def _cortiva_metadata(sender: str, recipient: str = "broadcast") -> dict:
+    """Build Cortiva agent metadata for a Slack message."""
+    return {
+        "event_type": "cortiva_agent_message",
+        "event_payload": {
+            "sender_agent_id": sender,
+            "recipient": recipient,
+        },
+    }
+
+
+class TestSlackInterAgentCommunication:
+    """Tests for inter-agent messaging via Cortiva metadata."""
+
+    @pytest.mark.asyncio
+    async def test_agent_a_sends_agent_b_receives(self) -> None:
+        """Agent-B receives a message sent by Agent-A (via metadata)."""
+        adapter = _make_adapter()
+        await adapter.listen("agent-b", ["C001"])
+
+        adapter._client.conversations_history.return_value = {
+            "messages": [
+                {
+                    "ts": "300.1",
+                    "bot_id": "B001",
+                    "text": "hello from A",
+                    "metadata": _cortiva_metadata("agent-a"),
+                },
+            ]
+        }
+
+        messages = await adapter.receive("agent-b")
+        assert len(messages) == 1
+        assert messages[0].sender == "agent-a"
+        assert messages[0].content == "hello from A"
+
+    @pytest.mark.asyncio
+    async def test_agent_does_not_receive_own_messages_metadata(self) -> None:
+        """An agent does not see its own messages (metadata self-suppression)."""
+        adapter = _make_adapter()
+        await adapter.listen("agent-a", ["C001"])
+
+        adapter._client.conversations_history.return_value = {
+            "messages": [
+                {
+                    "ts": "300.2",
+                    "bot_id": "B001",
+                    "text": "my own message",
+                    "metadata": _cortiva_metadata("agent-a"),
+                },
+            ]
+        }
+
+        messages = await adapter.receive("agent-a")
+        assert len(messages) == 0
+
+    @pytest.mark.asyncio
+    async def test_self_loop_suppression_via_sent_ts(self) -> None:
+        """Messages with a ts tracked in _sent_ts are skipped."""
+        adapter = _make_adapter()
+        await adapter.listen("agent-a", ["C001"])
+        adapter._sent_ts.add("300.3")
+
+        adapter._client.conversations_history.return_value = {
+            "messages": [
+                {"ts": "300.3", "user": "U001", "text": "echoed back"},
+            ]
+        }
+
+        messages = await adapter.receive("agent-a")
+        assert len(messages) == 0
+
+    @pytest.mark.asyncio
+    async def test_addressed_message_delivered_to_target(self) -> None:
+        """A message mentioning @agent-b is delivered to agent-b."""
+        adapter = _make_adapter()
+        await adapter.listen("agent-b", ["C001"])
+
+        adapter._client.conversations_history.return_value = {
+            "messages": [
+                {"ts": "400.1", "user": "U001", "text": "hey @agent-b check this"},
+            ]
+        }
+
+        messages = await adapter.receive("agent-b")
+        assert len(messages) == 1
+        assert messages[0].content == "hey @agent-b check this"
+
+    @pytest.mark.asyncio
+    async def test_addressed_message_not_delivered_to_others(self) -> None:
+        """A message mentioning @agent-b is NOT delivered to agent-c."""
+        adapter = _make_adapter()
+        await adapter.listen("agent-c", ["C001"])
+
+        adapter._client.conversations_history.return_value = {
+            "messages": [
+                {"ts": "400.2", "user": "U001", "text": "hey @agent-b check this"},
+            ]
+        }
+
+        messages = await adapter.receive("agent-c")
+        assert len(messages) == 0
+
+    @pytest.mark.asyncio
+    async def test_unaddressed_message_broadcast_to_all(self) -> None:
+        """A message with no @mentions is delivered to all subscribers."""
+        adapter = _make_adapter()
+        await adapter.listen("agent-a", ["C001"])
+        await adapter.listen("agent-b", ["C001"])
+
+        adapter._client.conversations_history.return_value = {
+            "messages": [
+                {"ts": "500.1", "user": "U001", "text": "general announcement"},
+            ]
+        }
+
+        msgs_a = await adapter.receive("agent-a")
+        msgs_b = await adapter.receive("agent-b")
+        assert len(msgs_a) == 1
+        assert len(msgs_b) == 1
+
+    @pytest.mark.asyncio
+    async def test_cortiva_bot_message_not_filtered(self) -> None:
+        """A bot message with Cortiva metadata passes through (not filtered)."""
+        adapter = _make_adapter()
+        await adapter.listen("agent-b", ["C001"])
+
+        adapter._client.conversations_history.return_value = {
+            "messages": [
+                {
+                    "ts": "600.1",
+                    "bot_id": "B001",
+                    "subtype": "bot_message",
+                    "text": "cortiva agent msg",
+                    "metadata": _cortiva_metadata("agent-a"),
+                },
+            ]
+        }
+
+        messages = await adapter.receive("agent-b")
+        assert len(messages) == 1
+        assert messages[0].sender == "agent-a"
+
+    @pytest.mark.asyncio
+    async def test_non_cortiva_bot_still_filtered(self) -> None:
+        """Bot messages without Cortiva metadata remain filtered."""
+        adapter = _make_adapter()
+        await adapter.listen("agent-a", ["C001"])
+
+        adapter._client.conversations_history.return_value = {
+            "messages": [
+                {"ts": "600.2", "bot_id": "B999", "text": "slack reminder"},
+            ]
+        }
+
+        messages = await adapter.receive("agent-a")
+        assert len(messages) == 0
+
+    @pytest.mark.asyncio
+    async def test_metadata_recipient_routing(self) -> None:
+        """Metadata recipient field routes to specific agent only."""
+        adapter = _make_adapter()
+        await adapter.listen("agent-a", ["C001"])
+        await adapter.listen("agent-b", ["C001"])
+
+        adapter._client.conversations_history.return_value = {
+            "messages": [
+                {
+                    "ts": "700.1",
+                    "bot_id": "B001",
+                    "text": "private to B",
+                    "metadata": _cortiva_metadata("agent-c", recipient="agent-b"),
+                },
+            ]
+        }
+
+        msgs_a = await adapter.receive("agent-a")
+        msgs_b = await adapter.receive("agent-b")
+        assert len(msgs_a) == 0
+        assert len(msgs_b) == 1
+        assert msgs_b[0].content == "private to B"
+
+    @pytest.mark.asyncio
+    async def test_send_attaches_metadata(self) -> None:
+        """send() includes Cortiva metadata in the Slack API call."""
+        adapter = _make_adapter()
+        adapter._client.chat_postMessage.return_value = {"ok": True, "ts": "800.1"}
+
+        await adapter.send("agent-a", "agent-b", "hi B")
+
+        call_kwargs = adapter._client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["metadata"] == {
+            "event_type": "cortiva_agent_message",
+            "event_payload": {
+                "sender_agent_id": "agent-a",
+                "recipient": "agent-b",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_tracks_ts_in_sent_ts(self) -> None:
+        """send() records the response ts in _sent_ts for self-loop prevention."""
+        adapter = _make_adapter()
+        adapter._client.chat_postMessage.return_value = {"ok": True, "ts": "900.1"}
+
+        await adapter.send("agent-a", "agent-b", "hello")
+        assert "900.1" in adapter._sent_ts

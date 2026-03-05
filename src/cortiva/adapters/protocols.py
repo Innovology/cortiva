@@ -35,6 +35,11 @@ class MemoryRecord:
     importance: float = 5.0
     created_at: datetime = field(default_factory=datetime.utcnow)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Extended fields for experience graph (#10)
+    outcome: str = ""
+    emotion_dimensions: dict[str, float] = field(default_factory=dict)
+    prediction_error: float = 0.0
+    edges: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -118,6 +123,62 @@ class MemoryAdapter(Protocol):
 
     async def delete(self, agent_id: str, memory_id: str) -> bool:
         """Delete a specific memory."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Graph memory adapter protocol (extension)
+# ---------------------------------------------------------------------------
+
+@runtime_checkable
+class GraphMemoryAdapter(MemoryAdapter, Protocol):
+    """
+    Extension of MemoryAdapter with graph operations.
+
+    Implementations: Neo4j, in-memory graph, etc.
+    Graph edges represent relationships between experiences:
+    cosine similarity, temporal proximity, prediction error links.
+    """
+
+    async def create_edge(
+        self,
+        agent_id: str,
+        from_id: str,
+        to_id: str,
+        relationship: str,
+        weight: float = 1.0,
+    ) -> None:
+        """Create a directed edge between two memory records."""
+        ...
+
+    async def find_clusters(
+        self,
+        agent_id: str,
+        *,
+        tag: str | None = None,
+        min_importance: float = 0.0,
+        threshold: float = 0.5,
+    ) -> list[list[MemoryRecord]]:
+        """Find clusters of related memories based on edge weights."""
+        ...
+
+    async def traverse(
+        self,
+        agent_id: str,
+        start_id: str,
+        *,
+        depth: int = 2,
+        min_weight: float = 0.0,
+    ) -> list[MemoryRecord]:
+        """Traverse the graph from a starting memory node."""
+        ...
+
+    async def get_edges(
+        self,
+        agent_id: str,
+        memory_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return all edges connected to a memory record."""
         ...
 
 

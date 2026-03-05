@@ -77,3 +77,115 @@ class InMemoryAdapter:
         before = len(records)
         self._store[agent_id] = [r for r in records if r.id != memory_id]
         return len(self._store[agent_id]) < before
+
+    # --- GraphMemoryAdapter extensions (in-memory graph) ---
+
+    def __init_edges(self) -> None:
+        if not hasattr(self, "_edges"):
+            self._edges: dict[str, list[dict[str, Any]]] = {}
+
+    async def create_edge(
+        self,
+        agent_id: str,
+        from_id: str,
+        to_id: str,
+        relationship: str,
+        weight: float = 1.0,
+    ) -> None:
+        self.__init_edges()
+        self._edges.setdefault(agent_id, []).append({
+            "from_id": from_id,
+            "to_id": to_id,
+            "relationship": relationship,
+            "weight": weight,
+        })
+
+    async def get_edges(
+        self,
+        agent_id: str,
+        memory_id: str,
+    ) -> list[dict[str, Any]]:
+        self.__init_edges()
+        return [
+            e for e in self._edges.get(agent_id, [])
+            if e["from_id"] == memory_id or e["to_id"] == memory_id
+        ]
+
+    async def traverse(
+        self,
+        agent_id: str,
+        start_id: str,
+        *,
+        depth: int = 2,
+        min_weight: float = 0.0,
+    ) -> list[MemoryRecord]:
+        self.__init_edges()
+        records_by_id = {r.id: r for r in self._store.get(agent_id, [])}
+        visited: set[str] = {start_id}
+        frontier = {start_id}
+
+        for _ in range(depth):
+            next_frontier: set[str] = set()
+            for node_id in frontier:
+                for edge in self._edges.get(agent_id, []):
+                    if edge["weight"] < min_weight:
+                        continue
+                    neighbor = None
+                    if edge["from_id"] == node_id:
+                        neighbor = edge["to_id"]
+                    elif edge["to_id"] == node_id:
+                        neighbor = edge["from_id"]
+                    if neighbor and neighbor not in visited:
+                        visited.add(neighbor)
+                        next_frontier.add(neighbor)
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        visited.discard(start_id)
+        return [records_by_id[rid] for rid in visited if rid in records_by_id]
+
+    async def find_clusters(
+        self,
+        agent_id: str,
+        *,
+        tag: str | None = None,
+        min_importance: float = 0.0,
+        threshold: float = 0.5,
+    ) -> list[list[MemoryRecord]]:
+        self.__init_edges()
+        records = self._store.get(agent_id, [])
+        filtered = [
+            r for r in records
+            if r.importance >= min_importance
+            and (not tag or tag in r.tags)
+        ]
+        if not filtered:
+            return []
+
+        # Simple union-find clustering via edges above threshold
+        parent: dict[str, str] = {r.id: r.id for r in filtered}
+        id_set = set(parent.keys())
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for edge in self._edges.get(agent_id, []):
+            if edge["weight"] < threshold:
+                continue
+            a, b = edge["from_id"], edge["to_id"]
+            if a in id_set and b in id_set:
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[ra] = rb
+
+        groups: dict[str, list[MemoryRecord]] = {}
+        records_by_id = {r.id: r for r in filtered}
+        for rid in id_set:
+            root = find(rid)
+            groups.setdefault(root, []).append(records_by_id[rid])
+
+        return [cluster for cluster in groups.values() if len(cluster) > 1]
