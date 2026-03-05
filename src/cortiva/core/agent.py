@@ -8,11 +8,51 @@ across sleep cycles via markdown files on disk.
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+
+@dataclass
+class Task:
+    """A single unit of work in an agent's plan."""
+    id: str
+    description: str
+    status: str = "pending"   # pending | in_progress | done | skipped | exception
+    priority: int = 0         # 0=normal, 1=high, 2=critical
+    outcome: str = ""
+    error: str = ""
+
+
+@dataclass
+class TaskQueue:
+    """Ordered queue of tasks with exception tracking."""
+    tasks: list[Task] = field(default_factory=list)
+    exceptions: list[Task] = field(default_factory=list)
+    replan_count: int = 0
+
+    def next_pending(self) -> Task | None:
+        """Return highest-priority pending task, or None."""
+        pending = [t for t in self.tasks if t.status == "pending"]
+        if not pending:
+            return None
+        pending.sort(key=lambda t: t.priority, reverse=True)
+        return pending[0]
+
+    def all_done(self) -> bool:
+        """True when no tasks are pending or in_progress."""
+        return all(t.status not in ("pending", "in_progress") for t in self.tasks)
+
+    def completion_summary(self) -> dict[str, int]:
+        """Count tasks by status."""
+        summary: dict[str, int] = {}
+        for t in self.tasks:
+            summary[t.status] = summary.get(t.status, 0) + 1
+        summary["exceptions"] = len(self.exceptions)
+        return summary
 
 
 class AgentState(Enum):
@@ -26,15 +66,18 @@ class AgentState(Enum):
     REFLECTING = "reflecting"    # End-of-day review (conscious)
 
 
-# Standard identity file names
+# Standard identity file names (subdirectory layout)
 IDENTITY_FILES = {
-    "identity": "identity.md",           # Living Summary
-    "soul": "soul.md",                   # Persona parameters
-    "skills": "skills.md",               # Domain knowledge
-    "responsibilities": "responsibilities.md",  # R&R authority
-    "procedures": "procedures.md",       # Promoted procedural knowledge
-    "plan": "plan.md",                   # Current plan
+    "identity": "identity/identity.md",           # Living Summary
+    "soul": "identity/soul.md",                   # Persona parameters
+    "skills": "identity/skills.md",               # Domain knowledge
+    "responsibilities": "identity/responsibilities.md",  # R&R authority
+    "procedures": "identity/procedures.md",       # Promoted procedural knowledge
+    "plan": "today/plan.md",                      # Current plan
 }
+
+# Standard workspace subdirectories
+WORKSPACE_DIRS = ["identity", "today", "outbox", "journal", "workspace"]
 
 
 @dataclass
@@ -59,6 +102,7 @@ class Agent:
     consciousness_budget_limit: int = 50
     tasks_completed_today: int = 0
     tasks_escalated_today: int = 0
+    task_queue: TaskQueue | None = None
 
     # ----- Identity file access -----
 
@@ -92,6 +136,55 @@ class Agent:
         """Read all identity files into a dict."""
         return {key: self.read_identity(key) for key in IDENTITY_FILES}
 
+    # ----- Workspace helpers -----
+
+    def ensure_workspace(self) -> None:
+        """Create all standard workspace subdirectories."""
+        for subdir in WORKSPACE_DIRS:
+            (self.directory / subdir).mkdir(parents=True, exist_ok=True)
+
+    def migrate_flat_layout(self) -> bool:
+        """Move flat identity files into subdirectories.
+
+        Detects flat layout by checking if ``identity.md`` exists at the
+        top level while ``identity/identity.md`` does not.  Returns True
+        if migration was performed.
+        """
+        flat_identity = self.directory / "identity.md"
+        nested_identity = self.directory / "identity" / "identity.md"
+        if not flat_identity.exists() or nested_identity.exists():
+            return False
+
+        self.ensure_workspace()
+
+        # Map flat filenames → subdirectory paths
+        migrations: dict[str, str] = {
+            "identity.md": "identity/identity.md",
+            "soul.md": "identity/soul.md",
+            "skills.md": "identity/skills.md",
+            "responsibilities.md": "identity/responsibilities.md",
+            "procedures.md": "identity/procedures.md",
+            "plan.md": "today/plan.md",
+        }
+        for flat_name, nested_name in migrations.items():
+            src = self.directory / flat_name
+            if src.exists():
+                shutil.move(str(src), str(self.directory / nested_name))
+
+        return True
+
+    def today_path(self, filename: str) -> Path:
+        """Return path to a file in the today/ subdirectory."""
+        return self.directory / "today" / filename
+
+    def outbox_path(self, filename: str) -> Path:
+        """Return path to a file in the outbox/ subdirectory."""
+        return self.directory / "outbox" / filename
+
+    def workspace_path(self, filename: str) -> Path:
+        """Return path to a file in the workspace/ subdirectory."""
+        return self.directory / "workspace" / filename
+
     # ----- State transitions -----
 
     def can_transition(self, target: AgentState) -> bool:
@@ -101,8 +194,12 @@ class Agent:
             AgentState.SLEEPING: {AgentState.WAKING},
             AgentState.WAKING: {AgentState.PLANNING, AgentState.SLEEPING},
             AgentState.PLANNING: {AgentState.EXECUTING, AgentState.SLEEPING},
-            AgentState.EXECUTING: {AgentState.REPLANNING, AgentState.REFLECTING, AgentState.SLEEPING},
-            AgentState.REPLANNING: {AgentState.EXECUTING, AgentState.REFLECTING, AgentState.SLEEPING},
+            AgentState.EXECUTING: {
+                AgentState.REPLANNING, AgentState.REFLECTING, AgentState.SLEEPING,
+            },
+            AgentState.REPLANNING: {
+                AgentState.EXECUTING, AgentState.REFLECTING, AgentState.SLEEPING,
+            },
             AgentState.REFLECTING: {AgentState.SLEEPING},
         }
         return target in valid.get(self.state, set())

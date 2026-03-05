@@ -7,14 +7,14 @@ import pytest
 
 from cortiva.templates import apply_template, get_template_path, list_templates
 
-# The six standard identity files every agent needs.
+# The six standard identity files every agent needs (subdirectory layout).
 STANDARD_FILES = {
-    "identity.md",
-    "soul.md",
-    "skills.md",
-    "responsibilities.md",
-    "procedures.md",
-    "plan.md",
+    "identity/identity.md",
+    "identity/soul.md",
+    "identity/skills.md",
+    "identity/responsibilities.md",
+    "identity/procedures.md",
+    "today/plan.md",
 }
 
 EXPECTED_TEMPLATES = {"dev-cortiva", "qa-cortiva", "pm-cortiva"}
@@ -47,7 +47,7 @@ class TestApplyTemplate:
         written = apply_template("dev-cortiva", target)
         assert STANDARD_FILES.issubset(set(written))
         for f in STANDARD_FILES:
-            assert (target / f).exists()
+            assert (target / f).exists(), f"Missing: {f}"
             assert (target / f).read_text().strip() != ""
 
     def test_creates_journal_directory(self, tmp_path: Path) -> None:
@@ -59,15 +59,19 @@ class TestApplyTemplate:
         """Every template must ship the six standard identity files."""
         for name in EXPECTED_TEMPLATES:
             path = get_template_path(name)
-            present = {f.name for f in path.iterdir() if not f.name.startswith("_")}
+            present = {
+                str(f.relative_to(path))
+                for f in path.rglob("*")
+                if f.is_file() and not f.name.startswith("_")
+            }
             missing = STANDARD_FILES - present
             assert not missing, f"Template {name!r} is missing: {missing}"
 
     def test_pm_backlog_json_is_valid(self) -> None:
         """PM template must include a parseable backlog.json."""
         path = get_template_path("pm-cortiva")
-        backlog_path = path / "backlog.json"
-        assert backlog_path.exists(), "pm-cortiva missing backlog.json"
+        backlog_path = path / "workspace" / "backlog.json"
+        assert backlog_path.exists(), "pm-cortiva missing workspace/backlog.json"
         data = json.loads(backlog_path.read_text())
         assert "items" in data
         assert isinstance(data["items"], list)
@@ -81,5 +85,5 @@ class TestApplyTemplate:
     def test_apply_pm_includes_backlog(self, tmp_path: Path) -> None:
         target = tmp_path / "pm-agent"
         written = apply_template("pm-cortiva", target)
-        assert "backlog.json" in written
-        assert (target / "backlog.json").exists()
+        assert "workspace/backlog.json" in written
+        assert (target / "workspace" / "backlog.json").exists()

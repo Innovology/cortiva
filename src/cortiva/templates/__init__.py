@@ -45,18 +45,25 @@ def get_template_path(name: str) -> Path:
 def apply_template(name: str, target_dir: Path) -> list[str]:
     """Copy a template's files into *target_dir*.
 
-    Creates *target_dir* (and a ``journal/`` sub-directory) if they don't
-    exist yet.  Returns the list of files written.
+    Creates *target_dir* and all standard workspace subdirectories if
+    they don't exist yet.  Returns the list of relative paths written.
     """
+    from cortiva.core.agent import WORKSPACE_DIRS
+
     src = get_template_path(name)
     target_dir.mkdir(parents=True, exist_ok=True)
-    (target_dir / "journal").mkdir(exist_ok=True)
+
+    # Create all workspace subdirectories
+    for subdir in WORKSPACE_DIRS:
+        (target_dir / subdir).mkdir(exist_ok=True)
 
     written: list[str] = []
-    for item in sorted(src.iterdir()):
-        if item.name.startswith("_"):
+    for item in sorted(src.rglob("*")):
+        if item.name.startswith("_") or not item.is_file():
             continue
-        dest = target_dir / item.name
+        rel = item.relative_to(src)
+        dest = target_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(item, dest)
-        written.append(item.name)
+        written.append(str(rel))
     return written

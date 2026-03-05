@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
@@ -256,4 +257,60 @@ class ChannelAdapter(Protocol):
         Subscribe to channels. Messages will be queued for the agent
         and available via receive().
         """
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Terminal agent adapter protocol
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ToolCapabilities:
+    """Describes what a terminal agent can do."""
+    can_edit_files: bool = False
+    can_run_bash: bool = False
+    can_use_mcp: bool = False
+    supported_tools: list[str] = field(default_factory=list)
+    max_turns: int | None = None
+
+
+@dataclass
+class AgentResponse:
+    """Response from a terminal agent invocation."""
+    content: str
+    output_format: str = "json"
+    cost_usd: float | None = None
+    duration_seconds: float | None = None
+    session_id: str | None = None
+    is_error: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class TerminalAgentAdapter(Protocol):
+    """
+    Interface for CLI-based AI tools (Claude Code, Codex, Aider, etc.).
+
+    These adapters let Cortiva agents delegate work to terminal-based
+    AI assistants that can read/write files and run commands.
+    """
+
+    async def invoke(
+        self,
+        prompt: str,
+        cwd: Path,
+        *,
+        output_format: str = "json",
+        allowed_tools: list[str] | None = None,
+        max_turns: int | None = None,
+    ) -> AgentResponse:
+        """Invoke the terminal agent with a prompt."""
+        ...
+
+    async def is_available(self) -> bool:
+        """Check whether the tool binary is installed and reachable."""
+        ...
+
+    async def capabilities(self) -> ToolCapabilities:
+        """Return the tool's capabilities."""
         ...

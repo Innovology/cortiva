@@ -100,3 +100,24 @@ class TestBuildFabric:
         }
         fabric = build_fabric(cfg)
         assert fabric.daily_consciousness_limit == 500
+
+    def test_terminal_adapter_from_config(self, tmp_path: Path) -> None:
+        cfg = {
+            "memory": {"adapter": "inmemory", "config": {}},
+            "consciousness": {"provider": "anthropic"},
+            "agents": {"directory": str(tmp_path / "agents")},
+            "terminal": {"adapter": "claude-code", "config": {}},
+        }
+        fabric = build_fabric(cfg)
+        from cortiva.adapters.terminal.claude_code import ClaudeCodeAdapter
+
+        assert isinstance(fabric.terminal, ClaudeCodeAdapter)
+
+    def test_terminal_adapter_optional(self, tmp_path: Path) -> None:
+        cfg = {
+            "memory": {"adapter": "inmemory", "config": {}},
+            "consciousness": {"provider": "anthropic"},
+            "agents": {"directory": str(tmp_path / "agents")},
+        }
+        fabric = build_fabric(cfg)
+        assert fabric.terminal is None

@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from cortiva.core.budget import BackendType, ConsciousnessBudgetManager
 from cortiva.core.fabric import Fabric
 
 # ---------------------------------------------------------------------------
@@ -31,6 +32,12 @@ _CONSCIOUSNESS_ADAPTERS: dict[str, tuple[str, str]] = {
 
 _CHANNEL_ADAPTERS: dict[str, tuple[str, str]] = {
     "slack": ("cortiva.adapters.channel.slack", "SlackChannelAdapter"),
+}
+
+_TERMINAL_ADAPTERS: dict[str, tuple[str, str]] = {
+    "claude-code": ("cortiva.adapters.terminal.claude_code", "ClaudeCodeAdapter"),
+    "codex": ("cortiva.adapters.terminal.codex", "CodexAdapter"),
+    "aider": ("cortiva.adapters.terminal.aider", "AiderAdapter"),
 }
 
 
@@ -79,6 +86,51 @@ def load_config(path: str | Path = "cortiva.yaml") -> dict[str, Any]:
     return config
 
 
+_BACKEND_TYPE_MAP: dict[str, BackendType] = {
+    "terminal": BackendType.TERMINAL,
+    "api": BackendType.API,
+    "local": BackendType.LOCAL,
+}
+
+
+def _build_budget_manager(config: dict[str, Any]) -> ConsciousnessBudgetManager | None:
+    """Build a budget manager from config, or return None for legacy mode.
+
+    Supports both extended config (with backend_type/fallback_chain) and
+    legacy format (just daily_limit) for backward compatibility.
+    """
+    budget_section = config.get("consciousness", {}).get("budget")
+    if not budget_section or not isinstance(budget_section, dict):
+        return None
+
+    # Determine primary backend
+    backend_name = budget_section.get("backend_type", "api")
+    default_backend = _BACKEND_TYPE_MAP.get(backend_name, BackendType.API)
+
+    # Build fallback chain
+    chain_names = budget_section.get("fallback_chain", [backend_name])
+    fallback_chain = [
+        _BACKEND_TYPE_MAP.get(n, BackendType.API) for n in chain_names
+    ]
+
+    # Build per-backend configs
+    backend_configs: dict[BackendType, dict[str, Any]] = {}
+    for bt_name, bt_enum in _BACKEND_TYPE_MAP.items():
+        if bt_name in budget_section and isinstance(budget_section[bt_name], dict):
+            backend_configs[bt_enum] = budget_section[bt_name]
+
+    # Legacy compat: if no per-backend config exists, create one from daily_limit
+    if not backend_configs:
+        daily_limit = budget_section.get("daily_limit", 1000)
+        backend_configs[default_backend] = {"calls_limit": daily_limit}
+
+    return ConsciousnessBudgetManager(
+        default_backend=default_backend,
+        fallback_chain=fallback_chain,
+        backend_configs=backend_configs,
+    )
+
+
 def build_fabric(config: dict[str, Any]) -> Fabric:
     """Construct a :class:`Fabric` from a parsed config dict.
 
@@ -120,6 +172,19 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
                     chan_kwargs["token"] = token
             channel = chan_cls(**chan_kwargs)
 
+    # --- Terminal adapter (optional) ---
+    terminal = None
+    term_section = config.get("terminal")
+    if term_section:
+        term_name = term_section.get("adapter")
+        if term_name:
+            term_cls = _import_adapter(_TERMINAL_ADAPTERS, term_name, "terminal")
+            term_kwargs: dict[str, Any] = dict(term_section.get("config", {}))
+            terminal = term_cls(**term_kwargs)
+
+    # --- Budget manager (optional) ---
+    budget_manager = _build_budget_manager(config)
+
     # --- Fabric ---
     agents_dir = Path(config.get("agents", {}).get("directory", "./agents"))
     heartbeat = config.get("fabric", {}).get("heartbeat_interval", 30)
@@ -130,8 +195,10 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
         memory=memory,
         consciousness=consciousness,
         channel=channel,
+        terminal=terminal,
         heartbeat_interval=float(heartbeat),
         daily_consciousness_limit=int(budget),
+        budget_manager=budget_manager,
     )
 
 

@@ -104,9 +104,14 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(f"Cortiva workspace — {len(agents)} agent(s)\n")
     for agent_id in agents:
         agent_dir = agents_dir / agent_id
-        identity = agent_dir / "identity.md"
+        # Check new subdirectory layout, fall back to flat layout
+        identity = agent_dir / "identity" / "identity.md"
+        if not identity.exists():
+            identity = agent_dir / "identity.md"
         has_identity = "✓" if identity.exists() else "✗"
-        plan = agent_dir / "plan.md"
+        plan = agent_dir / "today" / "plan.md"
+        if not plan.exists():
+            plan = agent_dir / "plan.md"
         has_plan = "✓" if plan.exists() else "✗"
         print(f"  {agent_id:<20} identity:{has_identity}  plan:{has_plan}")
 
@@ -138,23 +143,26 @@ def cmd_agent_create(args: argparse.Namespace) -> None:
         print(f"  Directory: {agent_dir}/")
         print(f"  Files: {', '.join(written)}")
     else:
+        from cortiva.core.agent import WORKSPACE_DIRS
+
         agent_dir.mkdir(parents=True)
-        (agent_dir / "journal").mkdir()
+        for subdir in WORKSPACE_DIRS:
+            (agent_dir / subdir).mkdir()
 
         aid = args.id
         files = {
-            "identity.md": f"# {aid}\n\nNewly created agent. No experiences yet.\n",
-            "soul.md": (
+            "identity/identity.md": f"# {aid}\n\nNewly created agent. No experiences yet.\n",
+            "identity/soul.md": (
                 f"# {aid} — Persona\n\n"
                 "Default persona. Configure disposition parameters.\n"
             ),
-            "skills.md": f"# {aid} — Skills\n\nNo skills defined yet.\n",
-            "responsibilities.md": (
+            "identity/skills.md": f"# {aid} — Skills\n\nNo skills defined yet.\n",
+            "identity/responsibilities.md": (
                 f"# {aid} — Responsibilities\n\n"
                 "## Primary\n\n## Secondary\n\n## Escalation\n"
             ),
-            "procedures.md": f"# {aid} — Procedures\n\nNo procedures promoted yet.\n",
-            "plan.md": (
+            "identity/procedures.md": f"# {aid} — Procedures\n\nNo procedures promoted yet.\n",
+            "today/plan.md": (
                 f"# {aid} — Plan\n\n"
                 "No plan yet. Awaiting first wake cycle.\n"
             ),
@@ -167,9 +175,9 @@ def cmd_agent_create(args: argparse.Namespace) -> None:
         print(f"  Directory: {agent_dir}/")
         print()
         print("Edit the identity files to configure this agent:")
-        print(f"  {agent_dir}/soul.md              — personality and disposition")
-        print(f"  {agent_dir}/skills.md            — domain knowledge")
-        print(f"  {agent_dir}/responsibilities.md  — authority boundaries")
+        print(f"  {agent_dir}/identity/soul.md              — personality and disposition")
+        print(f"  {agent_dir}/identity/skills.md            — domain knowledge")
+        print(f"  {agent_dir}/identity/responsibilities.md  — authority boundaries")
 
 
 def cmd_agent_list(args: argparse.Namespace) -> None:
@@ -191,6 +199,62 @@ def cmd_template_list(args: argparse.Namespace) -> None:
         print(f"  {name}")
     print()
     print("Use: cortiva agent create <id> --template <name>")
+
+
+def cmd_budget(args: argparse.Namespace) -> None:
+    """Show consciousness budget status."""
+    config_path = Path("cortiva.yaml")
+    if not config_path.exists():
+        print("Not a Cortiva workspace. Run 'cortiva init <name>' first.")
+        sys.exit(1)
+
+    from cortiva.core.config import _build_budget_manager, load_config
+
+    config = load_config(config_path)
+    manager = _build_budget_manager(config)
+    if manager is None:
+        print("No budget manager configured. Add a 'consciousness.budget' section to cortiva.yaml.")
+        return
+
+    # Discover agents and register them so we have entries
+    agents_dir = Path(config.get("agents", {}).get("directory", "./agents"))
+    if agents_dir.exists():
+        for p in sorted(agents_dir.iterdir()):
+            if p.is_dir() and not p.name.startswith("."):
+                manager.register_agent(p.name)
+
+    agent_filter = getattr(args, "agent", None)
+
+    if agent_filter:
+        status = manager.agent_status(agent_filter)
+        if not status.backends:
+            print(f"Agent '{agent_filter}' not found.")
+            sys.exit(1)
+        print(f"Budget detail for {agent_filter}\n")
+        for backend_name, info in status.backends.items():
+            exhausted = " (EXHAUSTED)" if info["is_exhausted"] else ""
+            print(f"  {backend_name}:{exhausted}")
+            print(f"    Calls:  {info['calls_used']}/{info['calls_limit']}")
+            print(f"    Tokens: {info['tokens_used']}/{info['tokens_limit']}")
+        print(f"\n  Task attempts:      {status.task_attempts}")
+        print(f"  Consciousness calls: {status.consciousness_calls}")
+        print(f"  Escalation ratio:   {status.escalation_ratio:.2f}")
+        if status.priority_counts:
+            print(f"  Priority counts:    {status.priority_counts}")
+    else:
+        all_status = manager.all_status()
+        if not all_status:
+            print("No agents registered.")
+            return
+        print(f"{'Agent':<20} {'Calls':>8} {'Tokens':>10} {'Esc. Ratio':>12} {'Status':>10}")
+        print("-" * 64)
+        for agent_id, status in all_status.items():
+            state = "EXHAUSTED" if status.exhausted else "OK"
+            print(
+                f"{agent_id:<20} {status.total_calls:>8} "
+                f"{status.total_tokens:>10} {status.escalation_ratio:>11.2f} "
+                f"{state:>10}"
+            )
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -288,6 +352,10 @@ def build_parser() -> argparse.ArgumentParser:
     template_sub = template_parser.add_subparsers(dest="template_command")
     template_sub.add_parser("list", help="List available templates")
 
+    # budget
+    budget_parser = subparsers.add_parser("budget", help="Show consciousness budget status")
+    budget_parser.add_argument("--agent", help="Show detail for a specific agent")
+
     return parser
 
 
@@ -315,6 +383,8 @@ def main() -> None:
             )
         else:
             parser.parse_args(["agent", "--help"])
+    elif args.command == "budget":
+        cmd_budget(args)
     elif args.command == "template":
         if args.template_command == "list":
             cmd_template_list(args)
