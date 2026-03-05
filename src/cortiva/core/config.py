@@ -24,14 +24,23 @@ from cortiva.core.fabric import Fabric
 _MEMORY_ADAPTERS: dict[str, tuple[str, str]] = {
     "inmemory": ("cortiva.adapters.memory.inmemory", "InMemoryAdapter"),
     "engram": ("cortiva.adapters.memory.engram", "EngramMemoryAdapter"),
+    "neo4j": ("cortiva.adapters.memory.neo4j", "Neo4jMemoryAdapter"),
 }
 
 _CONSCIOUSNESS_ADAPTERS: dict[str, tuple[str, str]] = {
     "anthropic": ("cortiva.adapters.consciousness.anthropic", "AnthropicConsciousnessAdapter"),
+    "openai": ("cortiva.adapters.consciousness.openai_compat", "OpenAICompatibleAdapter"),
+    "openai-compatible": ("cortiva.adapters.consciousness.openai_compat", "OpenAICompatibleAdapter"),
+    "google": ("cortiva.adapters.consciousness.google", "GoogleAdapter"),
 }
 
 _CHANNEL_ADAPTERS: dict[str, tuple[str, str]] = {
     "slack": ("cortiva.adapters.channel.slack", "SlackChannelAdapter"),
+}
+
+_ROUTINE_ADAPTERS: dict[str, tuple[str, str]] = {
+    "simple": ("cortiva.adapters.routine.simple", "SimpleRoutineAdapter"),
+    "ollama": ("cortiva.adapters.routine.ollama", "OllamaRoutineAdapter"),
 }
 
 _TERMINAL_ADAPTERS: dict[str, tuple[str, str]] = {
@@ -124,11 +133,48 @@ def _build_budget_manager(config: dict[str, Any]) -> ConsciousnessBudgetManager 
         daily_limit = budget_section.get("daily_limit", 1000)
         backend_configs[default_backend] = {"calls_limit": daily_limit}
 
+    alert_threshold = float(budget_section.get("alert_threshold", 0.8))
+
     return ConsciousnessBudgetManager(
         default_backend=default_backend,
         fallback_chain=fallback_chain,
         backend_configs=backend_configs,
+        alert_threshold=alert_threshold,
     )
+
+
+_PROVIDER_ENV_KEYS: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "openai-compatible": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+}
+
+
+def _build_consciousness_adapter(con_section: dict[str, Any]) -> Any:
+    """Instantiate a consciousness adapter from a config section.
+
+    Supports:
+      consciousness:
+        provider: anthropic | openai | openai-compatible | google
+        model: <model-name>
+        api_key: <key>          # or from env
+        base_url: <url>         # for openai-compatible
+    """
+    con_name = con_section.get("provider", "anthropic")
+    con_cls = _import_adapter(_CONSCIOUSNESS_ADAPTERS, con_name, "consciousness")
+    con_kwargs: dict[str, Any] = {}
+    if "model" in con_section:
+        con_kwargs["model"] = con_section["model"]
+    env_key = _PROVIDER_ENV_KEYS.get(con_name, "ANTHROPIC_API_KEY")
+    api_key = con_section.get("api_key") or os.environ.get(env_key)
+    if api_key:
+        con_kwargs["api_key"] = api_key
+    if "base_url" in con_section:
+        con_kwargs["base_url"] = con_section["base_url"]
+    if "max_tokens" in con_section:
+        con_kwargs["max_tokens"] = con_section["max_tokens"]
+    return con_cls(**con_kwargs)
 
 
 def build_fabric(config: dict[str, Any]) -> Fabric:
@@ -145,17 +191,24 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
     mem_kwargs: dict[str, Any] = dict(mem_section.get("config", {}))
     memory = mem_cls(**mem_kwargs)
 
-    # --- Consciousness adapter ---
+    # --- Consciousness adapter (with optional per-call-type routing) ---
     con_section = config.get("consciousness", {})
-    con_name = con_section.get("provider", "anthropic")
-    con_cls = _import_adapter(_CONSCIOUSNESS_ADAPTERS, con_name, "consciousness")
-    con_kwargs: dict[str, Any] = {}
-    if "model" in con_section:
-        con_kwargs["model"] = con_section["model"]
-    api_key = con_section.get("api_key") or os.environ.get("ANTHROPIC_API_KEY")
-    if api_key:
-        con_kwargs["api_key"] = api_key
-    consciousness = con_cls(**con_kwargs)
+    consciousness = _build_consciousness_adapter(con_section)
+
+    overrides_section = con_section.get("overrides")
+    if overrides_section and isinstance(overrides_section, dict):
+        from cortiva.core.consciousness_router import ConsciousnessRouter
+
+        override_adapters: dict[str, Any] = {}
+        for call_type, override_cfg in overrides_section.items():
+            if isinstance(override_cfg, dict):
+                override_adapters[call_type] = _build_consciousness_adapter(override_cfg)
+            # String values (e.g. "terminal") are reserved for future
+            # terminal-agent routing and are ignored for now.
+        if override_adapters:
+            consciousness = ConsciousnessRouter(
+                default=consciousness, overrides=override_adapters
+            )
 
     # --- Channel adapter (optional) ---
     channel = None
@@ -171,6 +224,16 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
                 if token:
                     chan_kwargs["token"] = token
             channel = chan_cls(**chan_kwargs)
+
+    # --- Routine adapter (optional) ---
+    routine = None
+    routine_section = config.get("routine")
+    if routine_section:
+        routine_name = routine_section.get("adapter")
+        if routine_name:
+            routine_cls = _import_adapter(_ROUTINE_ADAPTERS, routine_name, "routine")
+            routine_kwargs: dict[str, Any] = dict(routine_section.get("config", {}))
+            routine = routine_cls(**routine_kwargs)
 
     # --- Terminal adapter (optional) ---
     terminal = None
@@ -190,16 +253,34 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
     heartbeat = config.get("fabric", {}).get("heartbeat_interval", 30)
     budget = config.get("consciousness", {}).get("budget", {}).get("daily_limit", 1000)
 
-    return Fabric(
+    fabric = Fabric(
         agents_dir=agents_dir,
         memory=memory,
         consciousness=consciousness,
+        routine=routine,
         channel=channel,
         terminal=terminal,
         heartbeat_interval=float(heartbeat),
         daily_consciousness_limit=int(budget),
         budget_manager=budget_manager,
     )
+
+    # --- Agent schedules (optional) ---
+    schedules = config.get("schedules")
+    if schedules and isinstance(schedules, dict):
+        fabric.load_schedules(schedules)
+
+    # --- Cluster config (optional) ---
+    cluster_section = config.get("cluster", {})
+    endpoints = cluster_section.get("endpoints")
+    if endpoints and isinstance(endpoints, list):
+        fabric._custom_endpoints = endpoints
+    else:
+        fabric._custom_endpoints = []
+
+    fabric._cluster_config = cluster_section
+
+    return fabric
 
 
 def load_and_build(path: str | Path = "cortiva.yaml") -> Fabric:

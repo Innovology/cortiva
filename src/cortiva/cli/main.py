@@ -80,6 +80,19 @@ def cmd_init(args: argparse.Namespace) -> None:
     print("  cortiva start")
 
 
+def _try_ipc_status() -> dict | None:
+    """Try to get live status from the running daemon.  Returns None on failure."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        return None
+    try:
+        return client.send_sync("status")
+    except Exception:
+        return None
+
+
 def cmd_status(args: argparse.Namespace) -> None:
     """Show fabric status."""
     config_path = Path("cortiva.yaml")
@@ -87,6 +100,24 @@ def cmd_status(args: argparse.Namespace) -> None:
         print("Not a Cortiva workspace. Run 'cortiva init <name>' first.")
         sys.exit(1)
 
+    # Try live status from the daemon first
+    live = _try_ipc_status()
+    if live and live.get("ok"):
+        agents_data = live.get("agents", {})
+        running = live.get("running", False)
+        status_label = "running" if running else "stopped"
+        print(f"Cortiva fabric ({status_label}) — {len(agents_data)} agent(s)\n")
+        print(f"  {'Agent':<20} {'State':<14} {'Consciousness':>15} {'Tasks':>8}")
+        print(f"  {'-'*20} {'-'*14} {'-'*15} {'-'*8}")
+        for aid, info in agents_data.items():
+            used = info.get("consciousness_used", 0)
+            remaining = info.get("consciousness_remaining", 0)
+            budget = f"{used}/{used + remaining}"
+            tasks = info.get("tasks_today", 0)
+            print(f"  {aid:<20} {info['state']:<14} {budget:>15} {tasks:>8}")
+        return
+
+    # Fallback: filesystem scan
     agents_dir = Path("agents")
     if not agents_dir.exists():
         print("No agents directory found.")
@@ -101,18 +132,18 @@ def cmd_status(args: argparse.Namespace) -> None:
         print("No agents registered.")
         return
 
-    print(f"Cortiva workspace — {len(agents)} agent(s)\n")
+    print(f"Cortiva workspace (daemon not running) — {len(agents)} agent(s)\n")
     for agent_id in agents:
         agent_dir = agents_dir / agent_id
         # Check new subdirectory layout, fall back to flat layout
         identity = agent_dir / "identity" / "identity.md"
         if not identity.exists():
             identity = agent_dir / "identity.md"
-        has_identity = "✓" if identity.exists() else "✗"
+        has_identity = "+" if identity.exists() else "-"
         plan = agent_dir / "today" / "plan.md"
         if not plan.exists():
             plan = agent_dir / "plan.md"
-        has_plan = "✓" if plan.exists() else "✗"
+        has_plan = "+" if plan.exists() else "-"
         print(f"  {agent_id:<20} identity:{has_identity}  plan:{has_plan}")
 
 
@@ -257,6 +288,153 @@ def cmd_budget(args: argparse.Namespace) -> None:
             )
 
 
+def cmd_discover(args: argparse.Namespace) -> None:
+    """Run node capability discovery and display results."""
+    import asyncio as _asyncio
+
+    from cortiva.core.discovery import NodeCapabilities
+
+    custom_endpoints: list[dict] | None = None
+    config_path = Path("cortiva.yaml")
+    if config_path.exists():
+        config = yaml.safe_load(config_path.read_text()) or {}
+        cluster = config.get("cluster", {})
+        eps = cluster.get("endpoints")
+        if eps and isinstance(eps, list):
+            custom_endpoints = eps
+
+    async def _run() -> NodeCapabilities:
+        import os as _os
+        import platform as _platform
+        node_id = f"{_platform.node()}-{_os.getpid()}"
+        return await NodeCapabilities.discover(
+            node_id, custom_endpoints=custom_endpoints,
+        )
+
+    caps = _asyncio.run(_run())
+
+    print(f"Node: {caps.node_id}\n")
+
+    print("Terminal Agents:")
+    if caps.terminal_agents:
+        for t in caps.terminal_agents:
+            status = "available" if t.available else "not found"
+            auth = " (auth ok)" if t.auth_ok else ""
+            ver = f" [{t.version}]" if t.version else ""
+            print(f"  {t.name:<14} {status}{auth}{ver}")
+    else:
+        print("  (none discovered)")
+
+    print(f"\nLocal Models ({len(caps.local_models)}):")
+    if caps.local_models:
+        for m in caps.local_models:
+            size_gb = m.size_bytes / (1024 ** 3) if m.size_bytes else 0
+            size_str = f"{size_gb:.1f}GB" if size_gb else ""
+            print(f"  {m.name:<30} {m.parameter_size:<8} {size_str}")
+    else:
+        print("  (none — is Ollama running?)")
+
+    if caps.custom_endpoints:
+        print(f"\nCustom Endpoints ({len(caps.custom_endpoints)}):")
+        for e in caps.custom_endpoints:
+            health = "healthy" if e.healthy else "unreachable"
+            print(f"  {e.name:<20} {e.url:<40} {health}")
+
+    print(f"\nResources:")
+    r = caps.resources
+    print(f"  CPU:      {r.cpu_cores} cores")
+    print(f"  RAM:      {r.ram_available_gb:.1f}GB free / {r.ram_total_gb:.1f}GB total")
+    print(f"  Disk:     {r.disk_free_gb:.0f}GB free / {r.disk_total_gb:.0f}GB total")
+    print(f"  Platform: {r.platform}")
+    print(f"  Python:   {r.python_version}")
+
+
+def cmd_bootstrap(args: argparse.Namespace) -> None:
+    """Bootstrap the three-agent Cortiva development team."""
+    workspace = Path(args.dir) if hasattr(args, "dir") and args.dir else Path(".")
+    agents_dir = workspace / "agents"
+    config_path = workspace / "cortiva.yaml"
+
+    from cortiva.templates import apply_template, list_templates
+
+    available = list_templates()
+    team = ["dev-cortiva", "qa-cortiva", "pm-cortiva"]
+    missing = [t for t in team if t not in available]
+    if missing:
+        print(f"Missing templates: {', '.join(missing)}")
+        print(f"Available: {', '.join(available)}")
+        sys.exit(1)
+
+    # Create workspace structure
+    agents_dir.mkdir(parents=True, exist_ok=True)
+
+    created = []
+    for agent_name in team:
+        agent_dir = agents_dir / agent_name
+        if agent_dir.exists():
+            print(f"  {agent_name}: already exists, skipping")
+            continue
+        written = apply_template(agent_name, agent_dir)
+        created.append(agent_name)
+        print(f"  {agent_name}: created ({len(written)} files)")
+
+    # Generate cortiva.yaml if it doesn't exist
+    if not config_path.exists():
+        config = {
+            "fabric": {
+                "name": "cortiva-bootstrap",
+                "heartbeat_interval": 30,
+            },
+            "memory": {
+                "adapter": "inmemory",
+                "config": {},
+            },
+            "consciousness": {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-20250514",
+                "budget": {
+                    "daily_limit": 1000,
+                },
+            },
+            "terminal": {
+                "adapter": "claude-code",
+            },
+            "agents": {
+                "directory": "./agents",
+            },
+            "schedules": {
+                "dev-cortiva": {
+                    "wake": "09:00 mon-fri",
+                    "replan": "13:00",
+                    "sleep": "17:00",
+                },
+                "qa-cortiva": {
+                    "wake": "09:30 mon-fri",
+                    "sleep": "17:00",
+                },
+                "pm-cortiva": {
+                    "wake": "08:30 mon-fri",
+                    "replan": "12:00,15:00",
+                    "sleep": "17:30",
+                },
+            },
+        }
+        config_path.write_text(
+            yaml.dump(config, default_flow_style=False, sort_keys=False)
+        )
+        print(f"\n  Config: {config_path}")
+    else:
+        print(f"\n  Config: {config_path} (already exists, not overwritten)")
+
+    print(f"\nBootstrap complete: {len(created)} agent(s) created.")
+    if created:
+        print("\nNext steps:")
+        print(f"  cd {workspace}")
+        print("  export ANTHROPIC_API_KEY=sk-ant-...")
+        print("  cortiva start")
+        print("  cortiva agent wake dev-cortiva")
+
+
 def cmd_start(args: argparse.Namespace) -> None:
     """Start the Cortiva fabric."""
     config_path = Path("cortiva.yaml")
@@ -265,6 +443,20 @@ def cmd_start(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     from cortiva.core.config import load_and_build
+    from cortiva.core.ipc import (
+        default_pid_path,
+        default_socket_path,
+        is_pid_alive,
+        read_pid,
+        remove_pid,
+        write_pid,
+    )
+
+    # Check if another daemon is already running
+    existing_pid = read_pid()
+    if existing_pid is not None and is_pid_alive(existing_pid):
+        print(f"Cortiva daemon already running (PID {existing_pid}).")
+        sys.exit(1)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -277,6 +469,8 @@ def cmd_start(args: argparse.Namespace) -> None:
         print(f"Failed to load config: {exc}")
         sys.exit(1)
 
+    socket_path = default_socket_path()
+    pid_path = default_pid_path()
     loop = asyncio.new_event_loop()
 
     def _shutdown(signum: int, frame: object) -> None:
@@ -287,7 +481,8 @@ def cmd_start(args: argparse.Namespace) -> None:
     signal.signal(signal.SIGTERM, _shutdown)
 
     async def _run() -> None:
-        await fabric.start()
+        await fabric.start(ipc_socket=socket_path)
+        write_pid(pid_path)
         print(f"Cortiva fabric running ({len(fabric.agents)} agents). Press Ctrl+C to stop.")
         try:
             while fabric._running:
@@ -296,6 +491,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             pass
         finally:
             await fabric.stop()
+            remove_pid(pid_path)
             print("Fabric stopped.")
 
     try:
@@ -303,9 +499,274 @@ def cmd_start(args: argparse.Namespace) -> None:
     except RuntimeError:
         # Loop was stopped by signal handler
         loop.run_until_complete(fabric.stop())
+        remove_pid(pid_path)
         print("Fabric stopped.")
     finally:
         loop.close()
+
+
+def cmd_stop(args: argparse.Namespace) -> None:
+    """Stop the running Cortiva daemon."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        print("No running Cortiva daemon found.")
+        sys.exit(1)
+
+    try:
+        resp = client.send_sync("shutdown")
+        if resp.get("ok"):
+            print("Shutdown signal sent. Daemon will stop after sleeping active agents.")
+        else:
+            print(f"Shutdown failed: {resp.get('error', 'unknown error')}")
+            sys.exit(1)
+    except Exception as exc:
+        print(f"Failed to connect to daemon: {exc}")
+        sys.exit(1)
+
+
+def cmd_agent_wake(args: argparse.Namespace) -> None:
+    """Wake an agent via the running daemon."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        print("No running Cortiva daemon. Use 'cortiva start' first.")
+        sys.exit(1)
+
+    try:
+        resp = client.send_sync("agent.wake", agent_id=args.id)
+        if resp.get("ok"):
+            print(f"Agent {args.id} is now {resp.get('state', 'active')}.")
+        else:
+            print(f"Failed: {resp.get('error', 'unknown error')}")
+            sys.exit(1)
+    except Exception as exc:
+        print(f"Failed to connect to daemon: {exc}")
+        sys.exit(1)
+
+
+def cmd_agent_sleep(args: argparse.Namespace) -> None:
+    """Put an agent to sleep via the running daemon."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        print("No running Cortiva daemon. Use 'cortiva start' first.")
+        sys.exit(1)
+
+    try:
+        resp = client.send_sync("agent.sleep", agent_id=args.id)
+        if resp.get("ok"):
+            print(f"Agent {args.id} is now {resp.get('state', 'sleeping')}.")
+        else:
+            print(f"Failed: {resp.get('error', 'unknown error')}")
+            sys.exit(1)
+    except Exception as exc:
+        print(f"Failed to connect to daemon: {exc}")
+        sys.exit(1)
+
+
+def cmd_cluster_status(args: argparse.Namespace) -> None:
+    """Show cluster status: nodes, registry, and available models."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        print("No running Cortiva daemon. Use 'cortiva start' first.")
+        sys.exit(1)
+
+    try:
+        resp = client.send_sync("cluster.status")
+        if not resp or not resp.get("ok"):
+            print(f"Failed: {resp.get('error', 'unknown error') if resp else 'no response'}")
+            sys.exit(1)
+    except Exception as exc:
+        print(f"Failed to connect to daemon: {exc}")
+        sys.exit(1)
+
+    print(f"Cluster Status\n")
+    print(f"  Local node:     {resp.get('local_node_id', '?')}")
+    print(f"  Discovery:      {resp.get('discovery_mode', '?')}")
+    print(f"  Nodes:          {resp.get('node_count', 0)}")
+    print(f"  Single-node:    {'yes' if resp.get('single_node') else 'no'}")
+
+    registry = resp.get("registry", {})
+    if registry:
+        print(f"\n  Agent Registry ({len(registry)}):")
+        for agent_id, node_id in registry.items():
+            print(f"    {agent_id:<20} -> {node_id}")
+
+    models = resp.get("models", [])
+    if models:
+        print(f"\n  Available Models ({len(models)}):")
+        for m in models:
+            print(f"    {m}")
+
+
+def cmd_cluster_nodes(args: argparse.Namespace) -> None:
+    """Show cluster nodes with details."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        print("No running Cortiva daemon. Use 'cortiva start' first.")
+        sys.exit(1)
+
+    try:
+        resp = client.send_sync("cluster.nodes")
+        if not resp or not resp.get("ok"):
+            print(f"Failed: {resp.get('error', 'unknown error') if resp else 'no response'}")
+            sys.exit(1)
+    except Exception as exc:
+        print(f"Failed to connect to daemon: {exc}")
+        sys.exit(1)
+
+    nodes = resp.get("nodes", [])
+    if not nodes:
+        print("No nodes in cluster.")
+        return
+
+    print(f"Cluster Nodes ({len(nodes)})\n")
+    for node in nodes:
+        status = node.get("status", "unknown")
+        print(f"  {node.get('node_id', '?')} ({status})")
+        print(f"    Host:    {node.get('host', '?')}:{node.get('port', '?')}")
+        agents = node.get("agents", [])
+        if agents:
+            print(f"    Agents:  {', '.join(agents)}")
+        else:
+            print(f"    Agents:  (none)")
+        hb = node.get("last_heartbeat", "")
+        if hb:
+            print(f"    Heartbeat: {hb}")
+        print()
+
+
+def cmd_agent_move(args: argparse.Namespace) -> None:
+    """Move an agent to another node via the running daemon."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        print("No running Cortiva daemon. Use 'cortiva start' first.")
+        sys.exit(1)
+
+    try:
+        resp = client.send_sync("agent.move", agent_id=args.id, target_node=args.to)
+        if resp.get("ok"):
+            print(
+                f"Agent {args.id} moved: "
+                f"{resp.get('source_node', '?')} -> {resp.get('target_node', '?')}"
+            )
+        else:
+            error = resp.get("error", "unknown error")
+            print(f"Move failed: {error}")
+            sys.exit(1)
+    except Exception as exc:
+        print(f"Failed to connect to daemon: {exc}")
+        sys.exit(1)
+
+
+def cmd_cluster_load(args: argparse.Namespace) -> None:
+    """Show cluster load metrics and balancing suggestions."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if client.is_daemon_running():
+        try:
+            result = client.send_sync("cluster.load")
+            if result and result.get("ok"):
+                _print_cluster_load(
+                    result.get("nodes", []),
+                    result.get("affinities", {}),
+                    result.get("moves", []),
+                )
+                return
+        except Exception:
+            pass
+
+    # Offline mode: run discovery locally and show snapshot
+    import asyncio as _asyncio
+    import os as _os
+    import platform as _platform
+
+    from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
+    from cortiva.core.discovery import NodeCapabilities
+
+    custom_endpoints: list[dict] | None = None
+    config_path = Path("cortiva.yaml")
+    if config_path.exists():
+        config = yaml.safe_load(config_path.read_text()) or {}
+        cluster = config.get("cluster", {})
+        eps = cluster.get("endpoints")
+        if eps and isinstance(eps, list):
+            custom_endpoints = eps
+
+    async def _run() -> NodeCapabilities:
+        node_id = f"{_platform.node()}-{_os.getpid()}"
+        return await NodeCapabilities.discover(
+            node_id, custom_endpoints=custom_endpoints,
+        )
+
+    caps = _asyncio.run(_run())
+    tracker = CommunicationTracker()
+    metrics = ClusterMetrics(communication_tracker=tracker)
+    nodes = metrics.snapshot(caps, {})
+    affinities = metrics.agent_affinity_scores()
+    moves = metrics.suggest_moves()
+
+    _print_cluster_load(
+        [n.to_dict() for n in nodes],
+        {f"{a}->{b}": s for (a, b), s in affinities.items()},
+        [m.to_dict() for m in moves],
+    )
+
+
+def _print_cluster_load(
+    nodes: list[dict],
+    affinities: dict[str, float],
+    moves: list[dict],
+) -> None:
+    """Format and print cluster load information."""
+    if not nodes:
+        print("No node data available.")
+        return
+
+    print("Cluster Load\n")
+    for node in nodes:
+        print(f"  Node: {node.get('node_id', '?')}")
+        total = node.get("agent_count", 0)
+        active = node.get("active_agent_count", 0)
+        print(f"    Agents:  {total} total, {active} active")
+        ram = node.get("ram_usage_ratio", 0)
+        budget = node.get("budget_exhaustion_ratio", 0)
+        print(f"    RAM:     {ram:.0%} used")
+        print(f"    Budget:  {budget:.0%} exhausted")
+        res = node.get("resources", {})
+        if res:
+            print(f"    CPU:     {res.get('cpu_cores', '?')} cores")
+            avail = res.get("ram_available_gb", "?")
+            total_ram = res.get("ram_total_gb", "?")
+            print(f"    RAM:     {avail}GB free / {total_ram}GB total")
+        print()
+
+    if affinities:
+        print("Agent Affinities:")
+        for pair, score in sorted(affinities.items(), key=lambda x: x[1], reverse=True):
+            print(f"  {pair}: {score:.2f}")
+        print()
+
+    if moves:
+        print("Suggested Moves:")
+        for m in moves:
+            print(
+                f"  {m['agent_id']}: {m['source_node']} -> {m['target_node']} "
+                f"(score={m['priority_score']:.2f}, reason={m['reason']})"
+            )
+    else:
+        print("No moves suggested — cluster is balanced.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -318,6 +779,17 @@ def build_parser() -> argparse.ArgumentParser:
     # init
     init_parser = subparsers.add_parser("init", help="Initialise a new workspace")
     init_parser.add_argument("name", help="Workspace name")
+
+    # bootstrap
+    bootstrap_parser = subparsers.add_parser(
+        "bootstrap", help="Bootstrap the three-agent development team"
+    )
+    bootstrap_parser.add_argument(
+        "--dir", default=".", help="Workspace directory (default: current)"
+    )
+
+    # discover
+    subparsers.add_parser("discover", help="Discover node capabilities")
 
     # start
     subparsers.add_parser("start", help="Start the fabric")
@@ -347,6 +819,10 @@ def build_parser() -> argparse.ArgumentParser:
     sleep_parser = agent_sub.add_parser("sleep", help="Put an agent to sleep")
     sleep_parser.add_argument("id", help="Agent ID")
 
+    move_parser = agent_sub.add_parser("move", help="Move an agent to another node")
+    move_parser.add_argument("id", help="Agent ID")
+    move_parser.add_argument("--to", required=True, help="Target node ID")
+
     # template
     template_parser = subparsers.add_parser("template", help="Template management")
     template_sub = template_parser.add_subparsers(dest="template_command")
@@ -355,6 +831,13 @@ def build_parser() -> argparse.ArgumentParser:
     # budget
     budget_parser = subparsers.add_parser("budget", help="Show consciousness budget status")
     budget_parser.add_argument("--agent", help="Show detail for a specific agent")
+
+    # cluster
+    cluster_parser = subparsers.add_parser("cluster", help="Cluster management")
+    cluster_sub = cluster_parser.add_subparsers(dest="cluster_command")
+    cluster_sub.add_parser("load", help="Show cluster load and balancing suggestions")
+    cluster_sub.add_parser("status", help="Show cluster status")
+    cluster_sub.add_parser("nodes", help="Show cluster nodes")
 
     return parser
 
@@ -365,10 +848,14 @@ def main() -> None:
 
     if args.command == "init":
         cmd_init(args)
+    elif args.command == "bootstrap":
+        cmd_bootstrap(args)
+    elif args.command == "discover":
+        cmd_discover(args)
     elif args.command == "start":
         cmd_start(args)
     elif args.command == "stop":
-        print("Send SIGINT or SIGTERM to the running 'cortiva start' process.")
+        cmd_stop(args)
     elif args.command == "status":
         cmd_status(args)
     elif args.command == "agent":
@@ -376,15 +863,25 @@ def main() -> None:
             cmd_agent_create(args)
         elif args.agent_command == "list":
             cmd_agent_list(args)
-        elif args.agent_command in ("wake", "sleep"):
-            print(
-                f"Agent {args.agent_command} requires a running fabric."
-                " Use 'cortiva start' first."
-            )
+        elif args.agent_command == "wake":
+            cmd_agent_wake(args)
+        elif args.agent_command == "sleep":
+            cmd_agent_sleep(args)
+        elif args.agent_command == "move":
+            cmd_agent_move(args)
         else:
             parser.parse_args(["agent", "--help"])
     elif args.command == "budget":
         cmd_budget(args)
+    elif args.command == "cluster":
+        if args.cluster_command == "load":
+            cmd_cluster_load(args)
+        elif args.cluster_command == "status":
+            cmd_cluster_status(args)
+        elif args.cluster_command == "nodes":
+            cmd_cluster_nodes(args)
+        else:
+            parser.parse_args(["cluster", "--help"])
     elif args.command == "template":
         if args.template_command == "list":
             cmd_template_list(args)

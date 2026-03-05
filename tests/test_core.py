@@ -7,6 +7,7 @@ import pytest
 from cortiva.adapters.memory.inmemory import InMemoryAdapter
 from cortiva.adapters.protocols import ConsciousResponse
 from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
+from cortiva.core.context import ContextBuilder
 from cortiva.core.fabric import Fabric, _parse_plan
 
 # ---------------------------------------------------------------------------
@@ -111,6 +112,40 @@ class TestAgent:
 
         agent = Agent(id="test-01", directory=agent_dir)
         assert agent.migrate_flat_layout() is False
+
+
+class TestAgentTodayOutbox:
+    def test_write_and_read_today(self, tmp_path: Path) -> None:
+        agent = Agent(id="test-01", directory=tmp_path / "test-01")
+        agent.write_today("notes.md", "# Notes\n\nToday was productive.")
+        assert agent.read_today("notes.md") == "# Notes\n\nToday was productive."
+
+    def test_read_today_missing_file(self, tmp_path: Path) -> None:
+        agent = Agent(id="test-01", directory=tmp_path / "test-01")
+        assert agent.read_today("nonexistent.md") == ""
+
+    def test_write_and_read_outbox(self, tmp_path: Path) -> None:
+        agent = Agent(id="test-01", directory=tmp_path / "test-01")
+        agent.ensure_workspace()
+        outbox_path = agent.outbox_path("msg-01.md")
+        outbox_path.write_text("Hello from agent", encoding="utf-8")
+        assert agent.read_outbox("msg-01.md") == "Hello from agent"
+
+    def test_flush_outbox(self, tmp_path: Path) -> None:
+        agent = Agent(id="test-01", directory=tmp_path / "test-01")
+        agent.ensure_workspace()
+        agent.outbox_path("a.md").write_text("Content A", encoding="utf-8")
+        agent.outbox_path("b.md").write_text("Content B", encoding="utf-8")
+
+        result = agent.flush_outbox()
+        assert result == {"a.md": "Content A", "b.md": "Content B"}
+        # Files should be deleted after flush
+        assert not agent.outbox_path("a.md").exists()
+        assert not agent.outbox_path("b.md").exists()
+
+    def test_flush_outbox_empty(self, tmp_path: Path) -> None:
+        agent = Agent(id="test-01", directory=tmp_path / "test-01")
+        assert agent.flush_outbox() == {}
 
 
 # ---------------------------------------------------------------------------
@@ -431,12 +466,54 @@ class TestPlanVsReality:
         # Execute a couple of cycles
         await fabric.cycle("stats-01")
 
-        summary = fabric._build_day_summary(agent)
+        summary = ContextBuilder.build_day_summary(agent)
         assert "Plan vs Reality" in summary
         assert "Total tasks:" in summary
         assert "Completed:" in summary
         assert "Completion rate:" in summary
         assert "Replans:" in summary
+
+
+# ---------------------------------------------------------------------------
+# Full cycle tests
+# ---------------------------------------------------------------------------
+
+class TestFullCycle:
+    @pytest.mark.asyncio
+    async def test_full_day_cycle(self, tmp_path: Path) -> None:
+        """wake → execute tasks until idle → sleep; verify journal and state."""
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=MockConsciousness(),
+        )
+        agent = fabric.register_agent("cycle-01")
+        assert agent.state == AgentState.SLEEPING
+
+        # Wake: plan is created, state is EXECUTING
+        agent = await fabric.wake("cycle-01")
+        assert agent.state == AgentState.EXECUTING
+        assert agent.task_queue is not None
+        initial_task_count = len(agent.task_queue.tasks)
+        assert initial_task_count > 0
+
+        # Execute cycles until all tasks are complete
+        for _ in range(initial_task_count + 2):  # safety margin
+            result = await fabric.cycle("cycle-01")
+            if result["all_tasks_complete"]:
+                break
+
+        assert agent.task_queue.all_done()
+
+        # Sleep: reflection written, state back to SLEEPING
+        agent = await fabric.sleep("cycle-01")
+        assert agent.state == AgentState.SLEEPING
+        assert agent.task_queue is None
+
+        # Journal entry should exist with plan-vs-reality content
+        journal = agent.journal_path()
+        assert journal.exists()
+        assert journal.read_text(encoding="utf-8") != ""
 
 
 # ---------------------------------------------------------------------------

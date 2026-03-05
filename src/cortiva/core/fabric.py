@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import platform
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +26,17 @@ from cortiva.adapters.protocols import (
     TerminalAgentAdapter,
 )
 from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
+from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
+from cortiva.core.cluster import Cluster, ClusterNode, move_agent
+from cortiva.core.context import ContextBuilder
+from cortiva.core.discovery import NodeCapabilities
+from cortiva.core.familiarity import FamiliarityEngine
+from cortiva.core.ipc import FabricServer
+from cortiva.core.living_summary import LivingSummaryRegenerator
+from cortiva.core.models import ClusterModels
 from cortiva.core.reflection import ReflectionSuffix, parse_reflection_suffix
+from cortiva.core.scheduler import Scheduler
 
 logger = logging.getLogger("cortiva.fabric")
 
@@ -133,6 +143,30 @@ class Fabric:
         self.channel = channel
         self.terminal = terminal
         self.budget_manager = budget_manager
+        if self.budget_manager and self.channel:
+            self.budget_manager.on_alert = self._budget_alert
+        self.context_builder = ContextBuilder(memory=memory)
+        self.familiarity_engine = FamiliarityEngine(memory=memory)
+        self.living_summary = LivingSummaryRegenerator(
+            memory=memory, consciousness=consciousness,
+        )
+        self.scheduler = Scheduler()
+        self.communication_tracker = CommunicationTracker()
+        self.cluster_metrics = ClusterMetrics(
+            communication_tracker=self.communication_tracker,
+        )
+
+        # Cluster and model registry (optional, populated during start)
+        self.cluster = Cluster()
+        self.model_registry = ClusterModels()
+
+        # IPC server (started on demand)
+        self.ipc_server: FabricServer | None = None
+
+        # Node capabilities (populated by discover() during start)
+        self.capabilities: NodeCapabilities | None = None
+        self._custom_endpoints: list[dict[str, Any]] = []
+        self._cluster_config: dict[str, Any] = {}
 
         # Runtime state
         self.agents: dict[str, Agent] = {}
@@ -140,6 +174,20 @@ class Fabric:
         self.daily_consciousness_limit = daily_consciousness_limit
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
+
+    def _budget_alert(self, agent_id: str, message: str, status: Any) -> None:
+        """Post budget alerts to the ops channel."""
+        if self.channel:
+            import asyncio
+
+            asyncio.ensure_future(
+                self.channel.send(
+                    sender="cortiva-fabric",
+                    recipient="cortiva-ops",
+                    content=message,
+                    channel="#cortiva-ops",
+                )
+            )
 
     # ----- Agent management -----
 
@@ -253,7 +301,7 @@ class Fabric:
             self.budget_manager.reset_agent(agent_id)
 
         # Ask the conscious layer to build a plan (structured checklist)
-        context = self._build_wake_context(agent, identity, messages)
+        context = await self.context_builder.build_plan_context(agent, identity, messages)
         planning_prompt = (
             "You are waking up. Review your identity, any pending messages, "
             "and your previous plan. Create your plan for today as a structured "
@@ -308,7 +356,10 @@ class Fabric:
 
             # End-of-day reflection
             identity = agent.read_all_identity()
-            day_summary = self._build_day_summary(agent)
+            day_summary = ContextBuilder.build_day_summary(agent)
+            reflection_context = await self.context_builder.build_reflection_context(
+                agent, identity, day_summary,
+            )
 
             can_reflect = False
             approval = None
@@ -319,27 +370,26 @@ class Fabric:
                 can_reflect = agent.spend_consciousness()
 
             if can_reflect:
-                response = await self.consciousness.reflect(
-                    agent_id=agent_id,
-                    context=self._identity_to_context(identity),
-                    day_summary=day_summary,
+                # Regenerate Living Summary from accumulated experience
+                new_identity = await self.living_summary.regenerate(
+                    agent, day_summary,
                 )
 
                 if self.budget_manager and approval and approval.backend:
                     self.budget_manager.record_usage(
-                        agent_id, approval.backend,
-                        response.tokens_in, response.tokens_out,
+                        agent_id, approval.backend, 0, 0,
                     )
                     agent.spend_consciousness()
 
-                # Update Living Summary with reflection output
-                if response.content:
-                    agent.write_identity("identity", response.content)
+                # Update Living Summary with regenerated content
+                if new_identity:
+                    agent.write_identity("identity", new_identity)
 
                 # Write journal entry
-                journal_content = response.reflection or response.content
                 journal_path = agent.journal_path()
-                journal_path.write_text(journal_content, encoding="utf-8")
+                journal_path.write_text(
+                    new_identity or day_summary, encoding="utf-8",
+                )
                 logger.info(f"Agent {agent_id} reflected and updated identity")
 
         agent.task_queue = None
@@ -408,25 +458,23 @@ class Fabric:
     ) -> None:
         """Execute a single task via routine or consciousness."""
         task.status = "in_progress"
+        routine_assessment: dict[str, Any] | None = None
 
         if self.budget_manager:
             self.budget_manager.record_task_attempt(agent.id)
 
+        # Compute familiarity signal from memory
+        familiarity = await self.familiarity_engine.assess(agent.id, task.description)
+
         if self.routine:
             # Ask the routine layer whether this can be handled procedurally
-            from cortiva.adapters.protocols import FamiliaritySignal
-
-            familiarity = FamiliaritySignal(
-                strength="novel", valence="neutral",
-                match_count=0, text="No prior experience.",
-            )
-            assessment = await self.routine.assess(
+            routine_assessment = await self.routine.assess(
                 agent_id=agent.id,
                 task_description=task.description,
                 procedural_index=agent.read_identity("procedures"),
                 familiarity=familiarity,
             )
-            action = assessment.get("action", "escalate")
+            action = routine_assessment.get("action", "escalate")
 
             if action == "defer":
                 task.status = "exception"
@@ -437,10 +485,16 @@ class Fabric:
                 return
             elif action == "procedural":
                 task.status = "done"
-                task.outcome = assessment.get("result", "Completed procedurally")
+                task.outcome = routine_assessment.get("result", "Completed procedurally")
                 agent.tasks_completed_today += 1
                 return
             # else: escalate — fall through to consciousness
+
+        # Try terminal agent for hands-on tasks (coding, file ops, testing)
+        if self.terminal and self._is_terminal_task(task.description):
+            terminal_result = await self._execute_via_terminal(agent, task)
+            if terminal_result is not None:
+                return
 
         # Consciousness execution (budget-permitting)
         task_priority = (
@@ -467,7 +521,9 @@ class Fabric:
             return
 
         identity = agent.read_all_identity()
-        context = self._build_execution_context(agent, identity, messages)
+        context = await self.context_builder.build_execution_context(
+            agent, identity, messages, task.description, assessment=routine_assessment,
+        )
         prompt = (
             f"Execute this task: {task.description}\n\n"
             "Describe what you did and the outcome."
@@ -547,6 +603,7 @@ class Fabric:
                         recipient=recipient,
                         content=content,
                     )
+                    self.communication_tracker.record(agent.id, recipient)
 
         # Log escalation request
         if suffix.escalation:
@@ -554,6 +611,77 @@ class Fabric:
                 f"Agent {agent.id} escalation on '{task.description}': "
                 f"{suffix.escalation}"
             )
+
+    # Terminal keywords that indicate a task should use the terminal agent
+    _TERMINAL_KEYWORDS = frozenset({
+        "implement", "code", "write", "fix", "refactor", "test", "debug",
+        "commit", "branch", "merge", "deploy", "build", "run", "install",
+        "create file", "edit file", "update file", "delete file",
+        "pytest", "ruff", "lint", "review code", "open pr", "push",
+    })
+
+    def _is_terminal_task(self, description: str) -> bool:
+        """Check if a task description suggests terminal agent work."""
+        desc_lower = description.lower()
+        return any(kw in desc_lower for kw in self._TERMINAL_KEYWORDS)
+
+    async def _execute_via_terminal(self, agent: Agent, task: Task) -> bool | None:
+        """Execute a task via the terminal agent adapter.
+
+        Returns ``True`` if the terminal handled the task, ``None`` if it
+        should fall through to consciousness execution.
+        """
+        assert self.terminal is not None
+
+        if not await self.terminal.is_available():
+            logger.warning(f"Terminal agent unavailable for {agent.id}, falling back")
+            return None
+
+        # Build a prompt that includes agent identity context
+        identity = agent.read_all_identity()
+        procedures = identity.get("procedures", "")
+        responsibilities = identity.get("responsibilities", "")
+
+        prompt = (
+            f"You are {agent.id}. Execute this task:\n\n"
+            f"{task.description}\n\n"
+            f"## Your Procedures\n{procedures}\n\n"
+            f"## Your Responsibilities\n{responsibilities}\n\n"
+            "When done, summarise what you did and the outcome."
+        )
+
+        # Use the agent's workspace directory as cwd
+        cwd = agent.directory / "workspace"
+        cwd.mkdir(parents=True, exist_ok=True)
+
+        response = await self.terminal.invoke(
+            prompt=prompt,
+            cwd=cwd,
+        )
+
+        if response.is_error:
+            task.status = "exception"
+            task.error = f"Terminal error: {response.content[:200]}"
+            assert agent.task_queue is not None
+            agent.task_queue.exceptions.append(task)
+            agent.tasks_escalated_today += 1
+            logger.error(f"Terminal execution failed for {agent.id}: {response.content[:100]}")
+            return True
+
+        task.status = "done"
+        task.outcome = response.content[:500] if response.content else "Completed via terminal"
+        agent.tasks_completed_today += 1
+
+        # Store as memory
+        await self.memory.store(
+            agent_id=agent.id,
+            content=f"Task: {task.description}. Outcome (terminal): {task.outcome[:200]}",
+            tags=["cycle", "task", "terminal"],
+            importance=5.0 + task.priority,
+        )
+
+        logger.info(f"Agent {agent.id} completed task via terminal: {task.description[:60]}")
+        return True
 
     def _should_replan(self, agent: Agent, messages: list[Any]) -> bool:
         """Check whether a replan is warranted."""
@@ -587,26 +715,7 @@ class Fabric:
             agent.transition(AgentState.REPLANNING)
 
         identity = agent.read_all_identity()
-        summary = agent.task_queue.completion_summary()
-        completed = [t for t in agent.task_queue.tasks if t.status == "done"]
-        exceptions = agent.task_queue.exceptions
-
-        context = self._build_execution_context(agent, identity, messages)
-        completed_str = (
-            ", ".join(t.description for t in completed) or "none"
-        )
-        exception_str = (
-            ", ".join(
-                f"{t.description} ({t.error})" for t in exceptions
-            )
-            or "none"
-        )
-        context += (
-            "\n\n---\n\n## Replan Context\n\n"
-            f"Completed: {completed_str}\n"
-            f"Exceptions: {exception_str}\n"
-            f"Summary: {summary}\n"
-        )
+        context = await self.context_builder.build_replan_context(agent, identity, messages)
 
         can_replan = False
         approval = None
@@ -678,9 +787,29 @@ class Fabric:
 
     async def heartbeat(self) -> None:
         """
-        Check all agents. Wake any that have scheduled work.
-        Run cycles for active agents.
+        Check all agents. Process scheduled actions and run cycles
+        for active agents.
         """
+        # Process scheduled actions
+        due = self.scheduler.tick()
+        for agent_id, actions in due.items():
+            if agent_id not in self.agents:
+                continue
+            agent = self.agents[agent_id]
+            for action in actions:
+                try:
+                    if action == "wake" and agent.state == AgentState.SLEEPING:
+                        await self.wake(agent_id)
+                    elif action == "sleep" and agent.state in (
+                        AgentState.EXECUTING, AgentState.REPLANNING,
+                    ):
+                        await self.sleep(agent_id)
+                    elif action == "replan" and agent.state == AgentState.EXECUTING:
+                        await self._replan(agent, [])
+                except Exception as e:
+                    logger.error(f"Scheduler action {action} for {agent_id}: {e}")
+
+        # Run cycles for active agents
         for agent_id, agent in self.agents.items():
             if agent.state == AgentState.EXECUTING:
                 try:
@@ -697,16 +826,218 @@ class Fabric:
                 logger.error(f"Heartbeat error: {e}")
             await asyncio.sleep(self.heartbeat_interval)
 
-    async def start(self) -> None:
-        """Start the fabric. Discover agents and begin heartbeat."""
+    # ----- IPC command handlers -----
+
+    def _register_ipc_handlers(self, server: FabricServer) -> None:
+        """Register all IPC command handlers on *server*."""
+
+        async def _handle_status(**_kw: Any) -> dict[str, Any]:
+            return {"ok": True, **self.status()}
+
+        async def _handle_agent_wake(agent_id: str = "", **_kw: Any) -> dict[str, Any]:
+            if not agent_id:
+                return {"ok": False, "error": "agent_id required"}
+            try:
+                agent = await self.wake(agent_id)
+                return {"ok": True, "agent_id": agent_id, "state": agent.state.value}
+            except (KeyError, ValueError) as exc:
+                return {"ok": False, "error": str(exc)}
+
+        async def _handle_agent_sleep(agent_id: str = "", **_kw: Any) -> dict[str, Any]:
+            if not agent_id:
+                return {"ok": False, "error": "agent_id required"}
+            try:
+                agent = await self.sleep(agent_id)
+                return {"ok": True, "agent_id": agent_id, "state": agent.state.value}
+            except (KeyError, ValueError) as exc:
+                return {"ok": False, "error": str(exc)}
+
+        async def _handle_agent_cycle(agent_id: str = "", **_kw: Any) -> dict[str, Any]:
+            if not agent_id:
+                return {"ok": False, "error": "agent_id required"}
+            try:
+                result = await self.cycle(agent_id)
+                return {"ok": True, **result}
+            except (KeyError, ValueError) as exc:
+                return {"ok": False, "error": str(exc)}
+
+        async def _handle_budget(**_kw: Any) -> dict[str, Any]:
+            if not self.budget_manager:
+                return {"ok": True, "budget": {}}
+            return {"ok": True, "budget": {
+                aid: {
+                    "total_calls": s.total_calls,
+                    "total_tokens": s.total_tokens,
+                    "escalation_ratio": s.escalation_ratio,
+                    "exhausted": s.exhausted,
+                }
+                for aid, s in self.budget_manager.all_status().items()
+            }}
+
+        async def _handle_shutdown(**_kw: Any) -> dict[str, Any]:
+            asyncio.get_event_loop().call_soon(self._request_stop)
+            return {"ok": True, "message": "Shutdown initiated"}
+
+        async def _handle_discover(**_kw: Any) -> dict[str, Any]:
+            if self.capabilities:
+                return {"ok": True, **self.capabilities.to_dict()}
+            return {"ok": False, "error": "Discovery not yet run"}
+
+        async def _handle_cluster_load(**_kw: Any) -> dict[str, Any]:
+            nodes = self.cluster_metrics.snapshot(
+                self.capabilities, self.agents, self.budget_manager,
+            )
+            affinities = self.cluster_metrics.agent_affinity_scores()
+            moves = self.cluster_metrics.suggest_moves()
+            return {
+                "ok": True,
+                "nodes": [n.to_dict() for n in nodes],
+                "affinities": {
+                    f"{a}->{b}": score for (a, b), score in affinities.items()
+                },
+                "moves": [m.to_dict() for m in moves],
+            }
+
+        async def _handle_cluster_status(**_kw: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "local_node_id": self.cluster.local_node_id,
+                "node_count": self.cluster.node_count(),
+                "single_node": self.cluster.is_single_node(),
+                "discovery_mode": self.cluster.discovery_mode,
+                "registry": self.cluster.get_registry(),
+                "models": self.model_registry.all_model_names(),
+            }
+
+        async def _handle_cluster_nodes(**_kw: Any) -> dict[str, Any]:
+            nodes_data: list[dict[str, Any]] = []
+            for node in self.cluster.nodes.values():
+                nodes_data.append(node.to_dict())
+            return {"ok": True, "nodes": nodes_data}
+
+        async def _handle_agent_move(
+            agent_id: str = "", target_node: str = "", **_kw: Any,
+        ) -> dict[str, Any]:
+            if not agent_id:
+                return {"ok": False, "error": "agent_id required"}
+            if not target_node:
+                return {"ok": False, "error": "target_node required"}
+            try:
+                result = await move_agent(self.cluster, agent_id, target_node)
+                return {"ok": result.success, **result.to_dict()}
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
+
+        server.register("status", _handle_status)
+        server.register("agent.wake", _handle_agent_wake)
+        server.register("agent.sleep", _handle_agent_sleep)
+        server.register("agent.cycle", _handle_agent_cycle)
+        server.register("agent.move", _handle_agent_move)
+        server.register("budget", _handle_budget)
+        server.register("discover", _handle_discover)
+        server.register("cluster.load", _handle_cluster_load)
+        server.register("cluster.status", _handle_cluster_status)
+        server.register("cluster.nodes", _handle_cluster_nodes)
+        server.register("shutdown", _handle_shutdown)
+
+    def _request_stop(self) -> None:
+        """Signal the fabric to stop (used by shutdown IPC command)."""
+        self._running = False
+
+    def load_schedules(self, schedules: dict[str, dict[str, str]]) -> None:
+        """Load agent schedules from config.
+
+        *schedules* maps agent IDs to schedule dicts, e.g.::
+
+            {"bookkeep-01": {"wake": "09:00 mon-fri", "sleep": "17:00"}}
+        """
+        for agent_id, sched_config in schedules.items():
+            self.scheduler.register(agent_id, sched_config)
+
+    # ----- Start / Stop -----
+
+    async def start(
+        self,
+        *,
+        ipc_socket: Path | None = None,
+        custom_endpoints: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Start the fabric. Discover agents and begin heartbeat.
+
+        If *ipc_socket* is given, an IPC server is started on that path.
+        *custom_endpoints* are passed to node capability discovery.
+        """
         logger.info("Starting Cortiva fabric")
+
+        # Auto-discover node capabilities
+        node_id = self._cluster_config.get("node_id") or f"{platform.node()}-{os.getpid()}"
+        all_endpoints = custom_endpoints or self._custom_endpoints or None
+        self.capabilities = await NodeCapabilities.discover(
+            node_id, custom_endpoints=all_endpoints,
+        )
+        logger.info(f"Node capabilities: {self.capabilities.summary}")
+
+        # Initialize cluster
+        discovery_mode = self._cluster_config.get("discovery", "static")
+        self.cluster = Cluster(local_node_id=node_id, discovery_mode=discovery_mode)
+        self.model_registry = ClusterModels(local_node_id=node_id)
+
+        # Register local node
         self.discover_agents()
+        local_node = ClusterNode(
+            node_id=node_id,
+            host=self._cluster_config.get("host", "localhost"),
+            port=self._cluster_config.get("port", 9400),
+            agents=list(self.agents.keys()),
+            capabilities=self.capabilities.to_dict(),
+        )
+        await self.cluster.join(local_node)
+
+        # Update model registry with local capabilities
+        self.model_registry.update_node(
+            node_id,
+            models=[m.to_dict() for m in self.capabilities.local_models],
+            terminal_agents=[t.name for t in self.capabilities.terminal_agents if t.available],
+            custom_endpoints=[e.to_dict() for e in self.capabilities.custom_endpoints],
+            agent_count=len(self.agents),
+        )
+
+        # Discover cluster peers
+        static_nodes = self._cluster_config.get("static_nodes")
+        config_path = self._cluster_config.get("config_path")
+        if static_nodes or config_path or discovery_mode == "mdns":
+            peers = await self.cluster.discover(
+                static_nodes=static_nodes,
+                config_path=config_path,
+            )
+            for peer in peers:
+                caps = peer.capabilities
+                if isinstance(caps, dict):
+                    self.model_registry.update_node(
+                        peer.node_id,
+                        host=peer.host,
+                        models=caps.get("local_models", []),
+                        terminal_agents=[
+                            t.get("name", "") for t in caps.get("terminal_agents", [])
+                            if t.get("available")
+                        ],
+                        custom_endpoints=caps.get("custom_endpoints", []),
+                        agent_count=len(peer.agents),
+                    )
+            if peers:
+                logger.info(f"Discovered {len(peers)} cluster peer(s)")
         self._running = True
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+        if ipc_socket is not None:
+            self.ipc_server = FabricServer()
+            self._register_ipc_handlers(self.ipc_server)
+            await self.ipc_server.start(ipc_socket)
+
         logger.info(f"Fabric running with {len(self.agents)} agents")
 
     async def stop(self) -> None:
-        """Stop the fabric. Sleep all active agents."""
+        """Stop the fabric. Sleep all active agents and close IPC."""
         logger.info("Stopping Cortiva fabric")
         self._running = False
 
@@ -716,6 +1047,11 @@ class Fabric:
                 await self._heartbeat_task
             except asyncio.CancelledError:
                 pass
+
+        # Stop IPC server
+        if self.ipc_server:
+            await self.ipc_server.stop()
+            self.ipc_server = None
 
         # Sleep all active agents
         for agent_id, agent in self.agents.items():
@@ -757,77 +1093,7 @@ class Fabric:
                 }
                 for agent_id, s in self.budget_manager.all_status().items()
             }
+        if self.capabilities:
+            result["capabilities"] = self.capabilities.to_dict()
         return result
 
-    # ----- Context builders (private) -----
-
-    def _identity_to_context(self, identity: dict[str, str]) -> str:
-        sections = []
-        for key, content in identity.items():
-            if content.strip():
-                sections.append(f"## {key.title()}\n\n{content}")
-        return "\n\n---\n\n".join(sections)
-
-    def _build_wake_context(
-        self,
-        agent: Agent,
-        identity: dict[str, str],
-        messages: list,
-    ) -> str:
-        parts = [self._identity_to_context(identity)]
-        if messages:
-            msg_text = "\n".join(f"- [{m.sender}]: {m.content}" for m in messages)
-            parts.append(f"## Pending Messages\n\n{msg_text}")
-        parts.append(f"## Date\n\n{datetime.utcnow().strftime('%A, %Y-%m-%d')}")
-        return "\n\n---\n\n".join(parts)
-
-    def _build_execution_context(
-        self,
-        agent: Agent,
-        identity: dict[str, str],
-        messages: list,
-    ) -> str:
-        parts = [self._identity_to_context(identity)]
-        if messages:
-            msg_text = "\n".join(f"- [{m.sender}]: {m.content}" for m in messages)
-            parts.append(f"## Messages\n\n{msg_text}")
-        return "\n\n---\n\n".join(parts)
-
-    def _build_day_summary(self, agent: Agent) -> str:
-        budget = f"{agent.consciousness_budget_used}/{agent.consciousness_budget_limit}"
-        summary = (
-            f"Tasks completed: {agent.tasks_completed_today}\n"
-            f"Tasks escalated: {agent.tasks_escalated_today}\n"
-            f"Consciousness budget used: {budget}\n"
-        )
-
-        if agent.task_queue is not None:
-            stats = agent.task_queue.completion_summary()
-            total = len(agent.task_queue.tasks)
-            done_count = stats.get("done", 0)
-            exception_count = stats.get("exceptions", 0)
-            skipped_count = stats.get("skipped", 0)
-            rate = (done_count / total * 100) if total > 0 else 0
-
-            summary += (
-                f"\n## Plan vs Reality\n"
-                f"Total tasks: {total}\n"
-                f"Completed: {done_count}\n"
-                f"Exceptions: {exception_count}\n"
-                f"Skipped: {skipped_count}\n"
-                f"Completion rate: {rate:.0f}%\n"
-                f"Replans: {agent.task_queue.replan_count}\n"
-            )
-
-            completed_tasks = [t for t in agent.task_queue.tasks if t.status == "done"]
-            if completed_tasks:
-                summary += "\nCompleted:\n"
-                for t in completed_tasks:
-                    summary += f"- {t.description}\n"
-
-            if agent.task_queue.exceptions:
-                summary += "\nExceptions:\n"
-                for t in agent.task_queue.exceptions:
-                    summary += f"- {t.description}: {t.error}\n"
-
-        return summary

@@ -1,3 +1,12 @@
+---
+emotional_modifiers:
+  satisfaction_weight: 1.0
+  frustration_weight: 0.8
+  curiosity_weight: 1.2
+  confidence_weight: 1.3
+  caution_weight: 1.1
+---
+
 # Dev-Cortiva — Persona
 
 ## Disposition
