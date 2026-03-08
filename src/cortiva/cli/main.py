@@ -480,10 +480,33 @@ def cmd_start(args: argparse.Namespace) -> None:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
+    # Optional portal co-start
+    portal_host = getattr(args, "portal_host", "127.0.0.1")
+    portal_port = getattr(args, "portal_port", 8400)
+    start_portal = getattr(args, "portal", False)
+
     async def _run() -> None:
         await fabric.start(ipc_socket=socket_path)
         write_pid(pid_path)
         print(f"Cortiva fabric running ({len(fabric.agents)} agents). Press Ctrl+C to stop.")
+
+        if start_portal:
+            try:
+                import uvicorn
+
+                from cortiva.portal.server import create_app
+
+                agents_dir = str(fabric.agents_dir)
+                app = create_app(agents_dir=agents_dir)
+                portal_config = uvicorn.Config(
+                    app, host=portal_host, port=portal_port, log_level="info",
+                )
+                server = uvicorn.Server(portal_config)
+                print(f"Portal running on http://{portal_host}:{portal_port}")
+                asyncio.ensure_future(server.serve())
+            except ImportError:
+                print("Portal requires uvicorn. Install with: pip install 'cortiva[portal]'")
+
         try:
             while fabric._running:
                 await asyncio.sleep(1)
@@ -713,6 +736,92 @@ def cmd_agent_probation(args: argparse.Namespace) -> None:
         else:
             print(f"No active probation for {args.id}.")
             sys.exit(1)
+
+
+def cmd_agent_export(args: argparse.Namespace) -> None:
+    """Export an agent to a tarball."""
+    import shutil
+    import tarfile
+    import tempfile
+
+    agent_dir = Path("agents") / args.id
+    if not agent_dir.exists():
+        print(f"Agent '{args.id}' not found.")
+        sys.exit(1)
+
+    output = Path(args.output) if args.output else Path(f"{args.id}.tar.gz")
+    sanitise = getattr(args, "sanitise", False)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        export_dir = Path(tmp) / args.id
+        shutil.copytree(agent_dir, export_dir)
+
+        # Remove runtime state — only export identity and journal
+        for subdir in ("today", "outbox", "workspace"):
+            d = export_dir / subdir
+            if d.is_dir():
+                shutil.rmtree(d)
+
+        # Optionally sanitise: strip potential company-specific data
+        if sanitise:
+            for md_file in export_dir.rglob("*.md"):
+                content = md_file.read_text(encoding="utf-8")
+                # Remove email addresses and URLs
+                import re
+                content = re.sub(r'\b[\w.+-]+@[\w-]+\.[\w.-]+\b', '[REDACTED]', content)
+                content = re.sub(r'https?://\S+', '[URL_REDACTED]', content)
+                md_file.write_text(content, encoding="utf-8")
+
+        with tarfile.open(output, "w:gz") as tar:
+            tar.add(export_dir, arcname=args.id)
+
+    print(f"Exported {args.id} -> {output}")
+    if sanitise:
+        print("  (sanitised: emails and URLs redacted)")
+
+
+def cmd_agent_import(args: argparse.Namespace) -> None:
+    """Import an agent from a tarball."""
+    import tarfile
+
+    archive = Path(args.archive)
+    if not archive.exists():
+        print(f"Archive not found: {archive}")
+        sys.exit(1)
+
+    new_id = args.new_id
+    agent_dir = Path("agents") / new_id
+
+    if agent_dir.exists():
+        print(f"Agent '{new_id}' already exists.")
+        sys.exit(1)
+
+    with tarfile.open(archive, "r:gz") as tar:
+        # Security: check for path traversal
+        for member in tar.getmembers():
+            if member.name.startswith("/") or ".." in member.name:
+                print(f"Unsafe path in archive: {member.name}")
+                sys.exit(1)
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tar.extractall(tmp)
+            # Find the extracted directory (first dir in tmp)
+            extracted = list(Path(tmp).iterdir())
+            if not extracted:
+                print("Empty archive.")
+                sys.exit(1)
+            src = extracted[0]
+            import shutil
+            shutil.copytree(src, agent_dir)
+
+    # Ensure workspace dirs exist
+    from cortiva.core.agent import WORKSPACE_DIRS
+    for subdir in WORKSPACE_DIRS:
+        (agent_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    print(f"Imported {archive.name} -> {new_id}")
+    print(f"  Directory: {agent_dir}/")
 
 
 def cmd_portal(args: argparse.Namespace) -> None:
@@ -965,7 +1074,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("discover", help="Discover node capabilities")
 
     # start
-    subparsers.add_parser("start", help="Start the fabric")
+    start_parser = subparsers.add_parser("start", help="Start the fabric")
+    start_parser.add_argument("--portal", action="store_true", help="Also start the web portal")
+    start_parser.add_argument("--portal-host", default="127.0.0.1", help="Portal bind host")
+    start_parser.add_argument("--portal-port", type=int, default=8400, help="Portal bind port")
 
     # stop
     subparsers.add_parser("stop", help="Stop the fabric (sends signal to running instance)")
@@ -1025,6 +1137,15 @@ def build_parser() -> argparse.ArgumentParser:
     probation_group.add_argument("--confirm", action="store_true", help="Confirm promotion")
     probation_group.add_argument("--revert", action="store_true", help="Revert promotion")
     probation_group.add_argument("--extend", type=int, metavar="DAYS", help="Extend probation")
+
+    export_parser = agent_sub.add_parser("export", help="Export an agent to a tarball")
+    export_parser.add_argument("id", help="Agent ID")
+    export_parser.add_argument("--output", "-o", help="Output file path (default: <id>.tar.gz)")
+    export_parser.add_argument("--sanitise", action="store_true", help="Redact emails and URLs")
+
+    import_parser = agent_sub.add_parser("import", help="Import an agent from a tarball")
+    import_parser.add_argument("archive", help="Path to tarball")
+    import_parser.add_argument("--as", dest="new_id", required=True, help="New agent ID")
 
     # template
     template_parser = subparsers.add_parser("template", help="Template management")
@@ -1089,6 +1210,10 @@ def main() -> None:
             cmd_agent_promote(args)
         elif args.agent_command == "probation":
             cmd_agent_probation(args)
+        elif args.agent_command == "export":
+            cmd_agent_export(args)
+        elif args.agent_command == "import":
+            cmd_agent_import(args)
         else:
             parser.parse_args(["agent", "--help"])
     elif args.command == "portal":

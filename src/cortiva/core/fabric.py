@@ -176,6 +176,28 @@ class Fabric:
         self._heartbeat_task: asyncio.Task | None = None
         # Per-agent accumulated familiarity signals for today
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
+        # Event listeners for portal/WebSocket integration
+        self._event_listeners: list[Any] = []
+
+    # ----- Event system -----
+
+    def on_event(self, listener: Any) -> None:
+        """Register a listener for fabric events.
+
+        The listener is called with ``(event_type: str, data: dict)``
+        for every state change, task completion, or lifecycle transition.
+        """
+        self._event_listeners.append(listener)
+
+    def _emit(self, event_type: str, **data: Any) -> None:
+        """Emit an event to all registered listeners."""
+        import time as _time
+        event = {"type": event_type, "timestamp": _time.time(), **data}
+        for listener in self._event_listeners:
+            try:
+                listener(event_type, event)
+            except Exception:
+                pass  # Don't let listener errors break the fabric
 
     def _budget_alert(self, agent_id: str, message: str, status: Any) -> None:
         """Post budget alerts to the ops channel."""
@@ -326,6 +348,7 @@ class Fabric:
                     context=context,
                     prompt=planning_prompt,
                     priority=Priority.NORMAL,
+                    metadata={"call_type": "plan"},
                 )
                 self.budget_manager.record_usage(
                     agent_id, approval.backend, response.tokens_in, response.tokens_out,
@@ -341,6 +364,7 @@ class Fabric:
                 context=context,
                 prompt=planning_prompt,
                 priority=Priority.NORMAL,
+                metadata={"call_type": "plan"},
             )
             agent.write_identity("plan", response.content)
             agent.task_queue = _parse_plan(response.content)
@@ -348,6 +372,7 @@ class Fabric:
             logger.info(f"Agent {agent_id} has planned their day")
 
         agent.transition(AgentState.EXECUTING)
+        self._emit("agent.wake", agent_id=agent_id, state=agent.state.value)
         return agent
 
     async def sleep(self, agent_id: str) -> Agent:
@@ -405,6 +430,7 @@ class Fabric:
         agent.persist_runtime_state()
         agent.task_queue = None
         agent.transition(AgentState.SLEEPING)
+        self._emit("agent.sleep", agent_id=agent_id, state=agent.state.value)
         logger.info(f"Agent {agent_id} is now sleeping")
         return agent
 
@@ -462,6 +488,10 @@ class Fabric:
         # Write updated plan and runtime state to disk
         self._write_plan(agent)
         agent.persist_runtime_state()
+        self._emit(
+            "task.complete", agent_id=agent_id,
+            task=task.description, status=task.status,
+        )
 
         return result
 
@@ -554,7 +584,7 @@ class Fabric:
             context=context,
             prompt=prompt,
             priority=Priority.HIGH if task.priority >= 1 else Priority.NORMAL,
-            metadata={"task_execution": True},
+            metadata={"call_type": "execute", "task_execution": True},
         )
 
         if self.budget_manager and approval and approval.backend:
@@ -762,6 +792,7 @@ class Fabric:
                     "Only include remaining and new tasks."
                 ),
                 priority=Priority.HIGH,
+                metadata={"call_type": "replan"},
             )
 
             if self.budget_manager and approval and approval.backend:
