@@ -568,6 +568,179 @@ def cmd_agent_sleep(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_agent_snapshot(args: argparse.Namespace) -> None:
+    """Create a snapshot of an agent."""
+    from cortiva.core.snapshots import create_snapshot
+
+    agent_dir = Path("agents") / args.id
+    if not agent_dir.exists():
+        print(f"Agent '{args.id}' not found.")
+        sys.exit(1)
+
+    meta = create_snapshot(agent_dir, name=args.name, description=args.description)
+    print(f"Snapshot created: {meta.snapshot_id}")
+    if meta.name != meta.snapshot_id:
+        print(f"  Name: {meta.name}")
+    print(f"  Agent: {meta.agent_id}")
+    print(f"  Time: {meta.created_at}")
+
+
+def cmd_agent_snapshots(args: argparse.Namespace) -> None:
+    """List snapshots for an agent."""
+    from cortiva.core.snapshots import list_snapshots
+
+    agent_dir = Path("agents") / args.id
+    if not agent_dir.exists():
+        print(f"Agent '{args.id}' not found.")
+        sys.exit(1)
+
+    snapshots = list_snapshots(agent_dir)
+    if not snapshots:
+        print(f"No snapshots for {args.id}.")
+        return
+
+    print(f"Snapshots for {args.id} ({len(snapshots)}):\n")
+    for s in snapshots:
+        name = f" ({s.name})" if s.name != s.snapshot_id else ""
+        print(f"  {s.snapshot_id}{name}  [{s.trigger}]  {s.created_at}")
+
+
+def cmd_agent_rollback(args: argparse.Namespace) -> None:
+    """Rollback an agent to a snapshot."""
+    from cortiva.core.snapshots import restore_snapshot
+
+    agent_dir = Path("agents") / args.id
+    if not agent_dir.exists():
+        print(f"Agent '{args.id}' not found.")
+        sys.exit(1)
+
+    restore_journal = not getattr(args, "no_journal", False)
+    if restore_snapshot(agent_dir, args.snapshot, restore_journal=restore_journal):
+        print(f"Agent {args.id} restored from snapshot {args.snapshot}.")
+    else:
+        print(f"Snapshot '{args.snapshot}' not found.")
+        sys.exit(1)
+
+
+def cmd_agent_clone(args: argparse.Namespace) -> None:
+    """Clone an agent from a snapshot."""
+    from cortiva.core.snapshots import clone_from_snapshot, list_snapshots
+
+    agent_dir = Path("agents") / args.id
+    if not agent_dir.exists():
+        print(f"Source agent '{args.id}' not found.")
+        sys.exit(1)
+
+    new_dir = Path("agents") / args.new_id
+    if new_dir.exists():
+        print(f"Agent '{args.new_id}' already exists.")
+        sys.exit(1)
+
+    snapshot_id = args.from_snapshot
+    if snapshot_id == "latest":
+        snapshots = list_snapshots(agent_dir)
+        if not snapshots:
+            print(f"No snapshots for {args.id}. Create one first: cortiva agent snapshot {args.id}")
+            sys.exit(1)
+        snapshot_id = snapshots[0].snapshot_id
+
+    if clone_from_snapshot(agent_dir, snapshot_id, new_dir):
+        print(f"Cloned {args.id} -> {args.new_id} (from snapshot {snapshot_id})")
+    else:
+        print(f"Snapshot '{snapshot_id}' not found.")
+        sys.exit(1)
+
+
+def cmd_agent_promote(args: argparse.Namespace) -> None:
+    """Promote an agent to a new role."""
+    from cortiva.core.promotion import initiate_promotion
+    from cortiva.templates import get_template_path
+
+    agent_dir = Path("agents") / args.id
+    if not agent_dir.exists():
+        print(f"Agent '{args.id}' not found.")
+        sys.exit(1)
+
+    try:
+        tpl_path = get_template_path(args.to)
+    except KeyError:
+        # Try as a direct agent directory
+        tpl_path = Path("agents") / args.to
+        if not tpl_path.exists():
+            print(f"Role template '{args.to}' not found as template or agent directory.")
+            sys.exit(1)
+
+    record = initiate_promotion(agent_dir, tpl_path, probation_days=args.probation)
+    print(f"Promotion initiated for {args.id}")
+    print(f"  {record.source_role} -> {record.target_role}")
+    print(f"  Probation: {record.probation_config.duration_days} days (until {record.probation_end[:10]})")
+    print(f"  Snapshot: {record.pre_promotion_snapshot}")
+
+
+def cmd_agent_probation(args: argparse.Namespace) -> None:
+    """Manage agent probation."""
+    from cortiva.core.promotion import (
+        confirm_promotion,
+        extend_probation,
+        get_promotion,
+        revert_promotion,
+    )
+
+    agent_dir = Path("agents") / args.id
+    if not agent_dir.exists():
+        print(f"Agent '{args.id}' not found.")
+        sys.exit(1)
+
+    if getattr(args, "confirm", False):
+        record = confirm_promotion(agent_dir)
+        if record:
+            print(f"Promotion confirmed for {args.id}.")
+        else:
+            print(f"No active probation for {args.id}.")
+            sys.exit(1)
+    elif getattr(args, "revert", False):
+        record = revert_promotion(agent_dir)
+        if record:
+            print(f"Promotion reverted for {args.id}. Restored from snapshot {record.pre_promotion_snapshot}.")
+        else:
+            print(f"No active probation for {args.id}.")
+            sys.exit(1)
+    elif args.extend:
+        record = extend_probation(agent_dir, additional_days=args.extend)
+        if record:
+            print(f"Probation extended by {args.extend} days for {args.id}.")
+            print(f"  New end: {record.probation_end[:10]}")
+        else:
+            print(f"No active probation for {args.id}.")
+            sys.exit(1)
+
+
+def cmd_portal(args: argparse.Namespace) -> None:
+    """Start the Cortiva web portal."""
+    config_path = Path("cortiva.yaml")
+    if not config_path.exists():
+        print("Not a Cortiva workspace. Run 'cortiva init <name>' first.")
+        sys.exit(1)
+
+    try:
+        import uvicorn
+    except ImportError:
+        print("Portal requires uvicorn. Install with: pip install 'cortiva[portal]'")
+        sys.exit(1)
+
+    from cortiva.portal.server import create_app
+
+    agents_dir = "./agents"
+    if config_path.exists():
+        import yaml as _yaml
+        cfg = _yaml.safe_load(config_path.read_text()) or {}
+        agents_dir = cfg.get("agents", {}).get("directory", "./agents")
+
+    app = create_app(agents_dir=agents_dir)
+    print(f"Cortiva Portal starting on http://{args.host}:{args.port}")
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
 def cmd_cluster_status(args: argparse.Namespace) -> None:
     """Show cluster status: nodes, registry, and available models."""
     from cortiva.core.ipc import FabricClient
@@ -823,6 +996,36 @@ def build_parser() -> argparse.ArgumentParser:
     move_parser.add_argument("id", help="Agent ID")
     move_parser.add_argument("--to", required=True, help="Target node ID")
 
+    snap_parser = agent_sub.add_parser("snapshot", help="Create a snapshot of an agent")
+    snap_parser.add_argument("id", help="Agent ID")
+    snap_parser.add_argument("--name", default="", help="Snapshot name")
+    snap_parser.add_argument("--description", default="", help="Description")
+
+    snapshots_parser = agent_sub.add_parser("snapshots", help="List snapshots for an agent")
+    snapshots_parser.add_argument("id", help="Agent ID")
+
+    rollback_parser = agent_sub.add_parser("rollback", help="Rollback an agent to a snapshot")
+    rollback_parser.add_argument("id", help="Agent ID")
+    rollback_parser.add_argument("--snapshot", required=True, help="Snapshot ID")
+    rollback_parser.add_argument("--no-journal", action="store_true", help="Skip restoring journal")
+
+    clone_parser = agent_sub.add_parser("clone", help="Clone an agent from a snapshot")
+    clone_parser.add_argument("id", help="Source agent ID")
+    clone_parser.add_argument("--as", dest="new_id", required=True, help="New agent ID")
+    clone_parser.add_argument("--from-snapshot", default="latest", help="Snapshot ID (default: latest)")
+
+    promote_parser = agent_sub.add_parser("promote", help="Promote an agent to a new role")
+    promote_parser.add_argument("id", help="Agent ID")
+    promote_parser.add_argument("--to", required=True, help="Target role template name")
+    promote_parser.add_argument("--probation", type=int, default=14, help="Probation days (default: 14)")
+
+    probation_parser = agent_sub.add_parser("probation", help="Manage agent probation")
+    probation_parser.add_argument("id", help="Agent ID")
+    probation_group = probation_parser.add_mutually_exclusive_group(required=True)
+    probation_group.add_argument("--confirm", action="store_true", help="Confirm promotion")
+    probation_group.add_argument("--revert", action="store_true", help="Revert promotion")
+    probation_group.add_argument("--extend", type=int, metavar="DAYS", help="Extend probation")
+
     # template
     template_parser = subparsers.add_parser("template", help="Template management")
     template_sub = template_parser.add_subparsers(dest="template_command")
@@ -831,6 +1034,11 @@ def build_parser() -> argparse.ArgumentParser:
     # budget
     budget_parser = subparsers.add_parser("budget", help="Show consciousness budget status")
     budget_parser.add_argument("--agent", help="Show detail for a specific agent")
+
+    # portal
+    portal_parser = subparsers.add_parser("portal", help="Start the web portal")
+    portal_parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    portal_parser.add_argument("--port", type=int, default=8400, help="Bind port (default: 8400)")
 
     # cluster
     cluster_parser = subparsers.add_parser("cluster", help="Cluster management")
@@ -869,8 +1077,22 @@ def main() -> None:
             cmd_agent_sleep(args)
         elif args.agent_command == "move":
             cmd_agent_move(args)
+        elif args.agent_command == "snapshot":
+            cmd_agent_snapshot(args)
+        elif args.agent_command == "snapshots":
+            cmd_agent_snapshots(args)
+        elif args.agent_command == "rollback":
+            cmd_agent_rollback(args)
+        elif args.agent_command == "clone":
+            cmd_agent_clone(args)
+        elif args.agent_command == "promote":
+            cmd_agent_promote(args)
+        elif args.agent_command == "probation":
+            cmd_agent_probation(args)
         else:
             parser.parse_args(["agent", "--help"])
+    elif args.command == "portal":
+        cmd_portal(args)
     elif args.command == "budget":
         cmd_budget(args)
     elif args.command == "cluster":
