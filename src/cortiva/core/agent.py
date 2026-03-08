@@ -8,6 +8,7 @@ across sleep cycles via markdown files on disk.
 
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -205,6 +206,12 @@ class Agent:
             return path.read_text(encoding="utf-8")
         return ""
 
+    def write_outbox(self, filename: str, content: str) -> None:
+        """Write a file to the outbox/ subdirectory."""
+        path = self.outbox_path(filename)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
     def flush_outbox(self) -> dict[str, str]:
         """Read all files in outbox/, return as {filename: content}, then delete them."""
         outbox_dir = self.directory / "outbox"
@@ -216,6 +223,58 @@ class Agent:
                 result[path.name] = path.read_text(encoding="utf-8")
                 path.unlink()
         return result
+
+    # ----- Runtime state persistence -----
+
+    def persist_runtime_state(self) -> None:
+        """Serialize in-memory runtime state to today/ as JSON files.
+
+        Writes task_queue.json and exception_pile.json so the portal
+        and other tools can read agent metrics without the fabric running.
+        """
+        if self.task_queue is None:
+            return
+
+        # task_queue.json
+        tq_data = {
+            "tasks": [
+                {
+                    "id": t.id,
+                    "description": t.description,
+                    "status": t.status,
+                    "priority": t.priority,
+                    "outcome": t.outcome,
+                    "error": t.error,
+                }
+                for t in self.task_queue.tasks
+            ],
+            "replan_count": self.task_queue.replan_count,
+            "summary": self.task_queue.completion_summary(),
+        }
+        self.write_today("task_queue.json", json.dumps(tq_data, indent=2))
+
+        # exception_pile.json
+        exc_data = [
+            {
+                "id": t.id,
+                "description": t.description,
+                "error": t.error,
+            }
+            for t in self.task_queue.exceptions
+        ]
+        self.write_today("exception_pile.json", json.dumps(exc_data, indent=2))
+
+    def persist_familiarity(self, signals: list[dict[str, Any]]) -> None:
+        """Write accumulated familiarity signals to today/familiarity_signals.json."""
+        self.write_today("familiarity_signals.json", json.dumps(signals, indent=2))
+
+    def reset_today(self) -> None:
+        """Clear the today/ directory for a new day cycle."""
+        today_dir = self.directory / "today"
+        if today_dir.is_dir():
+            for path in today_dir.iterdir():
+                if path.is_file():
+                    path.unlink()
 
     # ----- State transitions -----
 

@@ -174,6 +174,8 @@ class Fabric:
         self.daily_consciousness_limit = daily_consciousness_limit
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
+        # Per-agent accumulated familiarity signals for today
+        self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
 
     def _budget_alert(self, agent_id: str, message: str, status: Any) -> None:
         """Post budget alerts to the ops channel."""
@@ -286,8 +288,13 @@ class Fabric:
         agent.transition(AgentState.WAKING)
         logger.info(f"Waking agent: {agent_id}")
 
-        # Migrate flat layout if needed, then load identity
+        # Migrate flat layout if needed
         agent.migrate_flat_layout()
+
+        # Reset today/ for a fresh day cycle
+        agent.reset_today()
+        self._familiarity_signals[agent_id] = []
+
         identity = agent.read_all_identity()
 
         # Check for pending messages
@@ -326,6 +333,7 @@ class Fabric:
                 agent.spend_consciousness()
                 agent.write_identity("plan", response.content)
                 agent.task_queue = _parse_plan(response.content)
+                agent.persist_runtime_state()
                 logger.info(f"Agent {agent_id} has planned their day")
         elif agent.spend_consciousness():
             response = await self.consciousness.think(
@@ -336,6 +344,7 @@ class Fabric:
             )
             agent.write_identity("plan", response.content)
             agent.task_queue = _parse_plan(response.content)
+            agent.persist_runtime_state()
             logger.info(f"Agent {agent_id} has planned their day")
 
         agent.transition(AgentState.EXECUTING)
@@ -392,6 +401,8 @@ class Fabric:
                 )
                 logger.info(f"Agent {agent_id} reflected and updated identity")
 
+        # Final runtime state persistence before clearing
+        agent.persist_runtime_state()
         agent.task_queue = None
         agent.transition(AgentState.SLEEPING)
         logger.info(f"Agent {agent_id} is now sleeping")
@@ -448,8 +459,9 @@ class Fabric:
         result["task"] = task.description
         result["conscious_call"] = True
 
-        # Write updated plan to disk
+        # Write updated plan and runtime state to disk
         self._write_plan(agent)
+        agent.persist_runtime_state()
 
         return result
 
@@ -463,8 +475,16 @@ class Fabric:
         if self.budget_manager:
             self.budget_manager.record_task_attempt(agent.id)
 
-        # Compute familiarity signal from memory
+        # Compute familiarity signal from memory and accumulate for persistence
         familiarity = await self.familiarity_engine.assess(agent.id, task.description)
+        signals = self._familiarity_signals.setdefault(agent.id, [])
+        signals.append({
+            "task": task.description,
+            "strength": familiarity.strength,
+            "valence": familiarity.valence,
+            "match_count": familiarity.match_count,
+        })
+        agent.persist_familiarity(signals)
 
         if self.routine:
             # Ask the routine layer whether this can be handled procedurally
@@ -592,21 +612,28 @@ class Fabric:
             updated = current.rstrip() + "\n\n" + suffix.procedure_update + "\n"
             agent.write_identity("procedures", updated)
 
-        # Send inter-agent messages via channel adapter
-        if suffix.messages and self.channel:
-            for msg in suffix.messages:
-                recipient = msg.get("to", "")
-                content = msg.get("content", "")
-                if recipient and content:
-                    await self.channel.send(
-                        sender=agent.id,
-                        recipient=recipient,
-                        content=content,
-                    )
-                    self.communication_tracker.record(agent.id, recipient)
+        # Send inter-agent messages via channel adapter and persist to outbox
+        if suffix.messages:
+            import json as _json
+            agent.write_outbox("messages.json", _json.dumps(suffix.messages, indent=2))
+            if self.channel:
+                for msg in suffix.messages:
+                    recipient = msg.get("to", "")
+                    content = msg.get("content", "")
+                    if recipient and content:
+                        await self.channel.send(
+                            sender=agent.id,
+                            recipient=recipient,
+                            content=content,
+                        )
+                        self.communication_tracker.record(agent.id, recipient)
 
-        # Log escalation request
+        # Log escalation request and persist to outbox
         if suffix.escalation:
+            import json as _json
+            agent.write_outbox("escalations.json", _json.dumps(
+                {"task": task.description, "escalation": suffix.escalation}, indent=2,
+            ))
             logger.warning(
                 f"Agent {agent.id} escalation on '{task.description}': "
                 f"{suffix.escalation}"

@@ -147,6 +147,65 @@ class TestAgentTodayOutbox:
         agent = Agent(id="test-01", directory=tmp_path / "test-01")
         assert agent.flush_outbox() == {}
 
+    def test_write_outbox(self, tmp_path: Path) -> None:
+        agent = Agent(id="test-01", directory=tmp_path / "test-01")
+        agent.write_outbox("escalations.json", '{"task": "review"}')
+        assert agent.read_outbox("escalations.json") == '{"task": "review"}'
+
+
+class TestRuntimePersistence:
+    def test_persist_runtime_state(self, tmp_path: Path) -> None:
+        import json
+        agent = Agent(id="test-01", directory=tmp_path / "test-01")
+        agent.ensure_workspace()
+        agent.task_queue = TaskQueue(
+            tasks=[
+                Task(id="t1", description="Write tests", status="done", outcome="All pass"),
+                Task(id="t2", description="Fix bug", status="pending"),
+            ],
+            exceptions=[Task(id="t3", description="Deploy", error="Timeout")],
+            replan_count=1,
+        )
+        agent.persist_runtime_state()
+
+        tq = json.loads(agent.read_today("task_queue.json"))
+        assert len(tq["tasks"]) == 2
+        assert tq["tasks"][0]["status"] == "done"
+        assert tq["replan_count"] == 1
+        assert tq["summary"]["done"] == 1
+
+        exc = json.loads(agent.read_today("exception_pile.json"))
+        assert len(exc) == 1
+        assert exc[0]["error"] == "Timeout"
+
+    def test_persist_runtime_state_noop_without_queue(self, tmp_path: Path) -> None:
+        agent = Agent(id="test-01", directory=tmp_path / "test-01")
+        agent.persist_runtime_state()  # should not raise
+        assert agent.read_today("task_queue.json") == ""
+
+    def test_persist_familiarity(self, tmp_path: Path) -> None:
+        import json
+        agent = Agent(id="test-01", directory=tmp_path / "test-01")
+        signals = [
+            {"task": "Review PR", "strength": "familiar", "valence": "positive", "match_count": 3},
+        ]
+        agent.persist_familiarity(signals)
+        loaded = json.loads(agent.read_today("familiarity_signals.json"))
+        assert loaded[0]["strength"] == "familiar"
+
+    def test_reset_today(self, tmp_path: Path) -> None:
+        agent = Agent(id="test-01", directory=tmp_path / "test-01")
+        agent.ensure_workspace()
+        agent.write_today("plan.md", "# Plan")
+        agent.write_today("task_queue.json", "{}")
+        assert agent.read_today("plan.md") != ""
+
+        agent.reset_today()
+        assert agent.read_today("plan.md") == ""
+        assert agent.read_today("task_queue.json") == ""
+        # Directory itself still exists
+        assert (agent.directory / "today").is_dir()
+
 
 # ---------------------------------------------------------------------------
 # Memory adapter tests
