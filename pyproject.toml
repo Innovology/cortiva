@@ -96,3 +96,6 @@ strict = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: end-to-end integration tests (may require optional deps)",
+]

@@ -157,37 +157,48 @@ class TestClaudeCodeAdapter:
 
 class TestCodexAdapter:
     @pytest.mark.asyncio
-    async def test_invoke_raises_not_implemented(self, tmp_path: Path) -> None:
+    async def test_invoke_binary_not_found(self, tmp_path: Path) -> None:
         adapter = CodexAdapter()
-        with pytest.raises(NotImplementedError):
-            await adapter.invoke("test", tmp_path)
-
-    @pytest.mark.asyncio
-    async def test_is_available_false(self) -> None:
-        adapter = CodexAdapter()
-        assert await adapter.is_available() is False
+        adapter._which_cache = None
+        result = await adapter.invoke("test", tmp_path)
+        # If codex isn't installed, we get an error response
+        assert result.is_error is True
+        assert "not found" in result.content or "timed out" in result.content
 
     @pytest.mark.asyncio
     async def test_capabilities(self) -> None:
         adapter = CodexAdapter()
         caps = await adapter.capabilities()
         assert isinstance(caps, ToolCapabilities)
+        assert caps.can_edit_files is True
+        assert caps.can_run_bash is True
+
+    def test_init_params(self) -> None:
+        adapter = CodexAdapter(timeout=60.0, model="o3", approval_mode="full-auto")
+        assert adapter._timeout == 60.0
+        assert adapter._model == "o3"
+        assert adapter._approval_mode == "full-auto"
 
 
 class TestAiderAdapter:
     @pytest.mark.asyncio
-    async def test_invoke_raises_not_implemented(self, tmp_path: Path) -> None:
+    async def test_invoke_binary_not_found(self, tmp_path: Path) -> None:
         adapter = AiderAdapter()
-        with pytest.raises(NotImplementedError):
-            await adapter.invoke("test", tmp_path)
-
-    @pytest.mark.asyncio
-    async def test_is_available_false(self) -> None:
-        adapter = AiderAdapter()
-        assert await adapter.is_available() is False
+        adapter._which_cache = None
+        result = await adapter.invoke("test", tmp_path)
+        assert result.is_error is True
+        assert "not found" in result.content or "timed out" in result.content
 
     @pytest.mark.asyncio
     async def test_capabilities(self) -> None:
         adapter = AiderAdapter()
         caps = await adapter.capabilities()
         assert isinstance(caps, ToolCapabilities)
+        assert caps.can_edit_files is True
+        assert caps.can_run_bash is False
+
+    def test_init_params(self) -> None:
+        adapter = AiderAdapter(timeout=120.0, model="gpt-4o", auto_commits=True)
+        assert adapter._timeout == 120.0
+        assert adapter._model == "gpt-4o"
+        assert adapter._auto_commits is True

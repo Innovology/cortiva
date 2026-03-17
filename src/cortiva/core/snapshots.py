@@ -258,3 +258,162 @@ def delete_snapshot(agent_dir: Path, snapshot_id: str) -> bool:
         return False
     shutil.rmtree(snap_path)
     return True
+
+
+def enforce_retention(agent_dir: Path, max_snapshots: int = 20) -> list[str]:
+    """Delete oldest snapshots to stay within the retention limit.
+
+    Returns the list of deleted snapshot IDs.
+    """
+    snapshots = list_snapshots(agent_dir)  # newest first
+    if len(snapshots) <= max_snapshots:
+        return []
+
+    to_delete = snapshots[max_snapshots:]
+    deleted: list[str] = []
+    for snap in to_delete:
+        if delete_snapshot(agent_dir, snap.snapshot_id):
+            deleted.append(snap.snapshot_id)
+    return deleted
+
+
+def export_snapshot(agent_dir: Path, snapshot_id: str, dest: Path) -> Path | None:
+    """Export a snapshot as a tar.gz archive.
+
+    Returns the path to the created archive, or None if the snapshot
+    doesn't exist.
+    """
+    import tarfile
+
+    snap_path = get_snapshot(agent_dir, snapshot_id)
+    if snap_path is None:
+        return None
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    archive_path = dest if str(dest).endswith(".tar.gz") else dest.with_suffix(".tar.gz")
+
+    with tarfile.open(archive_path, "w:gz") as tar:
+        tar.add(snap_path, arcname=snapshot_id)
+
+    return archive_path
+
+
+def import_snapshot(agent_dir: Path, archive_path: Path) -> SnapshotMetadata | None:
+    """Import a snapshot from a tar.gz archive.
+
+    Extracts the archive into the agent's ``.snapshots`` directory.
+    Returns the imported snapshot metadata, or None on failure.
+    """
+    import tarfile
+
+    if not archive_path.exists():
+        return None
+
+    snap_root = _snapshot_dir(agent_dir)
+    snap_root.mkdir(parents=True, exist_ok=True)
+
+    with tarfile.open(archive_path, "r:gz") as tar:
+        # Security: check for path traversal
+        for member in tar.getmembers():
+            resolved = (snap_root / member.name).resolve()
+            if not str(resolved).startswith(str(snap_root.resolve())):
+                return None
+        tar.extractall(path=snap_root)
+
+    # Find the extracted snapshot directory and read its metadata
+    for entry in snap_root.iterdir():
+        meta_path = entry / "snapshot.json"
+        if meta_path.exists():
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta = SnapshotMetadata.from_dict(data)
+            # Update agent_id to match destination agent
+            meta.agent_id = agent_dir.name
+            meta_path.write_text(
+                json.dumps(meta.to_dict(), indent=2), encoding="utf-8"
+            )
+            return meta
+
+    return None
+
+
+def export_memory(agent_dir: Path, dest: Path) -> Path:
+    """Export an agent's full state (identity + journal + snapshots) as tar.gz.
+
+    This is a comprehensive export for cross-cluster portability.
+    """
+    import tarfile
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    archive_path = dest if str(dest).endswith(".tar.gz") else dest.with_suffix(".tar.gz")
+    agent_id = agent_dir.name
+
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for subdir in ("identity", "journal"):
+            src = agent_dir / subdir
+            if src.is_dir():
+                tar.add(src, arcname=f"{agent_id}/{subdir}")
+        # Include snapshots
+        snap_dir = _snapshot_dir(agent_dir)
+        if snap_dir.is_dir():
+            tar.add(snap_dir, arcname=f"{agent_id}/.snapshots")
+
+    return archive_path
+
+
+class SnapshotManager:
+    """High-level manager wrapping snapshot operations with retention policy.
+
+    Parameters
+    ----------
+    agent_dir:
+        The agent's root directory.
+    max_snapshots:
+        Maximum number of snapshots to retain. Oldest are pruned after
+        each ``create()`` call.
+    """
+
+    def __init__(self, agent_dir: Path, max_snapshots: int = 20) -> None:
+        self.agent_dir = agent_dir
+        self.max_snapshots = max_snapshots
+
+    def create(
+        self,
+        name: str = "",
+        description: str = "",
+        trigger: str = "manual",
+        node_id: str | None = None,
+    ) -> SnapshotMetadata:
+        """Create a snapshot and enforce retention policy."""
+        meta = create_snapshot(
+            self.agent_dir,
+            name=name,
+            description=description,
+            trigger=trigger,
+            node_id=node_id,
+        )
+        enforce_retention(self.agent_dir, self.max_snapshots)
+        return meta
+
+    def list(self) -> list[SnapshotMetadata]:
+        return list_snapshots(self.agent_dir)
+
+    def get(self, snapshot_id: str) -> Path | None:
+        return get_snapshot(self.agent_dir, snapshot_id)
+
+    def restore(self, snapshot_id: str, restore_journal: bool = True) -> bool:
+        return restore_snapshot(self.agent_dir, snapshot_id, restore_journal)
+
+    def clone(self, snapshot_id: str, new_agent_dir: Path) -> bool:
+        return clone_from_snapshot(self.agent_dir, snapshot_id, new_agent_dir)
+
+    def delete(self, snapshot_id: str) -> bool:
+        return delete_snapshot(self.agent_dir, snapshot_id)
+
+    def export(self, snapshot_id: str, dest: Path) -> Path | None:
+        return export_snapshot(self.agent_dir, snapshot_id, dest)
+
+    def import_archive(self, archive_path: Path) -> SnapshotMetadata | None:
+        return import_snapshot(self.agent_dir, archive_path)
+
+    def export_full(self, dest: Path) -> Path:
+        return export_memory(self.agent_dir, dest)

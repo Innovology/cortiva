@@ -26,6 +26,7 @@ from cortiva.adapters.protocols import (
     TerminalAgentAdapter,
 )
 from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
+from cortiva.core.events import EventBus, FabricEvent
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
 from cortiva.core.cluster import Cluster, ClusterNode, move_agent
@@ -178,6 +179,8 @@ class Fabric:
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
         # Event listeners for portal/WebSocket integration
         self._event_listeners: list[Any] = []
+        # Structured event bus (new — used alongside legacy listeners)
+        self.event_bus: EventBus = EventBus()
 
     # ----- Event system -----
 
@@ -190,7 +193,7 @@ class Fabric:
         self._event_listeners.append(listener)
 
     def _emit(self, event_type: str, **data: Any) -> None:
-        """Emit an event to all registered listeners."""
+        """Emit an event to all registered listeners and the EventBus."""
         import time as _time
         event = {"type": event_type, "timestamp": _time.time(), **data}
         for listener in self._event_listeners:
@@ -198,6 +201,9 @@ class Fabric:
                 listener(event_type, event)
             except Exception:
                 pass  # Don't let listener errors break the fabric
+        # Also emit to the structured EventBus
+        bus_data = {k: v for k, v in data.items() if k != "agent_id"}
+        self.event_bus.emit_simple(event_type, agent_id=data.get("agent_id"), **bus_data)
 
     def _budget_alert(self, agent_id: str, message: str, status: Any) -> None:
         """Post budget alerts to the ops channel."""
