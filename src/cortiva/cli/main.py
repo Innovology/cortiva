@@ -437,6 +437,13 @@ def cmd_bootstrap(args: argparse.Namespace) -> None:
 
 def cmd_start(args: argparse.Namespace) -> None:
     """Start the Cortiva fabric."""
+    # Set process name so it shows as "cortiva" in Activity Monitor / ps
+    try:
+        import setproctitle
+        setproctitle.setproctitle("cortiva")
+    except ImportError:
+        pass
+
     config_path = Path("cortiva.yaml")
     if not config_path.exists():
         print("Not a Cortiva workspace. Run 'cortiva init <name>' first.")
