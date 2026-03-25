@@ -435,53 +435,12 @@ def cmd_bootstrap(args: argparse.Namespace) -> None:
         print("  cortiva agent wake dev-cortiva")
 
 
-def _ensure_home_workspace() -> Path:
-    """Create a minimal ~/.cortiva workspace if it doesn't exist."""
-    home_dir = Path.home() / ".cortiva"
-    home_dir.mkdir(parents=True, exist_ok=True)
-    (home_dir / "agents").mkdir(exist_ok=True)
-
-    config_path = home_dir / "cortiva.yaml"
-    if not config_path.exists():
-        config_path.write_text(yaml.dump({
-            "fabric": {
-                "name": "cortiva-hq-node",
-                "heartbeat_interval": 30,
-            },
-            "memory": {
-                "adapter": "inmemory",
-                "config": {},
-            },
-            "consciousness": {
-                "provider": "anthropic",
-                "model": "claude-sonnet-4-20250514",
-                "budget": {
-                    "daily_limit": 1000,
-                    "per_agent_default": 50,
-                },
-            },
-            "agents": {
-                "directory": str(home_dir / "agents"),
-            },
-        }, sort_keys=False))
-        print(f"Created default config: {config_path}")
-
-    return config_path
-
-
 def cmd_start(args: argparse.Namespace) -> None:
     """Start the Cortiva fabric."""
-    use_home = getattr(args, "home", False)
-
-    if use_home:
-        config_path = _ensure_home_workspace()
-        os.chdir(config_path.parent)
-    else:
-        config_path = Path("cortiva.yaml")
-        if not config_path.exists():
-            print("Not a Cortiva workspace. Run 'cortiva init <name>' first.")
-            print("Or use 'cortiva start --home' to run from ~/.cortiva")
-            sys.exit(1)
+    config_path = Path("cortiva.yaml")
+    if not config_path.exists():
+        print("Not a Cortiva workspace. Run 'cortiva init <name>' first.")
+        sys.exit(1)
 
     from cortiva.core.config import load_and_build
     from cortiva.core.ipc import (
@@ -1116,7 +1075,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     # start
     start_parser = subparsers.add_parser("start", help="Start the fabric")
-    start_parser.add_argument("--home", action="store_true", help="Use ~/.cortiva as workspace (for HQ-deployed agents)")
     start_parser.add_argument("--portal", action="store_true", help="Also start the web portal")
     start_parser.add_argument("--portal-host", default="127.0.0.1", help="Portal bind host")
     start_parser.add_argument("--portal-port", type=int, default=8400, help="Portal bind port")
