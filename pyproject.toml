@@ -58,6 +58,7 @@ portal = ["fastapi[standard]>=0.115", "uvicorn>=0.34"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
     "ruff>=0.8",
     "mypy>=1.13",
 ]
@@ -95,6 +96,14 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[tool.coverage.run]
+source = ["cortiva"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 70
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
