@@ -19,3 +19,5 @@ the framework without any external dependencies.
 |---------|-------------|
 | [basic_lifecycle.py](basic_lifecycle.py) | Discover, wake, cycle, and sleep an agent using in-memory adapters and a mock consciousness layer. |
 | [custom_adapter.py](custom_adapter.py) | Write a custom `MemoryAdapter` that wraps `InMemoryAdapter` with logging. Shows how to implement the protocol and wire the adapter into a `Fabric`. |
+| [isolation_example.py](isolation_example.py) | Demonstrates all three isolation tiers: path validation, memory guards, env filtering, and container command generation. |
+| [cortiva-isolated.yaml](cortiva-isolated.yaml) | Sample `cortiva.yaml` with isolation config for all three tiers (commented) and browser sidecar setup. |

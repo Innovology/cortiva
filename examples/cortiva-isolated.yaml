@@ -1,0 +1,49 @@
+# Cortiva configuration with isolation enabled.
+#
+# This example shows all isolation options. Uncomment the tier
+# you want to use.
+
+fabric:
+  name: cortiva-isolated
+  heartbeat_interval: 30
+
+memory:
+  adapter: inmemory
+
+consciousness:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+
+agents:
+  directory: ./agents
+
+# --- Isolation configuration ---
+isolation:
+  # Tier 1: Soft — path traversal prevention, memory guards, governance
+  # tier: soft
+
+  # Tier 2: OS — soft + env filtering, per-agent TMPDIR
+  # tier: os
+  # allowed_env:
+  #   - PATH
+  #   - HOME
+  #   - ANTHROPIC_API_KEY
+
+  # Tier 3: Container — OS + Docker/Podman per agent
+  tier: container
+  container:
+    runtime: docker
+    cpu_limit: "1.0"
+    memory_limit: "512m"
+    shm_size: "256m"
+    network: bridge
+    image: python:3.13-slim
+
+    # Optional: sidecar browser for agents that drive web UIs
+    # browser_endpoint: "ws://browserless:3000"
+
+schedules:
+  dev-cortiva:
+    wake: "09:00 mon-fri"
+    replan: "13:00"
+    sleep: "17:00"
