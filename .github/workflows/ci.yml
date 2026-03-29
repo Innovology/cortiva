@@ -45,4 +45,4 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: pytest
+      - run: pytest --cov=cortiva --cov-report=xml --cov-report=term-missing
