@@ -50,14 +50,30 @@ class GoogleAdapter:
         model: str = "gemini-2.0-flash",
         api_key: str | None = None,
         max_tokens: int = 4096,
+        per_agent_keys: dict[str, str] | None = None,
     ):
         self.model = model
-        self._api_key = api_key or os.environ.get("GOOGLE_API_KEY")
+        self._default_key = api_key or os.environ.get("GOOGLE_API_KEY")
         self.max_tokens = max_tokens
-        self._client: Any = None
+        self._per_agent_keys = per_agent_keys or {}
+        self._clients: dict[str, Any] = {}
+        self._default_client: Any = None
 
-    def _get_client(self) -> Any:
-        if self._client is None:
+    def _get_client(self, agent_id: str = "") -> Any:
+        agent_key = self._per_agent_keys.get(agent_id)
+        if agent_key:
+            if agent_id not in self._clients:
+                try:
+                    from google import genai
+                except ImportError:
+                    raise ImportError(
+                        "google-genai is not installed. "
+                        "Install it with: pip install google-genai"
+                    )
+                self._clients[agent_id] = genai.Client(api_key=agent_key)
+            return self._clients[agent_id]
+
+        if self._default_client is None:
             try:
                 from google import genai
             except ImportError:
@@ -65,8 +81,8 @@ class GoogleAdapter:
                     "google-genai is not installed. "
                     "Install it with: pip install google-genai"
                 )
-            self._client = genai.Client(api_key=self._api_key)
-        return self._client
+            self._default_client = genai.Client(api_key=self._default_key)
+        return self._default_client
 
     async def think(
         self,
@@ -78,7 +94,7 @@ class GoogleAdapter:
         max_tokens: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ConsciousResponse:
-        client = self._get_client()
+        client = self._get_client(agent_id)
 
         system_instruction = (
             "You are an autonomous agent in an organisation. "

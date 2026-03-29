@@ -165,7 +165,7 @@ class TestOpenAICompatibleAdapter:
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = mock_response
-        adapter._client = mock_client
+        adapter._default_client = mock_client
 
         resp = await adapter.think("agent-01", "context", "do something")
         assert resp.content == "I completed the task."
@@ -188,7 +188,7 @@ class TestGoogleAdapter:
         from cortiva.adapters.consciousness.google import GoogleAdapter
         adapter = GoogleAdapter(model="gemini-2.5-pro", api_key="test-key", max_tokens=8192)
         assert adapter.model == "gemini-2.5-pro"
-        assert adapter._api_key == "test-key"
+        assert adapter._default_key == "test-key"
         assert adapter.max_tokens == 8192
 
     def test_get_client_raises_without_sdk(self) -> None:

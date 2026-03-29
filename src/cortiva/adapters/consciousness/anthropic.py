@@ -42,6 +42,10 @@ class AnthropicConsciousnessAdapter:
     Each invocation is a fresh context window. The agent's identity
     and state are provided in the context parameter, assembled by
     the subconscious layer.
+
+    When ``per_agent_keys`` is provided, each agent gets its own API
+    client with a dedicated key.  This prevents credential sharing
+    and enables per-agent billing visibility at the provider level.
     """
 
     def __init__(
@@ -49,23 +53,45 @@ class AnthropicConsciousnessAdapter:
         model: str = "claude-sonnet-4-20250514",
         api_key: str | None = None,
         max_tokens: int = 4096,
+        per_agent_keys: dict[str, str] | None = None,
     ):
         self.model = model
         self.max_tokens = max_tokens
-        self._client = None
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self._default_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self._per_agent_keys = per_agent_keys or {}
+        self._clients: dict[str, Any] = {}
+        self._default_client: Any = None
 
-    def _get_client(self) -> Any:
-        if self._client is None:
+    def _get_client(self, agent_id: str = "") -> Any:
+        """Return a client for the given agent.
+
+        If per-agent keys are configured and the agent has one, a
+        dedicated client is returned.  Otherwise the shared default
+        client is used.  Each client is lazily created and cached.
+        """
+        agent_key = self._per_agent_keys.get(agent_id)
+        if agent_key:
+            if agent_id not in self._clients:
+                try:
+                    import anthropic
+                    self._clients[agent_id] = anthropic.Anthropic(api_key=agent_key)
+                except ImportError:
+                    raise ImportError(
+                        "anthropic is not installed. "
+                        "Install it with: pip install anthropic"
+                    )
+            return self._clients[agent_id]
+
+        if self._default_client is None:
             try:
                 import anthropic
-                self._client = anthropic.Anthropic(api_key=self._api_key)
+                self._default_client = anthropic.Anthropic(api_key=self._default_key)
             except ImportError:
                 raise ImportError(
                     "anthropic is not installed. "
                     "Install it with: pip install anthropic"
                 )
-        return self._client
+        return self._default_client
 
     async def think(
         self,
@@ -77,7 +103,7 @@ class AnthropicConsciousnessAdapter:
         max_tokens: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ConsciousResponse:
-        client = self._get_client()
+        client = self._get_client(agent_id)
 
         system_prompt = (
             "You are an autonomous agent in an organisation. "

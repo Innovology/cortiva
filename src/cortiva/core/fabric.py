@@ -36,6 +36,7 @@ from cortiva.core.familiarity import FamiliarityEngine
 from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
 from cortiva.core.living_summary import LivingSummaryRegenerator
+from cortiva.core.session import SessionManager
 from cortiva.core.models import ClusterModels
 from cortiva.core.reflection import ReflectionSuffix, parse_reflection_suffix
 from cortiva.core.scheduler import Scheduler
@@ -157,6 +158,7 @@ class Fabric:
             memory=memory, consciousness=consciousness,
         )
         self.scheduler = Scheduler()
+        self.session_manager = SessionManager()
         self.communication_tracker = CommunicationTracker()
         self.cluster_metrics = ClusterMetrics(
             communication_tracker=self.communication_tracker,
@@ -328,6 +330,9 @@ class Fabric:
         agent.reset_today()
         self._familiarity_signals[agent_id] = []
 
+        # Start a conversation session for the day
+        self.session_manager.start(agent_id)
+
         identity = agent.read_all_identity()
 
         # Check for pending messages
@@ -351,6 +356,9 @@ class Fabric:
             "- [ ] Task description (for normal tasks)\n"
         )
 
+        # Validate context belongs to this agent
+        self.session_manager.validate_agent(agent_id, context)
+
         if self.budget_manager:
             approval = self.budget_manager.request_budget(agent_id, "normal")
             if approval.approved:
@@ -360,6 +368,9 @@ class Fabric:
                     prompt=planning_prompt,
                     priority=Priority.NORMAL,
                     metadata={"call_type": "plan"},
+                )
+                self.session_manager.record(
+                    agent_id, planning_prompt, response.content, call_type="plan",
                 )
                 self.budget_manager.record_usage(
                     agent_id, approval.backend, response.tokens_in, response.tokens_out,
@@ -376,6 +387,9 @@ class Fabric:
                 prompt=planning_prompt,
                 priority=Priority.NORMAL,
                 metadata={"call_type": "plan"},
+            )
+            self.session_manager.record(
+                agent_id, planning_prompt, response.content, call_type="plan",
             )
             agent.write_identity("plan", response.content)
             agent.task_queue = _parse_plan(response.content)
@@ -442,7 +456,8 @@ class Fabric:
         agent.task_queue = None
         agent.transition(AgentState.SLEEPING)
 
-        # Clean up isolation resources (tmpdirs, containers, etc.)
+        # End conversation session and clean up isolation resources
+        self.session_manager.end(agent_id)
         self.isolation.cleanup(agent_id)
 
         self._emit("agent.sleep", agent_id=agent_id, state=agent.state.value)
@@ -589,6 +604,15 @@ class Fabric:
         context = await self.context_builder.build_execution_context(
             agent, identity, messages, task.description, assessment=routine_assessment,
         )
+
+        # Inject session context (what the agent has done so far today)
+        session_context = self.session_manager.render(agent.id)
+        if session_context:
+            context = context + "\n\n---\n\n" + session_context
+
+        # Validate context belongs to this agent
+        self.session_manager.validate_agent(agent.id, context)
+
         prompt = (
             f"Execute this task: {task.description}\n\n"
             "Describe what you did and the outcome."
@@ -600,6 +624,11 @@ class Fabric:
             prompt=prompt,
             priority=Priority.HIGH if task.priority >= 1 else Priority.NORMAL,
             metadata={"call_type": "execute", "task_execution": True},
+        )
+
+        # Record in session for continuity across tasks
+        self.session_manager.record(
+            agent.id, task.description, response.content, call_type="execute",
         )
 
         if self.budget_manager and approval and approval.backend:

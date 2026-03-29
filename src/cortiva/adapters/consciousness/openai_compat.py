@@ -58,15 +58,39 @@ class OpenAICompatibleAdapter:
         api_key: str | None = None,
         base_url: str | None = None,
         max_tokens: int = 4096,
+        per_agent_keys: dict[str, str] | None = None,
     ):
         self.model = model
         self.max_tokens = max_tokens
-        self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self._default_key = api_key or os.environ.get("OPENAI_API_KEY")
         self._base_url = base_url
-        self._client: Any = None
+        self._per_agent_keys = per_agent_keys or {}
+        self._clients: dict[str, Any] = {}
+        self._default_client: Any = None
 
-    def _get_client(self) -> Any:
-        if self._client is None:
+    def _get_client(self, agent_id: str = "") -> Any:
+        """Return a client for the given agent.
+
+        Per-agent keys get dedicated clients; all others share the
+        default client.
+        """
+        agent_key = self._per_agent_keys.get(agent_id)
+        if agent_key:
+            if agent_id not in self._clients:
+                try:
+                    from openai import OpenAI
+                except ImportError:
+                    raise ImportError(
+                        "openai is not installed. "
+                        "Install it with: pip install openai"
+                    )
+                kwargs: dict[str, Any] = {"api_key": agent_key}
+                if self._base_url:
+                    kwargs["base_url"] = self._base_url
+                self._clients[agent_id] = OpenAI(**kwargs)
+            return self._clients[agent_id]
+
+        if self._default_client is None:
             try:
                 from openai import OpenAI
             except ImportError:
@@ -74,11 +98,11 @@ class OpenAICompatibleAdapter:
                     "openai is not installed. "
                     "Install it with: pip install openai"
                 )
-            kwargs: dict[str, Any] = {"api_key": self._api_key}
+            kwargs2: dict[str, Any] = {"api_key": self._default_key}
             if self._base_url:
-                kwargs["base_url"] = self._base_url
-            self._client = OpenAI(**kwargs)
-        return self._client
+                kwargs2["base_url"] = self._base_url
+            self._default_client = OpenAI(**kwargs2)
+        return self._default_client
 
     async def think(
         self,
@@ -90,7 +114,7 @@ class OpenAICompatibleAdapter:
         max_tokens: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ConsciousResponse:
-        client = self._get_client()
+        client = self._get_client(agent_id)
 
         system_prompt = (
             "You are an autonomous agent in an organisation. "
