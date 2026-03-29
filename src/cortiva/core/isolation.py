@@ -61,11 +61,21 @@ class ContainerConfig:
     memory_limit: str = "512m"
     """Memory limit per agent container."""
 
-    network: str = "none"
-    """Network mode: ``none``, ``bridge``, or ``host``."""
+    shm_size: str = "256m"
+    """Shared memory size.  Increase for agents that drive a browser."""
+
+    network: str = "bridge"
+    """Network mode: ``bridge`` (default — agents can reach external APIs),
+    ``none`` (air-gapped), or ``host``."""
 
     image: str = "python:3.13-slim"
     """Base image for agent containers."""
+
+    browser_endpoint: str = ""
+    """WebSocket URL of a shared browser service (e.g. Browserless,
+    Chrome DevTools Protocol).  When set, ``BROWSER_WS_ENDPOINT`` is
+    injected into the container environment so agents can drive a
+    browser without Chrome installed locally."""
 
 
 @dataclass
@@ -353,6 +363,7 @@ class ContainerIsolation(OSIsolation):
             # Resource limits
             "--cpus", cc.cpu_limit,
             "--memory", cc.memory_limit,
+            f"--shm-size={cc.shm_size}",
             # Network isolation
             f"--network={cc.network}",
             # Mount agent directory only
@@ -364,6 +375,12 @@ class ContainerIsolation(OSIsolation):
         # Pass through allowed env vars
         for key, value in env_vars.items():
             container_cmd.extend(["-e", f"{key}={value}"])
+
+        # Inject browser sidecar endpoint if configured
+        if cc.browser_endpoint:
+            container_cmd.extend([
+                "-e", f"BROWSER_WS_ENDPOINT={cc.browser_endpoint}",
+            ])
 
         # Run as non-root (UID 1000)
         container_cmd.extend(["--user", "1000:1000"])

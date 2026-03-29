@@ -302,6 +302,67 @@ class TestContainerIsolation:
         assert volume_arg.endswith(":/agent:rw")
         assert str(agent_dir.resolve()) in volume_arg
 
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_default_network_is_bridge(
+        self, mock_which: object, tmp_path: Path
+    ) -> None:
+        """Default container network should be bridge for API access."""
+        agent_dir = tmp_path / "agent-1"
+        agent_dir.mkdir()
+        enforcer = ContainerIsolation(agents_dir=tmp_path)
+        envelope = enforcer.prepare_terminal_env("agent-1", ["echo"], agent_dir)
+        assert "--network=bridge" in envelope.cmd
+
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_shm_size_flag(
+        self, mock_which: object, tmp_path: Path
+    ) -> None:
+        agent_dir = tmp_path / "agent-1"
+        agent_dir.mkdir()
+        config = IsolationConfig(
+            tier=IsolationTier.CONTAINER,
+            container=ContainerConfig(shm_size="512m"),
+        )
+        enforcer = ContainerIsolation(agents_dir=tmp_path, config=config)
+        envelope = enforcer.prepare_terminal_env("agent-1", ["echo"], agent_dir)
+        assert "--shm-size=512m" in envelope.cmd
+
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_browser_endpoint_injected(
+        self, mock_which: object, tmp_path: Path
+    ) -> None:
+        agent_dir = tmp_path / "agent-1"
+        agent_dir.mkdir()
+        config = IsolationConfig(
+            tier=IsolationTier.CONTAINER,
+            container=ContainerConfig(
+                browser_endpoint="ws://browserless:3000",
+            ),
+        )
+        enforcer = ContainerIsolation(agents_dir=tmp_path, config=config)
+        envelope = enforcer.prepare_terminal_env("agent-1", ["echo"], agent_dir)
+        assert "-e" in envelope.cmd
+        idx = len(envelope.cmd) - 1
+        found = False
+        for i, arg in enumerate(envelope.cmd):
+            if arg == "-e" and i + 1 < len(envelope.cmd):
+                if envelope.cmd[i + 1] == "BROWSER_WS_ENDPOINT=ws://browserless:3000":
+                    found = True
+                    break
+        assert found, "BROWSER_WS_ENDPOINT not found in container command"
+
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_no_browser_endpoint_when_empty(
+        self, mock_which: object, tmp_path: Path
+    ) -> None:
+        agent_dir = tmp_path / "agent-1"
+        agent_dir.mkdir()
+        enforcer = ContainerIsolation(agents_dir=tmp_path)
+        envelope = enforcer.prepare_terminal_env("agent-1", ["echo"], agent_dir)
+        for i, arg in enumerate(envelope.cmd):
+            if arg == "-e" and i + 1 < len(envelope.cmd):
+                assert "BROWSER_WS_ENDPOINT" not in envelope.cmd[i + 1]
+
     @patch("shutil.which", return_value="/usr/bin/podman")
     def test_podman_runtime(self, mock_which: object, tmp_path: Path) -> None:
         config = IsolationConfig(
