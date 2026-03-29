@@ -38,6 +38,7 @@ class AiderAdapter:
         output_format: str = "json",
         allowed_tools: list[str] | None = None,
         max_turns: int | None = None,
+        env: dict[str, str] | None = None,
     ) -> AgentResponse:
         """Invoke Aider CLI with a prompt."""
         cmd: list[str] = [
@@ -57,6 +58,7 @@ class AiderAdapter:
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=self._timeout

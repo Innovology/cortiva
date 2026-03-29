@@ -62,6 +62,9 @@ dev = [
     "mypy>=1.13",
 ]
 
+# Container isolation (Tier 3) — optional Docker SDK
+container = ["docker>=7.0"]
+
 # All adapters
 all = [
     "engram-core",

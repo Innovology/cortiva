@@ -1,0 +1,74 @@
+# Cortiva Multi-Agent Compose — Tier 3 Isolation
+#
+# Template for deploying multiple isolated agents.
+# Customise agent names, resource limits, and volumes as needed.
+#
+# Usage:
+#   docker compose -f docker-compose.agent.yml up -d
+#
+# Each agent service:
+#   - Has its own isolated filesystem (volume mount)
+#   - Cannot access other agents' workspaces
+#   - Has CPU and memory limits
+#   - Has no network access by default (network_mode: none)
+
+services:
+  # Example: dev-cortiva agent
+  dev-cortiva:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: cortiva-agent-dev-cortiva
+    volumes:
+      - ./agents/dev-cortiva:/agent:rw
+    working_dir: /agent/workspace
+    user: "1000:1000"
+    network_mode: "none"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    environment:
+      - CORTIVA_AGENT_ID=dev-cortiva
+    restart: "no"
+
+  # Example: qa-cortiva agent
+  qa-cortiva:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: cortiva-agent-qa-cortiva
+    volumes:
+      - ./agents/qa-cortiva:/agent:rw
+    working_dir: /agent/workspace
+    user: "1000:1000"
+    network_mode: "none"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    environment:
+      - CORTIVA_AGENT_ID=qa-cortiva
+    restart: "no"
+
+  # Example: pm-cortiva agent
+  pm-cortiva:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: cortiva-agent-pm-cortiva
+    volumes:
+      - ./agents/pm-cortiva:/agent:rw
+    working_dir: /agent/workspace
+    user: "1000:1000"
+    network_mode: "none"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    environment:
+      - CORTIVA_AGENT_ID=pm-cortiva
+    restart: "no"

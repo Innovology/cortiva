@@ -174,16 +174,33 @@ class Agent:
 
         return True
 
+    @staticmethod
+    def _validate_filename(filename: str) -> str:
+        """Reject filenames containing path separators or traversal.
+
+        Raises :class:`ValueError` if *filename* is unsafe.
+        """
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise ValueError(
+                f"Unsafe filename rejected (contains path separator or '..'): {filename!r}"
+            )
+        if not filename or filename in (".", ".."):
+            raise ValueError(f"Invalid filename: {filename!r}")
+        return filename
+
     def today_path(self, filename: str) -> Path:
         """Return path to a file in the today/ subdirectory."""
+        self._validate_filename(filename)
         return self.directory / "today" / filename
 
     def outbox_path(self, filename: str) -> Path:
         """Return path to a file in the outbox/ subdirectory."""
+        self._validate_filename(filename)
         return self.directory / "outbox" / filename
 
     def workspace_path(self, filename: str) -> Path:
         """Return path to a file in the workspace/ subdirectory."""
+        self._validate_filename(filename)
         return self.directory / "workspace" / filename
 
     def read_today(self, filename: str) -> str:

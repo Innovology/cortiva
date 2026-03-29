@@ -34,6 +34,7 @@ from cortiva.core.context import ContextBuilder
 from cortiva.core.discovery import NodeCapabilities
 from cortiva.core.familiarity import FamiliarityEngine
 from cortiva.core.ipc import FabricServer
+from cortiva.core.isolation import NoIsolation
 from cortiva.core.living_summary import LivingSummaryRegenerator
 from cortiva.core.models import ClusterModels
 from cortiva.core.reflection import ReflectionSuffix, parse_reflection_suffix
@@ -133,9 +134,13 @@ class Fabric:
         heartbeat_interval: float = 30.0,
         daily_consciousness_limit: int = 1000,
         budget_manager: ConsciousnessBudgetManager | None = None,
+        isolation: NoIsolation | None = None,
     ):
         self.agents_dir = Path(agents_dir)
         self.agents_dir.mkdir(parents=True, exist_ok=True)
+
+        # Isolation enforcer
+        self.isolation = isolation or NoIsolation(agents_dir=self.agents_dir)
 
         # Pluggable adapters
         self.memory = memory
@@ -436,6 +441,10 @@ class Fabric:
         agent.persist_runtime_state()
         agent.task_queue = None
         agent.transition(AgentState.SLEEPING)
+
+        # Clean up isolation resources (tmpdirs, containers, etc.)
+        self.isolation.cleanup(agent_id)
+
         self._emit("agent.sleep", agent_id=agent_id, state=agent.state.value)
         logger.info(f"Agent {agent_id} is now sleeping")
         return agent
@@ -717,9 +726,15 @@ class Fabric:
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
 
+        # Apply isolation envelope
+        envelope = self.isolation.prepare_terminal_env(
+            agent_id=agent.id, cmd=[], cwd=cwd,
+        )
+
         response = await self.terminal.invoke(
             prompt=prompt,
-            cwd=cwd,
+            cwd=envelope.cwd,
+            env=envelope.env,
         )
 
         if response.is_error:
