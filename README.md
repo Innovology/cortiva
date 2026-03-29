@@ -9,6 +9,12 @@
         the organisational fabric for autonomous agent teams
 ```
 
+<p align="center">
+
+![CI](https://github.com/Innovology/cortiva/actions/workflows/ci.yml/badge.svg) ![Python](https://img.shields.io/badge/python-3.11%2B-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Status](https://img.shields.io/badge/status-pre--alpha-orange)
+
+</p>
+
 Cortiva is an open-source framework for deploying teams of AI agents that operate as an organisation — with persistent identity, experiential learning, governance hierarchies, peer communication, and consciousness budgeting.
 
 Every other framework treats agents as workflow nodes or conversation participants. Cortiva treats them as **employees in a company** — they wake up, plan their day, do their work, talk to colleagues, learn from experience, and reflect before they sleep.
