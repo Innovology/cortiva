@@ -364,8 +364,16 @@ class TerminalAgentAdapter(Protocol):
         output_format: str = "json",
         allowed_tools: list[str] | None = None,
         max_turns: int | None = None,
+        env: dict[str, str] | None = None,
     ) -> AgentResponse:
-        """Invoke the terminal agent with a prompt."""
+        """Invoke the terminal agent with a prompt.
+
+        Parameters
+        ----------
+        env:
+            Environment variables for the subprocess.  ``None`` means
+            inherit the parent process environment.
+        """
         ...
 
     async def is_available(self) -> bool:

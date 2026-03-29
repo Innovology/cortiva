@@ -15,6 +15,8 @@ import yaml
 
 from cortiva.core.budget import BackendType, ConsciousnessBudgetManager
 from cortiva.core.fabric import Fabric
+from cortiva.core.isolation import IsolationConfig, IsolationTier, build_enforcer
+from cortiva.core.memory_guard import GuardedMemoryAdapter
 
 # ---------------------------------------------------------------------------
 # Adapter registry — maps config names to (module, class) pairs.
@@ -248,8 +250,17 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
     # --- Budget manager (optional) ---
     budget_manager = _build_budget_manager(config)
 
-    # --- Fabric ---
+    # --- Isolation ---
+    isolation_section = config.get("isolation", {})
+    isolation_config = IsolationConfig.from_dict(isolation_section) if isolation_section else None
     agents_dir = Path(config.get("agents", {}).get("directory", "./agents"))
+    enforcer = build_enforcer(agents_dir=agents_dir, config=isolation_config)
+
+    # Wrap memory in GuardedMemoryAdapter when isolation is active
+    if isolation_config and isolation_config.tier != IsolationTier.NONE:
+        memory = GuardedMemoryAdapter(inner=memory, enforcer=enforcer)
+
+    # --- Fabric ---
     heartbeat = config.get("fabric", {}).get("heartbeat_interval", 30)
     budget = config.get("consciousness", {}).get("budget", {}).get("daily_limit", 1000)
 
@@ -263,6 +274,7 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
         heartbeat_interval=float(heartbeat),
         daily_consciousness_limit=int(budget),
         budget_manager=budget_manager,
+        isolation=enforcer,
     )
 
     # --- Agent schedules (optional) ---

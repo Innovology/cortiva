@@ -250,3 +250,192 @@ def probation_expired(agent_dir: Path) -> bool:
     end = datetime.fromisoformat(record.probation_end)
     now = datetime.now(tz=UTC)
     return now >= end
+
+
+@dataclass
+class PromotionAssessment:
+    """Assessment of an agent's performance during probation."""
+
+    agent_id: str
+    tasks_completed: int = 0
+    tasks_escalated: int = 0
+    total_tasks: int = 0
+    escalation_ratio: float = 0.0
+    decision_quality: float = 0.0
+    days_elapsed: int = 0
+    days_total: int = 0
+    recommendation: str = "continue"  # "confirm" | "revert" | "extend" | "continue"
+    notes: str = ""
+
+    @property
+    def escalation_ok(self) -> bool:
+        """True if escalation ratio is within target."""
+        return self.total_tasks == 0 or self.escalation_ratio <= 0.30
+
+    @property
+    def quality_ok(self) -> bool:
+        """True if decision quality meets target."""
+        return self.decision_quality >= 0.85
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "tasks_completed": self.tasks_completed,
+            "tasks_escalated": self.tasks_escalated,
+            "total_tasks": self.total_tasks,
+            "escalation_ratio": round(self.escalation_ratio, 3),
+            "decision_quality": round(self.decision_quality, 3),
+            "days_elapsed": self.days_elapsed,
+            "days_total": self.days_total,
+            "recommendation": self.recommendation,
+            "notes": self.notes,
+        }
+
+
+def assess_probation(agent_dir: Path) -> PromotionAssessment | None:
+    """Generate an assessment of a probationary agent's performance.
+
+    Reads task_queue.json from ``today/`` to compute metrics.
+    Returns None if the agent is not in probation.
+    """
+    record = get_promotion(agent_dir)
+    if record is None or record.status != "probationary":
+        return None
+
+    agent_id = agent_dir.name
+    now = datetime.now(tz=UTC)
+    initiated = datetime.fromisoformat(record.initiated_at)
+    probation_end = datetime.fromisoformat(record.probation_end)
+    days_elapsed = (now - initiated).days
+    days_total = record.probation_config.duration_days
+
+    # Read task metrics from today/task_queue.json
+    tasks_completed = 0
+    tasks_escalated = 0
+    total_tasks = 0
+    tq_path = agent_dir / "today" / "task_queue.json"
+    if tq_path.exists():
+        data = json.loads(tq_path.read_text(encoding="utf-8"))
+        summary = data.get("summary", {})
+        tasks_completed = summary.get("done", 0)
+        tasks_escalated = summary.get("exception", summary.get("exceptions", 0))
+        total_tasks = sum(
+            v for k, v in summary.items() if k != "exceptions"
+        )
+
+    escalation_ratio = (
+        tasks_escalated / total_tasks if total_tasks > 0 else 0.0
+    )
+
+    # Decision quality heuristic: completed / (completed + escalated)
+    denom = tasks_completed + tasks_escalated
+    decision_quality = tasks_completed / denom if denom > 0 else 1.0
+
+    # Determine recommendation
+    config = record.probation_config
+    expired = now >= probation_end
+
+    if expired:
+        if escalation_ratio <= config.escalation_ratio_target and decision_quality >= config.decision_quality_target:
+            recommendation = "confirm"
+            notes = "Probation complete. Metrics meet targets."
+        elif escalation_ratio > config.escalation_ratio_target:
+            recommendation = "revert"
+            notes = f"Escalation ratio {escalation_ratio:.1%} exceeds target {config.escalation_ratio_target:.0%}."
+        else:
+            recommendation = "extend"
+            notes = f"Decision quality {decision_quality:.1%} below target {config.decision_quality_target:.0%}."
+    else:
+        recommendation = "continue"
+        notes = f"{days_total - days_elapsed} days remaining in probation."
+
+    return PromotionAssessment(
+        agent_id=agent_id,
+        tasks_completed=tasks_completed,
+        tasks_escalated=tasks_escalated,
+        total_tasks=total_tasks,
+        escalation_ratio=escalation_ratio,
+        decision_quality=decision_quality,
+        days_elapsed=days_elapsed,
+        days_total=days_total,
+        recommendation=recommendation,
+        notes=notes,
+    )
+
+
+def auto_resolve_probation(agent_dir: Path) -> PromotionRecord | None:
+    """Automatically confirm, revert, or extend based on assessment.
+
+    Only acts if probation has expired. Returns the updated record,
+    or None if no action was taken.
+    """
+    assessment = assess_probation(agent_dir)
+    if assessment is None or assessment.recommendation == "continue":
+        return None
+
+    if assessment.recommendation == "confirm":
+        return confirm_promotion(agent_dir)
+    elif assessment.recommendation == "revert":
+        return revert_promotion(agent_dir)
+    elif assessment.recommendation == "extend":
+        return extend_probation(agent_dir, additional_days=7)
+
+    return None
+
+
+def set_backfill(agent_dir: Path, backfill_agent_id: str) -> PromotionRecord | None:
+    """Assign a backfill agent to cover the promoted agent's former role."""
+    record = get_promotion(agent_dir)
+    if record is None:
+        return None
+
+    record.backfill_agent_id = backfill_agent_id
+    _save_promotion(agent_dir, record)
+    return record
+
+
+class PromotionManager:
+    """High-level manager for agent promotions.
+
+    Wraps the module-level functions with a consistent interface
+    and adds assessment + auto-resolution support.
+    """
+
+    def __init__(self, agent_dir: Path) -> None:
+        self.agent_dir = agent_dir
+
+    def get(self) -> PromotionRecord | None:
+        return get_promotion(self.agent_dir)
+
+    def initiate(
+        self,
+        target_role_template: Path,
+        probation_days: int = 14,
+    ) -> PromotionRecord:
+        return initiate_promotion(self.agent_dir, target_role_template, probation_days)
+
+    def confirm(self) -> PromotionRecord | None:
+        return confirm_promotion(self.agent_dir)
+
+    def revert(self) -> PromotionRecord | None:
+        return revert_promotion(self.agent_dir)
+
+    def extend(self, additional_days: int = 7) -> PromotionRecord | None:
+        return extend_probation(self.agent_dir, additional_days)
+
+    def assess(self) -> PromotionAssessment | None:
+        return assess_probation(self.agent_dir)
+
+    def auto_resolve(self) -> PromotionRecord | None:
+        return auto_resolve_probation(self.agent_dir)
+
+    def set_backfill(self, backfill_agent_id: str) -> PromotionRecord | None:
+        return set_backfill(self.agent_dir, backfill_agent_id)
+
+    @property
+    def is_probationary(self) -> bool:
+        return is_probationary(self.agent_dir)
+
+    @property
+    def probation_expired(self) -> bool:
+        return probation_expired(self.agent_dir)

@@ -41,6 +41,16 @@ from cortiva.core.governance import (
     ValidationResult,
     parse_responsibilities,
 )
+from cortiva.core.isolation import (
+    ContainerIsolation,
+    IsolationConfig,
+    IsolationTier,
+    NoIsolation,
+    OSIsolation,
+    SoftIsolation,
+    SubprocessEnvelope,
+    build_enforcer,
+)
 from cortiva.core.reflection import ReflectionResult, ReflectionSuffix, parse_reflection_suffix
 from cortiva.core.scheduler import Scheduler
 
@@ -80,6 +90,14 @@ __all__ = [
     "Message",
     "Priority",
     "ToolCapabilities",
+    "IsolationConfig",
+    "IsolationTier",
+    "NoIsolation",
+    "SoftIsolation",
+    "OSIsolation",
+    "ContainerIsolation",
+    "SubprocessEnvelope",
+    "build_enforcer",
     "ReflectionSuffix",
     "ReflectionResult",
     "parse_reflection_suffix",

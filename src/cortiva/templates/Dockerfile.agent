@@ -1,0 +1,37 @@
+# Cortiva Agent Container — Tier 3 Isolation
+#
+# Each agent runs in its own container with restricted filesystem,
+# network, CPU, and memory.  The agent workspace is mounted as a
+# volume from the host.
+#
+# Build:
+#   docker build -f Dockerfile.agent -t cortiva-agent .
+#
+# Run (managed by Cortiva automatically):
+#   docker run --rm \
+#     --name cortiva-agent-<agent-id> \
+#     --cpus 1.0 --memory 512m \
+#     --network none \
+#     -v /path/to/agents/<agent-id>:/agent:rw \
+#     -w /agent/workspace \
+#     --user 1000:1000 \
+#     cortiva-agent <command>
+
+FROM python:3.13-slim
+
+# Security: run as non-root user
+RUN groupadd -g 1000 cortiva && \
+    useradd -u 1000 -g cortiva -m -s /bin/bash cortiva
+
+# Install cortiva and common terminal agents
+RUN pip install --no-cache-dir cortiva
+
+# Agent workspace is mounted at runtime
+VOLUME ["/agent"]
+WORKDIR /agent/workspace
+
+USER cortiva
+
+# Default entrypoint — overridden by Cortiva at runtime
+ENTRYPOINT ["/bin/bash", "-c"]
+CMD ["echo 'Cortiva agent container ready'"]

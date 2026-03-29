@@ -184,19 +184,23 @@ class TestGoogleAdapter:
         adapter = GoogleAdapter(model="gemini-2.0-flash")
         assert adapter.model == "gemini-2.0-flash"
 
-    @pytest.mark.asyncio
-    async def test_think_not_implemented(self) -> None:
+    def test_init_params(self) -> None:
         from cortiva.adapters.consciousness.google import GoogleAdapter
-        adapter = GoogleAdapter()
-        with pytest.raises(NotImplementedError):
-            await adapter.think("a", "ctx", "prompt")
+        adapter = GoogleAdapter(model="gemini-2.5-pro", api_key="test-key", max_tokens=8192)
+        assert adapter.model == "gemini-2.5-pro"
+        assert adapter._api_key == "test-key"
+        assert adapter.max_tokens == 8192
 
-    @pytest.mark.asyncio
-    async def test_reflect_not_implemented(self) -> None:
+    def test_get_client_raises_without_sdk(self) -> None:
         from cortiva.adapters.consciousness.google import GoogleAdapter
         adapter = GoogleAdapter()
-        with pytest.raises(NotImplementedError):
-            await adapter.reflect("a", "ctx", "summary")
+        # If google-genai is not installed, _get_client should raise ImportError
+        # If it IS installed, it should return a client — both are valid
+        try:
+            client = adapter._get_client()
+            assert client is not None
+        except ImportError as e:
+            assert "google-genai" in str(e)
 
 
 # ---------------------------------------------------------------------------

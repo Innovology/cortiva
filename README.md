@@ -9,6 +9,12 @@
         the organisational fabric for autonomous agent teams
 ```
 
+<p align="center">
+
+![CI](https://github.com/Innovology/cortiva/actions/workflows/ci.yml/badge.svg) ![Python](https://img.shields.io/badge/python-3.11%2B-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Status](https://img.shields.io/badge/status-pre--alpha-orange)
+
+</p>
+
 Cortiva is an open-source framework for deploying teams of AI agents that operate as an organisation — with persistent identity, experiential learning, governance hierarchies, peer communication, and consciousness budgeting.
 
 Every other framework treats agents as workflow nodes or conversation participants. Cortiva treats them as **employees in a company** — they wake up, plan their day, do their work, talk to colleagues, learn from experience, and reflect before they sleep.
@@ -58,6 +64,29 @@ Cortiva doesn't build what already exists. Every component is an adapter:
 - **Channel**: Slack, or any messaging platform
 
 Use what works for you. Swap later without changing your agents.
+
+## Agent Isolation
+
+Agents can be isolated from each other at different levels. Configure via `cortiva.yaml`:
+
+```yaml
+isolation:
+  tier: soft              # none | soft | os | container
+  container:              # tier 3 only
+    runtime: docker
+    cpu_limit: "1.0"
+    memory_limit: "512m"
+    network: "none"
+```
+
+| Tier | What It Does |
+|------|-------------|
+| **none** | No enforcement (default, backward compatible) |
+| **soft** | Path traversal prevention, cross-agent memory guards, governance enforcement |
+| **os** | + env var filtering, per-agent TMPDIR, per-agent IPC sockets |
+| **container** | + Docker/Podman per agent with CPU/memory/network limits |
+
+Each tier includes all protections from lower tiers. See [docs/isolation.md](docs/isolation.md) for the full guide and [docs/security.md](docs/security.md) for the trust model.
 
 ## Core Concepts
 
@@ -160,6 +189,9 @@ routine:
 channel:
   adapter: slack          # slack | custom
 
+isolation:
+  tier: soft              # none | soft | os | container
+
 agents:
   directory: ./agents
 
@@ -230,6 +262,22 @@ cortiva cluster load                   Show load metrics and balancing suggestio
 - IPC daemon communication via Unix sockets
 - Scheduled wake/replan/sleep cycles
 - Agent templates and bootstrap workflow
+
+- Three-tier agent isolation (none, soft, os, container)
+- Governance enforcement via keyword-overlap AuthorityValidator
+- GuardedMemoryAdapter for cross-agent memory isolation
+- Container templates (Dockerfile, docker-compose)
+
+### In Progress — Agent Autonomy ([roadmap](docs/roadmap-agent-autonomy.md))
+
+- Agent-owned cognitive loop (move context/LLM/memory from Fabric to agent boundary)
+- Per-agent memory stores (physical isolation, independent growth)
+- Agent-side budget and schedule enforcement (contract.yaml)
+- Budget proxy consciousness adapter (hard external limits)
+- Per-agent API credentials via secret store
+- Internal channel adapter (agent-to-agent without Slack)
+- Signed lifecycle commands
+- Tamper-evident audit logging
 
 ### Remaining
 

@@ -120,13 +120,36 @@ class TestParseResponsibilities:
 
 
 class TestAuthorityValidator:
-    def test_validate_action_returns_unknown(self) -> None:
-        """Stub always returns UNKNOWN tier."""
+    def test_validate_action_matches_negative_authority(self) -> None:
+        """'merge PR to main' matches negative authority 'may NOT merge'."""
         b = parse_responsibilities(SAMPLE_RESPONSIBILITIES)
         validator = AuthorityValidator(b)
         result = validator.validate_action("merge PR to main")
+        assert result.tier == AuthorityTier.ESCALATION
+        assert result.matched_rule is not None
+        assert "merge" in result.matched_rule.lower()
+
+    def test_validate_action_matches_primary(self) -> None:
+        """'write tests for all functionality' should match a primary rule."""
+        b = parse_responsibilities(SAMPLE_RESPONSIBILITIES)
+        validator = AuthorityValidator(b)
+        result = validator.validate_action("write tests for all functionality")
+        assert result.tier == AuthorityTier.PRIMARY
+
+    def test_validate_action_matches_escalation(self) -> None:
+        """'scope changes and new dependencies' should match escalation."""
+        b = parse_responsibilities(SAMPLE_RESPONSIBILITIES)
+        validator = AuthorityValidator(b)
+        result = validator.validate_action("scope changes and new dependencies")
+        assert result.tier == AuthorityTier.ESCALATION
+        assert result.escalation_target == "PM-Cortiva"
+
+    def test_validate_action_unknown_for_unrelated(self) -> None:
+        """Unrelated action returns UNKNOWN."""
+        b = parse_responsibilities(SAMPLE_RESPONSIBILITIES)
+        validator = AuthorityValidator(b)
+        result = validator.validate_action("cook breakfast")
         assert result.tier == AuthorityTier.UNKNOWN
-        assert "not yet implemented" in result.reason
 
     def test_validator_has_boundaries(self) -> None:
         b = parse_responsibilities(SAMPLE_RESPONSIBILITIES)

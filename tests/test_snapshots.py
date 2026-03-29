@@ -6,20 +6,29 @@ import pytest
 
 from cortiva.core.agent import Agent, WORKSPACE_DIRS
 from cortiva.core.snapshots import (
+    SnapshotManager,
     clone_from_snapshot,
     create_snapshot,
     delete_snapshot,
+    enforce_retention,
+    export_snapshot,
     get_snapshot,
+    import_snapshot,
     list_snapshots,
     restore_snapshot,
 )
 from cortiva.core.promotion import (
+    PromotionAssessment,
+    PromotionManager,
+    assess_probation,
+    auto_resolve_probation,
     confirm_promotion,
     extend_probation,
     get_promotion,
     initiate_promotion,
     is_probationary,
     revert_promotion,
+    set_backfill,
 )
 
 
@@ -271,3 +280,163 @@ class TestPromotion:
         assert is_probationary(agent_dir) is False
         assert confirm_promotion(agent_dir) is None
         assert revert_promotion(agent_dir) is None
+
+
+# ---------------------------------------------------------------------------
+# Snapshot Manager tests
+# ---------------------------------------------------------------------------
+
+class TestSnapshotManager:
+    def test_create_and_list(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        mgr = SnapshotManager(agent_dir, max_snapshots=5)
+        meta = mgr.create(name="v1")
+        assert meta.name == "v1"
+        assert len(mgr.list()) == 1
+
+    def test_retention_enforcement(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        mgr = SnapshotManager(agent_dir, max_snapshots=3)
+        for i in range(5):
+            mgr.create(name=f"snap-{i}")
+        assert len(mgr.list()) == 3
+
+    def test_export_and_import(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        mgr = SnapshotManager(agent_dir)
+        meta = mgr.create(name="exportable")
+
+        archive = tmp_path / "export.tar.gz"
+        result = mgr.export(meta.snapshot_id, archive)
+        assert result is not None
+        assert result.exists()
+
+        # Import into a different agent
+        agent2 = _make_agent(tmp_path, "test-02")
+        imported = import_snapshot(agent2, archive)
+        assert imported is not None
+        assert imported.agent_id == "test-02"
+
+
+class TestEnforceRetention:
+    def test_no_delete_when_under_limit(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        create_snapshot(agent_dir)
+        deleted = enforce_retention(agent_dir, max_snapshots=5)
+        assert deleted == []
+
+    def test_deletes_oldest(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        for _ in range(5):
+            create_snapshot(agent_dir)
+        deleted = enforce_retention(agent_dir, max_snapshots=2)
+        assert len(deleted) == 3
+        assert len(list_snapshots(agent_dir)) == 2
+
+
+class TestExportImport:
+    def test_export_nonexistent(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        result = export_snapshot(agent_dir, "nonexistent", tmp_path / "out.tar.gz")
+        assert result is None
+
+    def test_import_nonexistent(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        result = import_snapshot(agent_dir, tmp_path / "missing.tar.gz")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Promotion Assessment tests
+# ---------------------------------------------------------------------------
+
+class TestPromotionAssessment:
+    def _make_role_template(self, tmp_path: Path) -> Path:
+        tpl = tmp_path / "head-accounting"
+        (tpl / "identity").mkdir(parents=True)
+        (tpl / "identity" / "responsibilities.md").write_text(
+            "# head-accounting — Responsibilities\n\n## Primary\n\nManage dept.\n"
+        )
+        (tpl / "identity" / "soul.md").write_text(
+            "# head-accounting — Persona\n\nDecisive.\n"
+        )
+        return tpl
+
+    def test_assess_not_probationary(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        assert assess_probation(agent_dir) is None
+
+    def test_assess_probationary(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        tpl = self._make_role_template(tmp_path)
+        initiate_promotion(agent_dir, tpl)
+
+        assessment = assess_probation(agent_dir)
+        assert assessment is not None
+        assert assessment.recommendation == "continue"
+
+    def test_assessment_with_metrics(self, tmp_path: Path) -> None:
+        import json
+        agent_dir = _make_agent(tmp_path)
+        tpl = self._make_role_template(tmp_path)
+        initiate_promotion(agent_dir, tpl)
+
+        # Write mock task metrics
+        (agent_dir / "today" / "task_queue.json").write_text(json.dumps({
+            "tasks": [],
+            "replan_count": 0,
+            "summary": {"done": 8, "pending": 0, "exceptions": 2},
+        }))
+
+        assessment = assess_probation(agent_dir)
+        assert assessment is not None
+        assert assessment.tasks_completed == 8
+        assert assessment.tasks_escalated == 2
+
+    def test_assessment_dataclass(self) -> None:
+        a = PromotionAssessment(agent_id="x", tasks_completed=9, tasks_escalated=1, total_tasks=10)
+        a.escalation_ratio = 0.1
+        a.decision_quality = 0.9
+        assert a.escalation_ok is True
+        assert a.quality_ok is True
+        d = a.to_dict()
+        assert d["agent_id"] == "x"
+
+    def test_set_backfill(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        tpl = self._make_role_template(tmp_path)
+        initiate_promotion(agent_dir, tpl)
+
+        record = set_backfill(agent_dir, "backup-01")
+        assert record is not None
+        assert record.backfill_agent_id == "backup-01"
+
+
+class TestPromotionManager:
+    def _make_role_template(self, tmp_path: Path) -> Path:
+        tpl = tmp_path / "senior-role"
+        (tpl / "identity").mkdir(parents=True)
+        (tpl / "identity" / "responsibilities.md").write_text(
+            "# senior-role — Responsibilities\n\n## Primary\n\nLead.\n"
+        )
+        (tpl / "identity" / "soul.md").write_text(
+            "# senior-role — Persona\n\nLeader.\n"
+        )
+        return tpl
+
+    def test_manager_lifecycle(self, tmp_path: Path) -> None:
+        agent_dir = _make_agent(tmp_path)
+        tpl = self._make_role_template(tmp_path)
+        mgr = PromotionManager(agent_dir)
+
+        assert mgr.get() is None
+        assert mgr.is_probationary is False
+
+        mgr.initiate(tpl, probation_days=7)
+        assert mgr.is_probationary is True
+
+        assessment = mgr.assess()
+        assert assessment is not None
+
+        mgr.confirm()
+        assert mgr.is_probationary is False

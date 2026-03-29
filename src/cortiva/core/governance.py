@@ -176,10 +176,50 @@ def parse_responsibilities(content: str) -> AuthorityBoundaries:
 # ---------------------------------------------------------------------------
 
 
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "is", "it", "that", "this", "with", "from", "by", "as", "be",
+    "can", "may", "i", "my", "we", "our", "do", "not", "no", "should",
+})
+
+# Matches negative authority statements like "may NOT merge"
+_NEGATIVE_RE = re.compile(r"\bmay\s+not\b|\bcannot\b|\bmust\s+not\b|\bdo\s+not\b", re.IGNORECASE)
+
+
+def _extract_keywords(text: str) -> set[str]:
+    """Extract meaningful keywords from a text string."""
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    return words - _STOP_WORDS
+
+
+def _keyword_overlap(text_keywords: set[str], rule_keywords: set[str]) -> float:
+    """Compute overlap ratio between two keyword sets.
+
+    Returns the fraction of *rule_keywords* matched by *text_keywords*.
+    Returns 0.0 if either set is empty.
+    """
+    if not text_keywords or not rule_keywords:
+        return 0.0
+    return len(text_keywords & rule_keywords) / len(rule_keywords)
+
+
+# Minimum keyword overlap to consider a match.
+# Uses a relatively low threshold because action descriptions tend to be
+# short while responsibility rules contain qualifying words.
+_MATCH_THRESHOLD = 0.3
+
+
 class AuthorityValidator:
     """Validates proposed actions against an agent's authority boundaries.
 
-    Stub implementation for v0.1.  Full enforcement is planned for v0.3.
+    Uses keyword-overlap matching to classify actions against the parsed
+    responsibilities.md rules.  The algorithm:
+
+    1. Check negative authority statements first (``"may NOT ..."``).
+    2. Check escalation topics.
+    3. Check secondary (approval-required) rules.
+    4. Check primary (unilateral) rules.
+    5. If no match, return ``UNKNOWN``.
 
     Usage::
 
@@ -192,18 +232,102 @@ class AuthorityValidator:
 
     def __init__(self, boundaries: AuthorityBoundaries) -> None:
         self.boundaries = boundaries
+        # Pre-compile keyword sets for each rule
+        self._primary_kw = [
+            (rule, _extract_keywords(rule)) for rule in boundaries.primary
+        ]
+        self._secondary_kw = [
+            (rule, _extract_keywords(rule)) for rule in boundaries.secondary
+        ]
+        self._escalation_kw: list[tuple[str, set[str], str]] = []
+        for target in boundaries.escalation_targets:
+            for topic in target.topics:
+                self._escalation_kw.append(
+                    (topic, _extract_keywords(topic), target.target_agent)
+                )
+        self._negative_kw = [
+            (stmt, _extract_keywords(stmt))
+            for stmt in boundaries.authority_statements
+            if _NEGATIVE_RE.search(stmt)
+        ]
 
     def validate_action(self, action_description: str) -> ValidationResult:
         """Classify an action against authority boundaries.
 
-        Stub: always returns ``UNKNOWN`` tier.  Full implementation will
-        use keyword matching and semantic similarity to classify actions.
+        Returns a :class:`ValidationResult` with the matched tier, rule,
+        and (for escalations) the target agent.
         """
+        action_kw = _extract_keywords(action_description)
+
+        if not action_kw:
+            return ValidationResult(
+                tier=AuthorityTier.UNKNOWN,
+                matched_rule=None,
+                escalation_target=None,
+                reason="No actionable keywords in description.",
+            )
+
+        # 1. Check negative authority statements (explicit prohibitions)
+        for stmt, kw in self._negative_kw:
+            if _keyword_overlap(action_kw, kw) >= _MATCH_THRESHOLD:
+                return ValidationResult(
+                    tier=AuthorityTier.ESCALATION,
+                    matched_rule=stmt,
+                    escalation_target="human",
+                    reason=f"Action matches negative authority: {stmt!r}",
+                )
+
+        # 2. Check escalation topics
+        best_esc: tuple[float, str, str] | None = None
+        for topic, kw, target in self._escalation_kw:
+            score = _keyword_overlap(action_kw, kw)
+            if score >= _MATCH_THRESHOLD:
+                if best_esc is None or score > best_esc[0]:
+                    best_esc = (score, topic, target)
+        if best_esc:
+            return ValidationResult(
+                tier=AuthorityTier.ESCALATION,
+                matched_rule=best_esc[1],
+                escalation_target=best_esc[2],
+                reason=f"Action matches escalation topic: {best_esc[1]!r}",
+            )
+
+        # 3. Check secondary rules (require approval)
+        best_sec: tuple[float, str] | None = None
+        for rule, kw in self._secondary_kw:
+            score = _keyword_overlap(action_kw, kw)
+            if score >= _MATCH_THRESHOLD:
+                if best_sec is None or score > best_sec[0]:
+                    best_sec = (score, rule)
+        if best_sec:
+            return ValidationResult(
+                tier=AuthorityTier.SECONDARY,
+                matched_rule=best_sec[1],
+                escalation_target=None,
+                reason=f"Action matches secondary rule: {best_sec[1]!r}",
+            )
+
+        # 4. Check primary rules (unilateral)
+        best_pri: tuple[float, str] | None = None
+        for rule, kw in self._primary_kw:
+            score = _keyword_overlap(action_kw, kw)
+            if score >= _MATCH_THRESHOLD:
+                if best_pri is None or score > best_pri[0]:
+                    best_pri = (score, rule)
+        if best_pri:
+            return ValidationResult(
+                tier=AuthorityTier.PRIMARY,
+                matched_rule=best_pri[1],
+                escalation_target=None,
+                reason=f"Action matches primary rule: {best_pri[1]!r}",
+            )
+
+        # 5. No match
         return ValidationResult(
             tier=AuthorityTier.UNKNOWN,
             matched_rule=None,
             escalation_target=None,
-            reason="Governance enforcement not yet implemented (v0.3).",
+            reason="Action did not match any known authority boundaries.",
         )
 
 

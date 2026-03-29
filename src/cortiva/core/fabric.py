@@ -26,6 +26,7 @@ from cortiva.adapters.protocols import (
     TerminalAgentAdapter,
 )
 from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
+from cortiva.core.events import EventBus, FabricEvent
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
 from cortiva.core.cluster import Cluster, ClusterNode, move_agent
@@ -33,6 +34,7 @@ from cortiva.core.context import ContextBuilder
 from cortiva.core.discovery import NodeCapabilities
 from cortiva.core.familiarity import FamiliarityEngine
 from cortiva.core.ipc import FabricServer
+from cortiva.core.isolation import NoIsolation
 from cortiva.core.living_summary import LivingSummaryRegenerator
 from cortiva.core.models import ClusterModels
 from cortiva.core.reflection import ReflectionSuffix, parse_reflection_suffix
@@ -132,9 +134,13 @@ class Fabric:
         heartbeat_interval: float = 30.0,
         daily_consciousness_limit: int = 1000,
         budget_manager: ConsciousnessBudgetManager | None = None,
+        isolation: NoIsolation | None = None,
     ):
         self.agents_dir = Path(agents_dir)
         self.agents_dir.mkdir(parents=True, exist_ok=True)
+
+        # Isolation enforcer
+        self.isolation = isolation or NoIsolation(agents_dir=self.agents_dir)
 
         # Pluggable adapters
         self.memory = memory
@@ -178,6 +184,8 @@ class Fabric:
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
         # Event listeners for portal/WebSocket integration
         self._event_listeners: list[Any] = []
+        # Structured event bus (new — used alongside legacy listeners)
+        self.event_bus: EventBus = EventBus()
 
     # ----- Event system -----
 
@@ -190,7 +198,7 @@ class Fabric:
         self._event_listeners.append(listener)
 
     def _emit(self, event_type: str, **data: Any) -> None:
-        """Emit an event to all registered listeners."""
+        """Emit an event to all registered listeners and the EventBus."""
         import time as _time
         event = {"type": event_type, "timestamp": _time.time(), **data}
         for listener in self._event_listeners:
@@ -198,6 +206,9 @@ class Fabric:
                 listener(event_type, event)
             except Exception:
                 pass  # Don't let listener errors break the fabric
+        # Also emit to the structured EventBus
+        bus_data = {k: v for k, v in data.items() if k != "agent_id"}
+        self.event_bus.emit_simple(event_type, agent_id=data.get("agent_id"), **bus_data)
 
     def _budget_alert(self, agent_id: str, message: str, status: Any) -> None:
         """Post budget alerts to the ops channel."""
@@ -430,6 +441,10 @@ class Fabric:
         agent.persist_runtime_state()
         agent.task_queue = None
         agent.transition(AgentState.SLEEPING)
+
+        # Clean up isolation resources (tmpdirs, containers, etc.)
+        self.isolation.cleanup(agent_id)
+
         self._emit("agent.sleep", agent_id=agent_id, state=agent.state.value)
         logger.info(f"Agent {agent_id} is now sleeping")
         return agent
@@ -711,9 +726,15 @@ class Fabric:
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
 
+        # Apply isolation envelope
+        envelope = self.isolation.prepare_terminal_env(
+            agent_id=agent.id, cmd=[], cwd=cwd,
+        )
+
         response = await self.terminal.invoke(
             prompt=prompt,
-            cwd=cwd,
+            cwd=envelope.cwd,
+            env=envelope.env,
         )
 
         if response.is_error:
