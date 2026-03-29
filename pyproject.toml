@@ -61,6 +61,7 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.8",
     "mypy>=1.13",
+    "mkdocs-material>=9.0",
 ]
 
 # Container isolation (Tier 3) — optional Docker SDK
