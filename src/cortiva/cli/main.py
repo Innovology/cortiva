@@ -337,6 +337,88 @@ def cmd_watch(args: argparse.Namespace) -> None:
             f"{current:<35} {hours:>6.1f}h {ot_str:>6} {budget:>10}"
         )
 
+    # Show capacity summary if available
+    cap = resp.get("capacity")
+    if cap:
+        node = cap.get("node", {})
+        cont = cap.get("contention", {})
+        ag = cap.get("agents", {})
+        print()
+        print(f"  Node: {node.get('cpu_cores', '?')} cores, "
+              f"{node.get('ram_available_gb', '?')}GB RAM free "
+              f"({node.get('ram_percent', '?')}% used)")
+        print(f"  Agents: {ag.get('active', 0)} active / {ag.get('total', 0)} total "
+              f"(max ~{ag.get('max_concurrent', '?')} concurrent)")
+        if cont.get("avg_queue_wait_s", 0) > 0:
+            print(f"  Contention: avg queue wait {cont['avg_queue_wait_s']:.1f}s, "
+                  f"avg LLM wait {cont.get('avg_consciousness_wait_s', 0):.1f}s, "
+                  f"heartbeat util {cont.get('heartbeat_utilisation_pct', 0):.0f}%")
+        share = cap.get("agent_share_pct", {})
+        if share:
+            parts = [f"{aid}: {pct}%" for aid, pct in share.items()]
+            print(f"  Heartbeat share: {', '.join(parts)}")
+
+
+def cmd_capacity(args: argparse.Namespace) -> None:
+    """Show detailed node capacity and contention metrics."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        print("No running Cortiva daemon. Use 'cortiva start' first.")
+        sys.exit(1)
+
+    try:
+        resp = client.send_sync("capacity")
+        if not resp or not resp.get("ok"):
+            print(f"Failed: {resp.get('error', 'unknown') if resp else 'no response'}")
+            sys.exit(1)
+    except Exception as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    node = resp.get("node", {})
+    ag = resp.get("agents", {})
+    cont = resp.get("contention", {})
+    share = resp.get("agent_share_pct", {})
+    tasks = resp.get("recent_tasks", [])
+
+    print("Node Resources\n")
+    print(f"  CPU cores:       {node.get('cpu_cores', '?')}")
+    print(f"  RAM total:       {node.get('ram_total_gb', '?')} GB")
+    print(f"  RAM available:   {node.get('ram_available_gb', '?')} GB ({node.get('ram_percent', '?')}% used)")
+    print(f"  Disk free:       {node.get('disk_free_gb', '?')} GB")
+
+    print(f"\nAgent Capacity\n")
+    print(f"  Active agents:   {ag.get('active', 0)}")
+    print(f"  Total agents:    {ag.get('total', 0)}")
+    print(f"  Max concurrent:  ~{ag.get('max_concurrent', '?')} (based on CPU cores)")
+
+    print(f"\nContention\n")
+    print(f"  Avg queue wait:        {cont.get('avg_queue_wait_s', 0):>6.1f}s")
+    print(f"  Avg execution time:    {cont.get('avg_execution_s', 0):>6.1f}s")
+    print(f"  Avg LLM wait:          {cont.get('avg_consciousness_wait_s', 0):>6.1f}s")
+    print(f"  Avg heartbeat cycle:   {cont.get('avg_heartbeat_s', 0):>6.1f}s")
+    print(f"  Heartbeat idle:        {cont.get('avg_heartbeat_idle_s', 0):>6.1f}s")
+    print(f"  Heartbeat utilisation: {cont.get('heartbeat_utilisation_pct', 0):>5.0f}%")
+
+    if share:
+        print(f"\nHeartbeat Share (who's using the cycle)\n")
+        for aid, pct in sorted(share.items(), key=lambda x: x[1], reverse=True):
+            bar = "#" * int(pct / 2)
+            print(f"  {aid:<20} {pct:>5.1f}%  {bar}")
+
+    if tasks:
+        print(f"\nRecent Tasks\n")
+        print(f"  {'Agent':<16} {'Task':<10} {'Queue':>7} {'Exec':>7} {'LLM':>7}")
+        print(f"  {'-'*16} {'-'*10} {'-'*7} {'-'*7} {'-'*7}")
+        for t in tasks:
+            print(
+                f"  {t['agent_id']:<16} {t['task_id']:<10} "
+                f"{t['queue_wait_s']:>6.1f}s {t['execution_s']:>6.1f}s "
+                f"{t['consciousness_wait_s']:>6.1f}s"
+            )
+
 
 def cmd_agent_activity(args: argparse.Namespace) -> None:
     """Show detailed activity for a specific agent."""
@@ -1294,6 +1376,9 @@ def build_parser() -> argparse.ArgumentParser:
     # watch
     subparsers.add_parser("watch", help="Live dashboard of all agents")
 
+    # capacity
+    subparsers.add_parser("capacity", help="Show node capacity and contention metrics")
+
     # agent
     agent_parser = subparsers.add_parser("agent", help="Agent management")
     agent_sub = agent_parser.add_subparsers(dest="agent_command")
@@ -1405,6 +1490,8 @@ def main() -> None:
         cmd_status(args)
     elif args.command == "watch":
         cmd_watch(args)
+    elif args.command == "capacity":
+        cmd_capacity(args)
     elif args.command == "agent":
         if args.agent_command == "create":
             cmd_agent_create(args)

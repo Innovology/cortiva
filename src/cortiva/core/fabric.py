@@ -26,6 +26,7 @@ from cortiva.adapters.protocols import (
     TerminalAgentAdapter,
 )
 from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
+from cortiva.core.capacity import CapacityTracker
 from cortiva.core.events import EventBus, FabricEvent
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
@@ -161,6 +162,7 @@ class Fabric:
         self.scheduler = Scheduler()
         self.session_manager = SessionManager()
         self.timesheet_manager = TimesheetManager(self.agents_dir)
+        self.capacity_tracker = CapacityTracker()
         self.communication_tracker = CommunicationTracker()
         self.cluster_metrics = ClusterMetrics(
             communication_tracker=self.communication_tracker,
@@ -533,8 +535,10 @@ class Fabric:
             result["all_tasks_complete"] = agent.task_queue.all_done()
             return result
 
-        # Execute the task
+        # Execute the task (with capacity tracking)
+        self.capacity_tracker.task_started(agent_id, task.id)
         await self._execute_task(agent, task, messages)
+        self.capacity_tracker.task_finished(agent_id, task.id)
         result["action"] = "executed_task"
         result["task"] = task.description
         result["conscious_call"] = True
@@ -941,13 +945,18 @@ class Fabric:
                 except Exception as e:
                     logger.error(f"Scheduler action {action} for {agent_id}: {e}")
 
-        # Run cycles for active agents
+        # Run cycles for active agents (sequential — contention tracked)
+        self.capacity_tracker.heartbeat_start()
         for agent_id, agent in self.agents.items():
             if agent.state == AgentState.EXECUTING:
+                cycle_start = self.capacity_tracker.agent_cycle_start(agent_id)
                 try:
                     await self.cycle(agent_id)
                 except Exception as e:
                     logger.error(f"Cycle error for {agent_id}: {e}")
+                finally:
+                    self.capacity_tracker.agent_cycle_end(agent_id, cycle_start)
+        self.capacity_tracker.heartbeat_end()
 
     async def _heartbeat_loop(self) -> None:
         """Continuous heartbeat loop."""
@@ -1167,10 +1176,28 @@ class Fabric:
                     "overtime_hours": round(today.overtime_hours, 2),
                     "scheduled_hours": today.scheduled_hours,
                 }
-            return {"ok": True, "agents": agents_data}
+
+            active = sum(
+                1 for a in self.agents.values()
+                if a.state in (AgentState.EXECUTING, AgentState.REPLANNING)
+            )
+            capacity = self.capacity_tracker.snapshot(active, len(self.agents))
+            return {"ok": True, "agents": agents_data, "capacity": capacity}
+
+        async def _handle_capacity(**_kw: Any) -> dict[str, Any]:
+            """Return detailed capacity and contention metrics."""
+            active = sum(
+                1 for a in self.agents.values()
+                if a.state in (AgentState.EXECUTING, AgentState.REPLANNING)
+            )
+            return {
+                "ok": True,
+                **self.capacity_tracker.snapshot(active, len(self.agents)),
+            }
 
         server.register("status", _handle_status)
         server.register("watch", _handle_watch)
+        server.register("capacity", _handle_capacity)
         server.register("agent.activity", _handle_agent_activity)
         server.register("agent.hours", _handle_agent_hours)
         server.register("agent.wake", _handle_agent_wake)
