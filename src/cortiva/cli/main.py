@@ -288,6 +288,205 @@ def cmd_budget(args: argparse.Namespace) -> None:
             )
 
 
+def cmd_watch(args: argparse.Namespace) -> None:
+    """Show live dashboard of all agents."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        print("No running Cortiva daemon. Use 'cortiva start' first.")
+        sys.exit(1)
+
+    try:
+        resp = client.send_sync("watch")
+        if not resp or not resp.get("ok"):
+            print(f"Failed: {resp.get('error', 'unknown') if resp else 'no response'}")
+            sys.exit(1)
+    except Exception as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    agents = resp.get("agents", {})
+    if not agents:
+        print("No agents registered.")
+        return
+
+    print(f"Cortiva Watch — {len(agents)} agent(s)\n")
+    header = (
+        f"  {'Agent':<20} {'State':<12} {'Task':>6} "
+        f"{'Current Work':<35} {'Hours':>7} {'OT':>6} {'Budget':>10}"
+    )
+    print(header)
+    print(f"  {'-'*20} {'-'*12} {'-'*6} {'-'*35} {'-'*7} {'-'*6} {'-'*10}")
+
+    for aid, info in agents.items():
+        state = info.get("state", "?")
+        progress = info.get("task_progress", "-")
+        current = info.get("current_task", "-") or "-"
+        if len(current) > 33:
+            current = current[:30] + "..."
+        hours = info.get("hours_today", 0)
+        overtime = info.get("overtime_hours", 0)
+        c_used = info.get("consciousness_used", 0)
+        c_limit = info.get("consciousness_limit", 0)
+        budget = f"{c_used}/{c_limit}"
+
+        ot_str = f"+{overtime:.1f}h" if overtime > 0 else "-"
+        print(
+            f"  {aid:<20} {state:<12} {progress:>6} "
+            f"{current:<35} {hours:>6.1f}h {ot_str:>6} {budget:>10}"
+        )
+
+
+def cmd_agent_activity(args: argparse.Namespace) -> None:
+    """Show detailed activity for a specific agent."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        print("No running Cortiva daemon. Use 'cortiva start' first.")
+        sys.exit(1)
+
+    try:
+        resp = client.send_sync("agent.activity", agent_id=args.id)
+        if not resp or not resp.get("ok"):
+            print(f"Failed: {resp.get('error', 'unknown') if resp else 'no response'}")
+            sys.exit(1)
+    except Exception as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    ts = resp.get("timesheet", {})
+    print(f"Agent: {resp['agent_id']}  |  State: {resp['state']}")
+    print(f"Today: {ts.get('date', '?')}  |  Hours: {ts.get('total_hours', 0):.1f}h")
+    if ts.get("overtime_hours", 0) > 0:
+        print(f"Overtime: +{ts['overtime_hours']:.1f}h (scheduled: {ts.get('scheduled_hours', 8)}h)")
+    print()
+
+    # Current task
+    current = resp.get("current_task")
+    if current:
+        print(f"In Progress:")
+        print(f"  {current['description']}")
+        print()
+
+    # Completed tasks
+    completed = resp.get("completed_tasks", [])
+    if completed:
+        print(f"Completed ({len(completed)}):")
+        for t in completed:
+            print(f"  {t['description']}")
+        print()
+
+    # Pending tasks
+    pending = resp.get("pending_tasks", [])
+    if pending:
+        print(f"Pending ({len(pending)}):")
+        for t in pending:
+            print(f"  {t['description']}")
+        print()
+
+    # Session turns
+    turns = resp.get("session_turns", [])
+    if turns:
+        print(f"Session ({len(turns)} turns):")
+        for turn in turns:
+            label = turn.get("call_type") or turn.get("role", "?")
+            content = turn.get("content", "")
+            if len(content) > 80:
+                content = content[:77] + "..."
+            print(f"  [{label}] {content}")
+
+
+def cmd_agent_hours(args: argparse.Namespace) -> None:
+    """Show working hours for an agent."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    use_live = client.is_daemon_running()
+
+    period = "week" if getattr(args, "week", False) else "today"
+
+    if use_live:
+        try:
+            resp = client.send_sync("agent.hours", agent_id=args.id, period=period)
+            if resp and resp.get("ok"):
+                _print_hours(resp)
+                return
+        except Exception:
+            pass
+
+    # Fallback: read from filesystem
+    from cortiva.core.timesheet import Timesheet
+
+    agent_dir = Path("agents") / args.id
+    if not agent_dir.exists():
+        print(f"Agent '{args.id}' not found.")
+        sys.exit(1)
+
+    ts = Timesheet(agent_dir)
+    if period == "week":
+        week = ts.week()
+        total_hours = sum(d.total_hours for d in week)
+        total_overtime = sum(d.overtime_hours for d in week)
+        resp = {
+            "agent_id": args.id,
+            "period": "week",
+            "total_hours": round(total_hours, 2),
+            "total_overtime": round(total_overtime, 2),
+            "days": [d.to_dict() for d in week],
+        }
+    else:
+        today = ts.today()
+        resp = {"agent_id": args.id, "period": "today", **today.to_dict()}
+
+    _print_hours(resp)
+
+
+def _print_hours(resp: dict) -> None:
+    """Format and print hours data."""
+    agent_id = resp.get("agent_id", "?")
+
+    if resp.get("period") == "week":
+        total = resp.get("total_hours", 0)
+        overtime = resp.get("total_overtime", 0)
+        print(f"Agent: {agent_id}  |  This Week\n")
+        print(f"  {'Day':<12} {'Hours':>7} {'Scheduled':>10} {'Overtime':>9} {'Tasks':>7}")
+        print(f"  {'-'*12} {'-'*7} {'-'*10} {'-'*9} {'-'*7}")
+        for day in resp.get("days", []):
+            h = day.get("total_hours", 0)
+            s = day.get("scheduled_hours", 8)
+            ot = day.get("overtime_hours", 0)
+            tasks = day.get("tasks_completed", 0)
+            ot_str = f"+{ot:.1f}h" if ot > 0 else "-"
+            print(f"  {day['date']:<12} {h:>6.1f}h {s:>9.0f}h {ot_str:>9} {tasks:>7}")
+        print(f"  {'-'*12} {'-'*7} {'-'*10} {'-'*9}")
+        ot_str = f"+{overtime:.1f}h" if overtime > 0 else "-"
+        print(f"  {'Total':<12} {total:>6.1f}h {'':>10} {ot_str:>9}")
+    else:
+        h = resp.get("total_hours", 0)
+        s = resp.get("scheduled_hours", 8)
+        ot = resp.get("overtime_hours", 0)
+        tasks = resp.get("tasks_completed", 0)
+        escalated = resp.get("tasks_escalated", 0)
+        print(f"Agent: {agent_id}  |  Today: {resp.get('date', '?')}\n")
+        print(f"  Hours worked:  {h:.1f}h")
+        print(f"  Scheduled:     {s:.0f}h")
+        if ot > 0:
+            print(f"  Overtime:      +{ot:.1f}h")
+        print(f"  Tasks done:    {tasks}")
+        print(f"  Escalated:     {escalated}")
+
+        entries = resp.get("entries", [])
+        if entries:
+            print(f"\n  Work Periods:")
+            for e in entries:
+                wake = e.get("wake_time", "?")[:16]
+                sleep = e.get("sleep_time")
+                sleep_str = sleep[:16] if sleep else "still working"
+                print(f"    {wake} → {sleep_str}  ({e.get('hours', 0):.1f}h)")
+
+
 def cmd_discover(args: argparse.Namespace) -> None:
     """Run node capability discovery and display results."""
     import asyncio as _asyncio
@@ -1092,6 +1291,9 @@ def build_parser() -> argparse.ArgumentParser:
     # status
     subparsers.add_parser("status", help="Show agent status")
 
+    # watch
+    subparsers.add_parser("watch", help="Live dashboard of all agents")
+
     # agent
     agent_parser = subparsers.add_parser("agent", help="Agent management")
     agent_sub = agent_parser.add_subparsers(dest="agent_command")
@@ -1104,6 +1306,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     agent_sub.add_parser("list", help="List all agents")
+
+    activity_parser = agent_sub.add_parser("activity", help="Show detailed agent activity")
+    activity_parser.add_argument("id", help="Agent ID")
+
+    hours_parser = agent_sub.add_parser("hours", help="Show agent working hours")
+    hours_parser.add_argument("id", help="Agent ID")
+    hours_parser.add_argument("--week", action="store_true", help="Show weekly summary")
 
     wake_parser = agent_sub.add_parser("wake", help="Wake an agent")
     wake_parser.add_argument("id", help="Agent ID")
@@ -1194,11 +1403,17 @@ def main() -> None:
         cmd_stop(args)
     elif args.command == "status":
         cmd_status(args)
+    elif args.command == "watch":
+        cmd_watch(args)
     elif args.command == "agent":
         if args.agent_command == "create":
             cmd_agent_create(args)
         elif args.agent_command == "list":
             cmd_agent_list(args)
+        elif args.agent_command == "activity":
+            cmd_agent_activity(args)
+        elif args.agent_command == "hours":
+            cmd_agent_hours(args)
         elif args.agent_command == "wake":
             cmd_agent_wake(args)
         elif args.agent_command == "sleep":

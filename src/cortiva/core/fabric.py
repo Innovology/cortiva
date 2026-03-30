@@ -37,6 +37,7 @@ from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
 from cortiva.core.living_summary import LivingSummaryRegenerator
 from cortiva.core.session import SessionManager
+from cortiva.core.timesheet import TimesheetManager
 from cortiva.core.models import ClusterModels
 from cortiva.core.reflection import ReflectionSuffix, parse_reflection_suffix
 from cortiva.core.scheduler import Scheduler
@@ -159,6 +160,7 @@ class Fabric:
         )
         self.scheduler = Scheduler()
         self.session_manager = SessionManager()
+        self.timesheet_manager = TimesheetManager(self.agents_dir)
         self.communication_tracker = CommunicationTracker()
         self.cluster_metrics = ClusterMetrics(
             communication_tracker=self.communication_tracker,
@@ -330,8 +332,24 @@ class Fabric:
         agent.reset_today()
         self._familiarity_signals[agent_id] = []
 
-        # Start a conversation session for the day
+        # Start a conversation session and clock in for the day
         self.session_manager.start(agent_id)
+
+        # Determine scheduled hours from schedule config
+        schedule = self.scheduler.get_schedule(agent_id)
+        scheduled_hours = 8.0
+        if schedule:
+            wake_time = sleep_time = None
+            for entry in schedule.entries:
+                if entry.action == "wake" and entry.times:
+                    wake_time = entry.times[0]
+                if entry.action == "sleep" and entry.times:
+                    sleep_time = entry.times[0]
+            if wake_time and sleep_time:
+                wake_mins = wake_time[0] * 60 + wake_time[1]
+                sleep_mins = sleep_time[0] * 60 + sleep_time[1]
+                scheduled_hours = max(0.0, (sleep_mins - wake_mins) / 60)
+        self.timesheet_manager.clock_in(agent_id, scheduled_hours)
 
         identity = agent.read_all_identity()
 
@@ -456,7 +474,13 @@ class Fabric:
         agent.task_queue = None
         agent.transition(AgentState.SLEEPING)
 
-        # End conversation session and clean up isolation resources
+        # Clock out and end conversation session
+        self.timesheet_manager.clock_out(
+            agent_id,
+            tasks_completed=agent.tasks_completed_today,
+            tasks_escalated=agent.tasks_escalated_today,
+            consciousness_calls=agent.consciousness_budget_used,
+        )
         self.session_manager.end(agent_id)
         self.isolation.cleanup(agent_id)
 
@@ -1036,7 +1060,119 @@ class Fabric:
             except Exception as exc:
                 return {"ok": False, "error": str(exc)}
 
+        async def _handle_agent_activity(
+            agent_id: str = "", **_kw: Any,
+        ) -> dict[str, Any]:
+            """Return live activity: current task, session, timesheet."""
+            if not agent_id:
+                return {"ok": False, "error": "agent_id required"}
+            if agent_id not in self.agents:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+            agent = self.agents[agent_id]
+
+            # Current task
+            current_task = None
+            pending_tasks: list[dict[str, str]] = []
+            completed_tasks: list[dict[str, str]] = []
+            if agent.task_queue:
+                for t in agent.task_queue.tasks:
+                    td = {"id": t.id, "description": t.description, "status": t.status}
+                    if t.status == "in_progress":
+                        current_task = td
+                    elif t.status == "pending":
+                        pending_tasks.append(td)
+                    elif t.status == "done":
+                        completed_tasks.append(td)
+
+            # Session turns
+            session_turns: list[dict[str, str]] = []
+            session = self.session_manager.get(agent_id)
+            if session:
+                for turn in session.turns:
+                    session_turns.append({
+                        "role": turn.role,
+                        "call_type": turn.call_type,
+                        "content": turn.content[:200],
+                    })
+
+            # Timesheet
+            ts = self.timesheet_manager.get(agent_id)
+            today = ts.today()
+
+            return {
+                "ok": True,
+                "agent_id": agent_id,
+                "state": agent.state.value,
+                "current_task": current_task,
+                "completed_tasks": completed_tasks,
+                "pending_tasks": pending_tasks,
+                "session_turns": session_turns,
+                "timesheet": today.to_dict(),
+            }
+
+        async def _handle_agent_hours(
+            agent_id: str = "", period: str = "today", **_kw: Any,
+        ) -> dict[str, Any]:
+            """Return working hours summary."""
+            if not agent_id:
+                return {"ok": False, "error": "agent_id required"}
+
+            ts = self.timesheet_manager.get(agent_id)
+            if period == "week":
+                week = ts.week()
+                total_hours = sum(d.total_hours for d in week)
+                total_overtime = sum(d.overtime_hours for d in week)
+                return {
+                    "ok": True,
+                    "agent_id": agent_id,
+                    "period": "week",
+                    "total_hours": round(total_hours, 2),
+                    "total_overtime": round(total_overtime, 2),
+                    "days": [d.to_dict() for d in week],
+                }
+            else:
+                today = ts.today()
+                return {
+                    "ok": True,
+                    "agent_id": agent_id,
+                    "period": "today",
+                    **today.to_dict(),
+                }
+
+        async def _handle_watch(**_kw: Any) -> dict[str, Any]:
+            """Return live dashboard data for all agents."""
+            agents_data: dict[str, Any] = {}
+            for aid, agent in self.agents.items():
+                current_task = None
+                task_progress = ""
+                if agent.task_queue:
+                    total = len(agent.task_queue.tasks)
+                    done = sum(1 for t in agent.task_queue.tasks if t.status == "done")
+                    task_progress = f"{done}/{total}"
+                    for t in agent.task_queue.tasks:
+                        if t.status == "in_progress":
+                            current_task = t.description[:60]
+                            break
+
+                ts = self.timesheet_manager.get(aid)
+                today = ts.today()
+
+                agents_data[aid] = {
+                    "state": agent.state.value,
+                    "current_task": current_task,
+                    "task_progress": task_progress,
+                    "consciousness_used": agent.consciousness_budget_used,
+                    "consciousness_limit": agent.consciousness_budget_limit,
+                    "hours_today": round(today.total_hours, 2),
+                    "overtime_hours": round(today.overtime_hours, 2),
+                    "scheduled_hours": today.scheduled_hours,
+                }
+            return {"ok": True, "agents": agents_data}
+
         server.register("status", _handle_status)
+        server.register("watch", _handle_watch)
+        server.register("agent.activity", _handle_agent_activity)
+        server.register("agent.hours", _handle_agent_hours)
         server.register("agent.wake", _handle_agent_wake)
         server.register("agent.sleep", _handle_agent_sleep)
         server.register("agent.cycle", _handle_agent_cycle)
