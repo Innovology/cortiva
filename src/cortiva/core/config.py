@@ -282,6 +282,11 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
     if schedules and isinstance(schedules, dict):
         fabric.load_schedules(schedules)
 
+    # --- Execution policies (optional) ---
+    policies_section = config.get("policies")
+    if policies_section and isinstance(policies_section, dict):
+        fabric.policy_manager.load(policies_section)
+
     # --- Cluster config (optional) ---
     cluster_section = config.get("cluster", {})
     endpoints = cluster_section.get("endpoints")

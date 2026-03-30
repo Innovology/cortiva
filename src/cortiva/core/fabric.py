@@ -37,6 +37,7 @@ from cortiva.core.familiarity import FamiliarityEngine
 from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
 from cortiva.core.living_summary import LivingSummaryRegenerator
+from cortiva.core.policy import PolicyManager
 from cortiva.core.session import SessionManager
 from cortiva.core.timesheet import TimesheetManager
 from cortiva.core.models import ClusterModels
@@ -163,6 +164,7 @@ class Fabric:
         self.session_manager = SessionManager()
         self.timesheet_manager = TimesheetManager(self.agents_dir)
         self.capacity_tracker = CapacityTracker()
+        self.policy_manager = PolicyManager()
         self.communication_tracker = CommunicationTracker()
         self.cluster_metrics = ClusterMetrics(
             communication_tracker=self.communication_tracker,
@@ -557,6 +559,42 @@ class Fabric:
         self, agent: Agent, task: Task, messages: list[Any]
     ) -> None:
         """Execute a single task via routine or consciousness."""
+        # Check execution policy before starting
+        policy_result = self.policy_manager.check_action(agent.id, task.description)
+        if policy_result.denied:
+            task.status = "exception"
+            task.error = f"Policy denied: {policy_result.reason}"
+            assert agent.task_queue is not None
+            agent.task_queue.exceptions.append(task)
+            agent.tasks_escalated_today += 1
+            logger.warning(
+                "Agent %s task blocked by policy: %s — %s",
+                agent.id, task.description, policy_result.reason,
+            )
+            self._emit(
+                "policy.denied", agent_id=agent.id,
+                task=task.description, reason=policy_result.reason,
+            )
+            return
+
+        if policy_result.needs_approval:
+            logger.info(
+                "Agent %s task requires approval: %s — %s",
+                agent.id, task.description, policy_result.reason,
+            )
+            self._emit(
+                "policy.approval_required", agent_id=agent.id,
+                task=task.description, reason=policy_result.reason,
+            )
+            # For now, defer tasks that need approval as exceptions.
+            # A future approval workflow would queue these for human review.
+            task.status = "exception"
+            task.error = f"Awaiting approval: {policy_result.reason}"
+            assert agent.task_queue is not None
+            agent.task_queue.exceptions.append(task)
+            agent.tasks_escalated_today += 1
+            return
+
         task.status = "in_progress"
         routine_assessment: dict[str, Any] | None = None
 
@@ -788,10 +826,15 @@ class Fabric:
             agent_id=agent.id, cmd=[], cwd=cwd,
         )
 
+        # Enforce tool-level policy
+        policy = self.policy_manager.get(agent.id)
+        allowed_tools = policy.tools.effective_allowed()
+
         response = await self.terminal.invoke(
             prompt=prompt,
             cwd=envelope.cwd,
             env=envelope.env,
+            allowed_tools=allowed_tools,
         )
 
         if response.is_error:
