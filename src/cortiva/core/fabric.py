@@ -888,13 +888,20 @@ class Fabric:
                 except Exception as e:
                     logger.error(f"Scheduler action {action} for {agent_id}: {e}")
 
-        # Run cycles for active agents
-        for agent_id, agent in self.agents.items():
-            if agent.state == AgentState.EXECUTING:
-                try:
-                    await self.cycle(agent_id)
-                except Exception as e:
-                    logger.error(f"Cycle error for {agent_id}: {e}")
+        # Run cycles for active agents concurrently
+        async def _run_cycle(aid: str) -> None:
+            try:
+                await self.cycle(aid)
+            except Exception as e:
+                logger.error(f"Cycle error for {aid}: {e}")
+
+        coros = [
+            _run_cycle(agent_id)
+            for agent_id, agent in self.agents.items()
+            if agent.state == AgentState.EXECUTING
+        ]
+        if coros:
+            await asyncio.gather(*coros, return_exceptions=True)
 
     async def _heartbeat_loop(self) -> None:
         """Continuous heartbeat loop."""
