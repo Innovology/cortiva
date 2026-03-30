@@ -1,0 +1,1439 @@
+# Cortiva Skill Registry
+#
+# Each skill wraps an MCP server or provides standalone procedures.
+# Install with: cortiva skill install <name>
+#
+# Categories:
+#   project-management, code-quality, version-control, databases,
+#   cloud-infrastructure, monitoring, communication, documentation,
+#   browser-automation, file-management, data-processing, ai-ml,
+#   security, devops, design, productivity, finance, marketing,
+#   search, storage, email, calendar, crm, analytics, testing,
+#   api-integration, blockchain, iot, media, language, ecommerce
+
+skills:
+
+  # ===================================================================
+  # PROJECT MANAGEMENT
+  # ===================================================================
+
+  - name: linear
+    description: Create, update, search, and manage Linear issues and projects
+    category: project-management
+    tags: [issues, tickets, agile, sprint]
+    mcp:
+      package: "@linear/mcp-server"
+      command: "npx @linear/mcp-server"
+      env: [LINEAR_API_KEY]
+    procedures: |
+      ## Linear Integration
+      - Use Linear tools to create issues, update status, and search tickets.
+      - When creating issues, always assign to a team and set priority.
+      - Link related issues using relations.
+      - Use labels for categorisation (bug, feature, improvement).
+
+  - name: jira
+    description: Manage Jira issues, sprints, and boards
+    category: project-management
+    tags: [issues, tickets, agile, atlassian]
+    mcp:
+      package: "@anthropic/mcp-server-jira"
+      command: "npx @anthropic/mcp-server-jira"
+      env: [JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN]
+    procedures: |
+      ## Jira Integration
+      - Create and update Jira issues with appropriate fields.
+      - Always set issue type, priority, and assignee.
+      - Use JQL for complex searches.
+
+  - name: asana
+    description: Manage Asana tasks, projects, and workspaces
+    category: project-management
+    tags: [tasks, projects, collaboration]
+    mcp:
+      package: "mcp-server-asana"
+      command: "npx mcp-server-asana"
+      env: [ASANA_ACCESS_TOKEN]
+
+  - name: trello
+    description: Manage Trello boards, lists, and cards
+    category: project-management
+    tags: [kanban, boards, cards]
+    mcp:
+      package: "mcp-server-trello"
+      command: "npx mcp-server-trello"
+      env: [TRELLO_API_KEY, TRELLO_TOKEN]
+
+  - name: monday
+    description: Manage Monday.com boards and items
+    category: project-management
+    tags: [boards, items, workflow]
+    mcp:
+      package: "mcp-server-monday"
+      command: "npx mcp-server-monday"
+      env: [MONDAY_API_KEY]
+
+  - name: clickup
+    description: Manage ClickUp tasks, spaces, and goals
+    category: project-management
+    tags: [tasks, goals, spaces]
+    mcp:
+      package: "mcp-server-clickup"
+      command: "npx mcp-server-clickup"
+      env: [CLICKUP_API_TOKEN]
+
+  - name: notion
+    description: Read and write Notion pages, databases, and blocks
+    category: project-management
+    tags: [wiki, notes, databases, knowledge-base]
+    mcp:
+      package: "@anthropic/mcp-server-notion"
+      command: "npx @anthropic/mcp-server-notion"
+      env: [NOTION_API_KEY]
+
+  - name: todoist
+    description: Manage Todoist tasks and projects
+    category: project-management
+    tags: [tasks, todo, personal]
+    mcp:
+      package: "mcp-server-todoist"
+      command: "npx mcp-server-todoist"
+      env: [TODOIST_API_TOKEN]
+
+  - name: basecamp
+    description: Manage Basecamp projects, todos, and messages
+    category: project-management
+    tags: [projects, todos, team]
+    mcp:
+      package: "mcp-server-basecamp"
+      command: "npx mcp-server-basecamp"
+      env: [BASECAMP_ACCESS_TOKEN]
+
+  - name: height
+    description: Manage Height tasks and projects
+    category: project-management
+    tags: [tasks, projects]
+    mcp:
+      package: "mcp-server-height"
+      command: "npx mcp-server-height"
+      env: [HEIGHT_API_KEY]
+
+  - name: shortcut
+    description: Manage Shortcut stories and epics
+    category: project-management
+    tags: [stories, epics, agile]
+    mcp:
+      package: "mcp-server-shortcut"
+      command: "npx mcp-server-shortcut"
+      env: [SHORTCUT_API_TOKEN]
+
+  # ===================================================================
+  # VERSION CONTROL
+  # ===================================================================
+
+  - name: github
+    description: Manage GitHub repos, issues, PRs, actions, and code search
+    category: version-control
+    tags: [git, repos, pull-requests, issues, actions]
+    mcp:
+      package: "@anthropic/mcp-server-github"
+      command: "npx @anthropic/mcp-server-github"
+      env: [GITHUB_TOKEN]
+    procedures: |
+      ## GitHub Integration
+      - Use GitHub tools for repo operations, PR management, and issue tracking.
+      - Always create feature branches for changes.
+      - Write descriptive PR titles and bodies.
+      - Request reviews from appropriate team members.
+      - Check CI status before merging.
+
+  - name: gitlab
+    description: Manage GitLab repos, merge requests, and CI pipelines
+    category: version-control
+    tags: [git, repos, merge-requests, ci]
+    mcp:
+      package: "mcp-server-gitlab"
+      command: "npx mcp-server-gitlab"
+      env: [GITLAB_TOKEN, GITLAB_URL]
+
+  - name: bitbucket
+    description: Manage Bitbucket repos and pull requests
+    category: version-control
+    tags: [git, repos, pull-requests, atlassian]
+    mcp:
+      package: "mcp-server-bitbucket"
+      command: "npx mcp-server-bitbucket"
+      env: [BITBUCKET_USERNAME, BITBUCKET_APP_PASSWORD]
+
+  - name: git
+    description: Git operations — commit, branch, merge, rebase, log
+    category: version-control
+    tags: [git, commits, branches]
+    mcp:
+      package: "@anthropic/mcp-server-git"
+      command: "npx @anthropic/mcp-server-git"
+
+  # ===================================================================
+  # CODE QUALITY & TESTING
+  # ===================================================================
+
+  - name: eslint
+    description: Run ESLint checks and auto-fix JavaScript/TypeScript
+    category: code-quality
+    tags: [linting, javascript, typescript]
+    mcp:
+      package: "mcp-server-eslint"
+      command: "npx mcp-server-eslint"
+
+  - name: prettier
+    description: Format code with Prettier
+    category: code-quality
+    tags: [formatting, javascript, typescript]
+    mcp:
+      package: "mcp-server-prettier"
+      command: "npx mcp-server-prettier"
+
+  - name: sonarqube
+    description: Code quality analysis with SonarQube
+    category: code-quality
+    tags: [analysis, quality, security]
+    mcp:
+      package: "mcp-server-sonarqube"
+      command: "npx mcp-server-sonarqube"
+      env: [SONAR_TOKEN, SONAR_URL]
+
+  - name: pytest-runner
+    description: Run Python tests with pytest and report results
+    category: testing
+    tags: [python, testing, pytest]
+    procedures: |
+      ## Running Tests
+      - Run tests with: pytest --tb=short -q
+      - For specific files: pytest tests/test_module.py -v
+      - For coverage: pytest --cov=src --cov-report=term-missing
+      - Fix failing tests before committing.
+      - Write tests for all new functionality.
+
+  - name: jest-runner
+    description: Run JavaScript tests with Jest
+    category: testing
+    tags: [javascript, testing, jest]
+    procedures: |
+      ## Running Tests
+      - Run tests with: npx jest
+      - For specific files: npx jest path/to/test
+      - For coverage: npx jest --coverage
+      - Watch mode: npx jest --watch
+
+  - name: playwright
+    description: Browser automation and E2E testing with Playwright
+    category: testing
+    tags: [browser, e2e, testing, automation]
+    mcp:
+      package: "@anthropic/mcp-server-playwright"
+      command: "npx @anthropic/mcp-server-playwright"
+
+  - name: cypress
+    description: E2E testing with Cypress
+    category: testing
+    tags: [browser, e2e, testing]
+    mcp:
+      package: "mcp-server-cypress"
+      command: "npx mcp-server-cypress"
+
+  - name: k6
+    description: Load testing with k6
+    category: testing
+    tags: [load-testing, performance]
+    mcp:
+      package: "mcp-server-k6"
+      command: "npx mcp-server-k6"
+
+  # ===================================================================
+  # DATABASES
+  # ===================================================================
+
+  - name: postgres
+    description: Query and manage PostgreSQL databases
+    category: databases
+    tags: [sql, relational, postgresql]
+    mcp:
+      package: "@anthropic/mcp-server-postgres"
+      command: "npx @anthropic/mcp-server-postgres"
+      env: [DATABASE_URL]
+
+  - name: mysql
+    description: Query and manage MySQL databases
+    category: databases
+    tags: [sql, relational, mysql]
+    mcp:
+      package: "mcp-server-mysql"
+      command: "npx mcp-server-mysql"
+      env: [MYSQL_URL]
+
+  - name: sqlite
+    description: Query and manage SQLite databases
+    category: databases
+    tags: [sql, relational, sqlite, local]
+    mcp:
+      package: "@anthropic/mcp-server-sqlite"
+      command: "npx @anthropic/mcp-server-sqlite"
+
+  - name: mongodb
+    description: Query and manage MongoDB databases
+    category: databases
+    tags: [nosql, document, mongodb]
+    mcp:
+      package: "mcp-server-mongodb"
+      command: "npx mcp-server-mongodb"
+      env: [MONGODB_URI]
+
+  - name: redis
+    description: Manage Redis keys, streams, and pub/sub
+    category: databases
+    tags: [cache, key-value, redis]
+    mcp:
+      package: "mcp-server-redis"
+      command: "npx mcp-server-redis"
+      env: [REDIS_URL]
+
+  - name: dynamodb
+    description: Query and manage AWS DynamoDB tables
+    category: databases
+    tags: [aws, nosql, dynamodb]
+    mcp:
+      package: "mcp-server-dynamodb"
+      command: "npx mcp-server-dynamodb"
+      env: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION]
+
+  - name: supabase
+    description: Manage Supabase databases, auth, and storage
+    category: databases
+    tags: [postgres, auth, storage, baas]
+    mcp:
+      package: "mcp-server-supabase"
+      command: "npx mcp-server-supabase"
+      env: [SUPABASE_URL, SUPABASE_KEY]
+
+  - name: firebase
+    description: Manage Firebase Firestore and Realtime Database
+    category: databases
+    tags: [nosql, google, firebase]
+    mcp:
+      package: "mcp-server-firebase"
+      command: "npx mcp-server-firebase"
+      env: [FIREBASE_PROJECT_ID]
+
+  - name: prisma
+    description: Database operations via Prisma ORM
+    category: databases
+    tags: [orm, typescript, prisma]
+    mcp:
+      package: "mcp-server-prisma"
+      command: "npx mcp-server-prisma"
+
+  - name: neon
+    description: Manage Neon serverless Postgres databases
+    category: databases
+    tags: [postgres, serverless, neon]
+    mcp:
+      package: "mcp-server-neon"
+      command: "npx mcp-server-neon"
+      env: [NEON_API_KEY]
+
+  - name: planetscale
+    description: Manage PlanetScale MySQL databases
+    category: databases
+    tags: [mysql, serverless, planetscale]
+    mcp:
+      package: "mcp-server-planetscale"
+      command: "npx mcp-server-planetscale"
+      env: [PLANETSCALE_TOKEN]
+
+  - name: elasticsearch
+    description: Search and manage Elasticsearch indices
+    category: databases
+    tags: [search, elasticsearch, indexing]
+    mcp:
+      package: "mcp-server-elasticsearch"
+      command: "npx mcp-server-elasticsearch"
+      env: [ELASTICSEARCH_URL]
+
+  - name: pinecone
+    description: Vector database operations with Pinecone
+    category: databases
+    tags: [vector, embeddings, similarity]
+    mcp:
+      package: "mcp-server-pinecone"
+      command: "npx mcp-server-pinecone"
+      env: [PINECONE_API_KEY]
+
+  - name: weaviate
+    description: Vector database operations with Weaviate
+    category: databases
+    tags: [vector, embeddings, knowledge-graph]
+    mcp:
+      package: "mcp-server-weaviate"
+      command: "npx mcp-server-weaviate"
+      env: [WEAVIATE_URL]
+
+  - name: qdrant
+    description: Vector database operations with Qdrant
+    category: databases
+    tags: [vector, embeddings, search]
+    mcp:
+      package: "mcp-server-qdrant"
+      command: "npx mcp-server-qdrant"
+      env: [QDRANT_URL]
+
+  - name: chromadb
+    description: Vector database operations with ChromaDB
+    category: databases
+    tags: [vector, embeddings, local]
+    mcp:
+      package: "mcp-server-chromadb"
+      command: "npx mcp-server-chromadb"
+
+  # ===================================================================
+  # CLOUD INFRASTRUCTURE
+  # ===================================================================
+
+  - name: aws
+    description: Manage AWS services — EC2, S3, Lambda, CloudFormation
+    category: cloud-infrastructure
+    tags: [aws, cloud, infrastructure]
+    mcp:
+      package: "mcp-server-aws"
+      command: "npx mcp-server-aws"
+      env: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION]
+
+  - name: aws-s3
+    description: Manage AWS S3 buckets and objects
+    category: cloud-infrastructure
+    tags: [aws, s3, storage]
+    mcp:
+      package: "mcp-server-aws-s3"
+      command: "npx mcp-server-aws-s3"
+      env: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY]
+
+  - name: aws-lambda
+    description: Manage AWS Lambda functions
+    category: cloud-infrastructure
+    tags: [aws, lambda, serverless]
+    mcp:
+      package: "mcp-server-aws-lambda"
+      command: "npx mcp-server-aws-lambda"
+      env: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY]
+
+  - name: gcp
+    description: Manage Google Cloud Platform services
+    category: cloud-infrastructure
+    tags: [gcp, google, cloud]
+    mcp:
+      package: "mcp-server-gcp"
+      command: "npx mcp-server-gcp"
+      env: [GOOGLE_APPLICATION_CREDENTIALS]
+
+  - name: azure
+    description: Manage Microsoft Azure services
+    category: cloud-infrastructure
+    tags: [azure, microsoft, cloud]
+    mcp:
+      package: "mcp-server-azure"
+      command: "npx mcp-server-azure"
+      env: [AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID]
+
+  - name: cloudflare
+    description: Manage Cloudflare Workers, DNS, and CDN
+    category: cloud-infrastructure
+    tags: [cloudflare, cdn, workers, dns]
+    mcp:
+      package: "mcp-server-cloudflare"
+      command: "npx mcp-server-cloudflare"
+      env: [CLOUDFLARE_API_TOKEN]
+
+  - name: vercel
+    description: Manage Vercel deployments and projects
+    category: cloud-infrastructure
+    tags: [vercel, deployment, serverless]
+    mcp:
+      package: "mcp-server-vercel"
+      command: "npx mcp-server-vercel"
+      env: [VERCEL_TOKEN]
+
+  - name: netlify
+    description: Manage Netlify sites and deployments
+    category: cloud-infrastructure
+    tags: [netlify, deployment, jamstack]
+    mcp:
+      package: "mcp-server-netlify"
+      command: "npx mcp-server-netlify"
+      env: [NETLIFY_TOKEN]
+
+  - name: terraform
+    description: Infrastructure as code with Terraform
+    category: cloud-infrastructure
+    tags: [terraform, iac, infrastructure]
+    mcp:
+      package: "mcp-server-terraform"
+      command: "npx mcp-server-terraform"
+
+  - name: kubernetes
+    description: Manage Kubernetes clusters, pods, and deployments
+    category: cloud-infrastructure
+    tags: [k8s, kubernetes, containers, orchestration]
+    mcp:
+      package: "mcp-server-kubernetes"
+      command: "npx mcp-server-kubernetes"
+
+  - name: docker
+    description: Manage Docker containers, images, and compose
+    category: cloud-infrastructure
+    tags: [docker, containers]
+    mcp:
+      package: "mcp-server-docker"
+      command: "npx mcp-server-docker"
+
+  - name: digitalocean
+    description: Manage DigitalOcean droplets, databases, and apps
+    category: cloud-infrastructure
+    tags: [digitalocean, cloud, vps]
+    mcp:
+      package: "mcp-server-digitalocean"
+      command: "npx mcp-server-digitalocean"
+      env: [DIGITALOCEAN_TOKEN]
+
+  - name: fly-io
+    description: Manage Fly.io apps and machines
+    category: cloud-infrastructure
+    tags: [fly, deployment, edge]
+    mcp:
+      package: "mcp-server-fly"
+      command: "npx mcp-server-fly"
+      env: [FLY_API_TOKEN]
+
+  - name: railway
+    description: Manage Railway projects and deployments
+    category: cloud-infrastructure
+    tags: [railway, deployment, paas]
+    mcp:
+      package: "mcp-server-railway"
+      command: "npx mcp-server-railway"
+      env: [RAILWAY_TOKEN]
+
+  - name: render
+    description: Manage Render services and deployments
+    category: cloud-infrastructure
+    tags: [render, deployment, paas]
+    mcp:
+      package: "mcp-server-render"
+      command: "npx mcp-server-render"
+      env: [RENDER_API_KEY]
+
+  # ===================================================================
+  # MONITORING & OBSERVABILITY
+  # ===================================================================
+
+  - name: datadog
+    description: Query Datadog metrics, logs, and monitors
+    category: monitoring
+    tags: [monitoring, metrics, logs, apm]
+    mcp:
+      package: "mcp-server-datadog"
+      command: "npx mcp-server-datadog"
+      env: [DD_API_KEY, DD_APP_KEY]
+
+  - name: grafana
+    description: Query Grafana dashboards and data sources
+    category: monitoring
+    tags: [monitoring, dashboards, visualization]
+    mcp:
+      package: "mcp-server-grafana"
+      command: "npx mcp-server-grafana"
+      env: [GRAFANA_URL, GRAFANA_API_KEY]
+
+  - name: sentry
+    description: Manage Sentry error tracking and performance
+    category: monitoring
+    tags: [errors, monitoring, performance]
+    mcp:
+      package: "@anthropic/mcp-server-sentry"
+      command: "npx @anthropic/mcp-server-sentry"
+      env: [SENTRY_AUTH_TOKEN]
+
+  - name: pagerduty
+    description: Manage PagerDuty incidents and on-call schedules
+    category: monitoring
+    tags: [incidents, on-call, alerting]
+    mcp:
+      package: "mcp-server-pagerduty"
+      command: "npx mcp-server-pagerduty"
+      env: [PAGERDUTY_API_KEY]
+
+  - name: prometheus
+    description: Query Prometheus metrics
+    category: monitoring
+    tags: [metrics, monitoring, alerting]
+    mcp:
+      package: "mcp-server-prometheus"
+      command: "npx mcp-server-prometheus"
+      env: [PROMETHEUS_URL]
+
+  - name: new-relic
+    description: Query New Relic metrics and traces
+    category: monitoring
+    tags: [apm, monitoring, observability]
+    mcp:
+      package: "mcp-server-newrelic"
+      command: "npx mcp-server-newrelic"
+      env: [NEW_RELIC_API_KEY]
+
+  - name: opsgenie
+    description: Manage OpsGenie alerts and on-call
+    category: monitoring
+    tags: [alerting, on-call, incidents]
+    mcp:
+      package: "mcp-server-opsgenie"
+      command: "npx mcp-server-opsgenie"
+      env: [OPSGENIE_API_KEY]
+
+  - name: honeycomb
+    description: Query Honeycomb observability data
+    category: monitoring
+    tags: [observability, traces, debugging]
+    mcp:
+      package: "mcp-server-honeycomb"
+      command: "npx mcp-server-honeycomb"
+      env: [HONEYCOMB_API_KEY]
+
+  # ===================================================================
+  # COMMUNICATION
+  # ===================================================================
+
+  - name: slack
+    description: Send and read Slack messages, manage channels
+    category: communication
+    tags: [messaging, slack, team]
+    mcp:
+      package: "@anthropic/mcp-server-slack"
+      command: "npx @anthropic/mcp-server-slack"
+      env: [SLACK_BOT_TOKEN]
+
+  - name: discord
+    description: Send and manage Discord messages and channels
+    category: communication
+    tags: [messaging, discord, community]
+    mcp:
+      package: "mcp-server-discord"
+      command: "npx mcp-server-discord"
+      env: [DISCORD_TOKEN]
+
+  - name: teams
+    description: Send and manage Microsoft Teams messages
+    category: communication
+    tags: [messaging, teams, microsoft]
+    mcp:
+      package: "mcp-server-teams"
+      command: "npx mcp-server-teams"
+      env: [TEAMS_WEBHOOK_URL]
+
+  - name: telegram
+    description: Send and receive Telegram messages
+    category: communication
+    tags: [messaging, telegram]
+    mcp:
+      package: "mcp-server-telegram"
+      command: "npx mcp-server-telegram"
+      env: [TELEGRAM_BOT_TOKEN]
+
+  - name: twilio
+    description: Send SMS and make calls via Twilio
+    category: communication
+    tags: [sms, voice, twilio]
+    mcp:
+      package: "mcp-server-twilio"
+      command: "npx mcp-server-twilio"
+      env: [TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]
+
+  - name: sendgrid
+    description: Send emails via SendGrid
+    category: email
+    tags: [email, transactional, sendgrid]
+    mcp:
+      package: "mcp-server-sendgrid"
+      command: "npx mcp-server-sendgrid"
+      env: [SENDGRID_API_KEY]
+
+  - name: mailgun
+    description: Send and receive emails via Mailgun
+    category: email
+    tags: [email, transactional, mailgun]
+    mcp:
+      package: "mcp-server-mailgun"
+      command: "npx mcp-server-mailgun"
+      env: [MAILGUN_API_KEY, MAILGUN_DOMAIN]
+
+  - name: gmail
+    description: Read and send Gmail messages
+    category: email
+    tags: [email, gmail, google]
+    mcp:
+      package: "mcp-server-gmail"
+      command: "npx mcp-server-gmail"
+      env: [GOOGLE_APPLICATION_CREDENTIALS]
+
+  - name: outlook
+    description: Read and send Outlook emails
+    category: email
+    tags: [email, outlook, microsoft]
+    mcp:
+      package: "mcp-server-outlook"
+      command: "npx mcp-server-outlook"
+      env: [MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET]
+
+  # ===================================================================
+  # BROWSER & AUTOMATION
+  # ===================================================================
+
+  - name: browser
+    description: Control a web browser — navigate, click, fill forms, screenshot
+    category: browser-automation
+    tags: [browser, chrome, automation, web]
+    mcp:
+      package: "@anthropic/mcp-server-puppeteer"
+      command: "npx @anthropic/mcp-server-puppeteer"
+    procedures: |
+      ## Browser Automation
+      - Use browser tools to navigate websites, fill forms, and take screenshots.
+      - Always wait for page loads before interacting with elements.
+      - Use CSS selectors to target elements precisely.
+      - Take screenshots to verify visual state.
+
+  - name: browserbase
+    description: Cloud browser automation with Browserbase
+    category: browser-automation
+    tags: [browser, cloud, headless]
+    mcp:
+      package: "mcp-server-browserbase"
+      command: "npx mcp-server-browserbase"
+      env: [BROWSERBASE_API_KEY]
+
+  - name: apify
+    description: Web scraping and automation with Apify
+    category: browser-automation
+    tags: [scraping, automation, crawling]
+    mcp:
+      package: "mcp-server-apify"
+      command: "npx mcp-server-apify"
+      env: [APIFY_TOKEN]
+
+  - name: puppeteer
+    description: Browser automation with Puppeteer
+    category: browser-automation
+    tags: [browser, puppeteer, headless]
+    mcp:
+      package: "@anthropic/mcp-server-puppeteer"
+      command: "npx @anthropic/mcp-server-puppeteer"
+
+  - name: selenium
+    description: Browser automation with Selenium
+    category: browser-automation
+    tags: [browser, selenium, testing]
+    mcp:
+      package: "mcp-server-selenium"
+      command: "npx mcp-server-selenium"
+
+  # ===================================================================
+  # FILE & STORAGE
+  # ===================================================================
+
+  - name: filesystem
+    description: Read, write, and manage local files and directories
+    category: file-management
+    tags: [files, directories, local]
+    mcp:
+      package: "@anthropic/mcp-server-filesystem"
+      command: "npx @anthropic/mcp-server-filesystem"
+
+  - name: google-drive
+    description: Manage Google Drive files and folders
+    category: storage
+    tags: [google, drive, cloud-storage]
+    mcp:
+      package: "mcp-server-google-drive"
+      command: "npx mcp-server-google-drive"
+      env: [GOOGLE_APPLICATION_CREDENTIALS]
+
+  - name: dropbox
+    description: Manage Dropbox files and folders
+    category: storage
+    tags: [dropbox, cloud-storage]
+    mcp:
+      package: "mcp-server-dropbox"
+      command: "npx mcp-server-dropbox"
+      env: [DROPBOX_ACCESS_TOKEN]
+
+  - name: box
+    description: Manage Box files and folders
+    category: storage
+    tags: [box, cloud-storage, enterprise]
+    mcp:
+      package: "mcp-server-box"
+      command: "npx mcp-server-box"
+      env: [BOX_ACCESS_TOKEN]
+
+  - name: onedrive
+    description: Manage OneDrive files and folders
+    category: storage
+    tags: [onedrive, microsoft, cloud-storage]
+    mcp:
+      package: "mcp-server-onedrive"
+      command: "npx mcp-server-onedrive"
+      env: [MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET]
+
+  # ===================================================================
+  # DOCUMENTATION & KNOWLEDGE
+  # ===================================================================
+
+  - name: confluence
+    description: Read and write Confluence pages and spaces
+    category: documentation
+    tags: [wiki, confluence, atlassian, knowledge-base]
+    mcp:
+      package: "mcp-server-confluence"
+      command: "npx mcp-server-confluence"
+      env: [CONFLUENCE_URL, CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN]
+
+  - name: google-docs
+    description: Read and write Google Docs
+    category: documentation
+    tags: [google, docs, documents]
+    mcp:
+      package: "mcp-server-google-docs"
+      command: "npx mcp-server-google-docs"
+      env: [GOOGLE_APPLICATION_CREDENTIALS]
+
+  - name: google-sheets
+    description: Read and write Google Sheets
+    category: documentation
+    tags: [google, sheets, spreadsheets]
+    mcp:
+      package: "mcp-server-google-sheets"
+      command: "npx mcp-server-google-sheets"
+      env: [GOOGLE_APPLICATION_CREDENTIALS]
+
+  - name: airtable
+    description: Manage Airtable bases and records
+    category: documentation
+    tags: [airtable, spreadsheet, database]
+    mcp:
+      package: "mcp-server-airtable"
+      command: "npx mcp-server-airtable"
+      env: [AIRTABLE_API_KEY]
+
+  - name: coda
+    description: Manage Coda docs and tables
+    category: documentation
+    tags: [coda, docs, tables]
+    mcp:
+      package: "mcp-server-coda"
+      command: "npx mcp-server-coda"
+      env: [CODA_API_KEY]
+
+  # ===================================================================
+  # SEARCH & WEB
+  # ===================================================================
+
+  - name: brave-search
+    description: Web search via Brave Search API
+    category: search
+    tags: [search, web, brave]
+    mcp:
+      package: "@anthropic/mcp-server-brave-search"
+      command: "npx @anthropic/mcp-server-brave-search"
+      env: [BRAVE_API_KEY]
+
+  - name: google-search
+    description: Web search via Google Custom Search
+    category: search
+    tags: [search, web, google]
+    mcp:
+      package: "mcp-server-google-search"
+      command: "npx mcp-server-google-search"
+      env: [GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_ENGINE_ID]
+
+  - name: exa
+    description: AI-powered web search with Exa
+    category: search
+    tags: [search, ai, semantic]
+    mcp:
+      package: "mcp-server-exa"
+      command: "npx mcp-server-exa"
+      env: [EXA_API_KEY]
+
+  - name: tavily
+    description: AI-optimised web search with Tavily
+    category: search
+    tags: [search, ai, research]
+    mcp:
+      package: "mcp-server-tavily"
+      command: "npx mcp-server-tavily"
+      env: [TAVILY_API_KEY]
+
+  - name: serper
+    description: Google search results via Serper API
+    category: search
+    tags: [search, google, serp]
+    mcp:
+      package: "mcp-server-serper"
+      command: "npx mcp-server-serper"
+      env: [SERPER_API_KEY]
+
+  - name: web-fetch
+    description: Fetch and parse web pages
+    category: search
+    tags: [web, fetch, scraping]
+    mcp:
+      package: "@anthropic/mcp-server-fetch"
+      command: "npx @anthropic/mcp-server-fetch"
+
+  # ===================================================================
+  # DEVOPS & CI/CD
+  # ===================================================================
+
+  - name: github-actions
+    description: Manage GitHub Actions workflows and runs
+    category: devops
+    tags: [ci, cd, github, automation]
+    mcp:
+      package: "mcp-server-github-actions"
+      command: "npx mcp-server-github-actions"
+      env: [GITHUB_TOKEN]
+
+  - name: circleci
+    description: Manage CircleCI pipelines and jobs
+    category: devops
+    tags: [ci, cd, circleci]
+    mcp:
+      package: "mcp-server-circleci"
+      command: "npx mcp-server-circleci"
+      env: [CIRCLECI_TOKEN]
+
+  - name: jenkins
+    description: Manage Jenkins jobs and builds
+    category: devops
+    tags: [ci, cd, jenkins]
+    mcp:
+      package: "mcp-server-jenkins"
+      command: "npx mcp-server-jenkins"
+      env: [JENKINS_URL, JENKINS_USER, JENKINS_TOKEN]
+
+  - name: argocd
+    description: Manage ArgoCD applications and sync
+    category: devops
+    tags: [gitops, kubernetes, argocd]
+    mcp:
+      package: "mcp-server-argocd"
+      command: "npx mcp-server-argocd"
+      env: [ARGOCD_SERVER, ARGOCD_AUTH_TOKEN]
+
+  - name: ansible
+    description: Run Ansible playbooks and manage inventory
+    category: devops
+    tags: [automation, configuration, ansible]
+    mcp:
+      package: "mcp-server-ansible"
+      command: "npx mcp-server-ansible"
+
+  # ===================================================================
+  # AI & ML
+  # ===================================================================
+
+  - name: openai
+    description: Call OpenAI APIs — GPT, DALL-E, Whisper, embeddings
+    category: ai-ml
+    tags: [ai, openai, gpt, embeddings]
+    mcp:
+      package: "mcp-server-openai"
+      command: "npx mcp-server-openai"
+      env: [OPENAI_API_KEY]
+
+  - name: anthropic
+    description: Call Anthropic Claude APIs
+    category: ai-ml
+    tags: [ai, anthropic, claude]
+    mcp:
+      package: "mcp-server-anthropic"
+      command: "npx mcp-server-anthropic"
+      env: [ANTHROPIC_API_KEY]
+
+  - name: huggingface
+    description: Access Hugging Face models and datasets
+    category: ai-ml
+    tags: [ai, models, datasets, huggingface]
+    mcp:
+      package: "mcp-server-huggingface"
+      command: "npx mcp-server-huggingface"
+      env: [HUGGINGFACE_TOKEN]
+
+  - name: replicate
+    description: Run ML models on Replicate
+    category: ai-ml
+    tags: [ai, ml, models, replicate]
+    mcp:
+      package: "mcp-server-replicate"
+      command: "npx mcp-server-replicate"
+      env: [REPLICATE_API_TOKEN]
+
+  - name: stability-ai
+    description: Generate images with Stability AI
+    category: ai-ml
+    tags: [ai, images, generation, stable-diffusion]
+    mcp:
+      package: "mcp-server-stability"
+      command: "npx mcp-server-stability"
+      env: [STABILITY_API_KEY]
+
+  - name: langchain
+    description: LangChain tool integration
+    category: ai-ml
+    tags: [ai, langchain, chains]
+    mcp:
+      package: "mcp-server-langchain"
+      command: "npx mcp-server-langchain"
+
+  # ===================================================================
+  # SECURITY
+  # ===================================================================
+
+  - name: vault
+    description: Manage HashiCorp Vault secrets
+    category: security
+    tags: [secrets, vault, hashicorp]
+    mcp:
+      package: "mcp-server-vault"
+      command: "npx mcp-server-vault"
+      env: [VAULT_ADDR, VAULT_TOKEN]
+
+  - name: snyk
+    description: Security scanning with Snyk
+    category: security
+    tags: [security, vulnerabilities, scanning]
+    mcp:
+      package: "mcp-server-snyk"
+      command: "npx mcp-server-snyk"
+      env: [SNYK_TOKEN]
+
+  - name: trivy
+    description: Container and code security scanning with Trivy
+    category: security
+    tags: [security, containers, scanning]
+    mcp:
+      package: "mcp-server-trivy"
+      command: "npx mcp-server-trivy"
+
+  - name: semgrep
+    description: Static analysis with Semgrep
+    category: security
+    tags: [security, sast, static-analysis]
+    mcp:
+      package: "mcp-server-semgrep"
+      command: "npx mcp-server-semgrep"
+
+  # ===================================================================
+  # DESIGN
+  # ===================================================================
+
+  - name: figma
+    description: Read Figma designs, components, and styles
+    category: design
+    tags: [design, figma, ui, components]
+    mcp:
+      package: "mcp-server-figma"
+      command: "npx mcp-server-figma"
+      env: [FIGMA_ACCESS_TOKEN]
+
+  - name: canva
+    description: Create and manage Canva designs
+    category: design
+    tags: [design, canva, graphics]
+    mcp:
+      package: "mcp-server-canva"
+      command: "npx mcp-server-canva"
+      env: [CANVA_API_KEY]
+
+  # ===================================================================
+  # ANALYTICS
+  # ===================================================================
+
+  - name: google-analytics
+    description: Query Google Analytics data
+    category: analytics
+    tags: [analytics, google, web]
+    mcp:
+      package: "mcp-server-google-analytics"
+      command: "npx mcp-server-google-analytics"
+      env: [GOOGLE_APPLICATION_CREDENTIALS]
+
+  - name: mixpanel
+    description: Query Mixpanel analytics events
+    category: analytics
+    tags: [analytics, events, product]
+    mcp:
+      package: "mcp-server-mixpanel"
+      command: "npx mcp-server-mixpanel"
+      env: [MIXPANEL_TOKEN]
+
+  - name: amplitude
+    description: Query Amplitude analytics
+    category: analytics
+    tags: [analytics, product, events]
+    mcp:
+      package: "mcp-server-amplitude"
+      command: "npx mcp-server-amplitude"
+      env: [AMPLITUDE_API_KEY]
+
+  - name: posthog
+    description: Query PostHog analytics and feature flags
+    category: analytics
+    tags: [analytics, product, feature-flags]
+    mcp:
+      package: "mcp-server-posthog"
+      command: "npx mcp-server-posthog"
+      env: [POSTHOG_API_KEY, POSTHOG_HOST]
+
+  - name: segment
+    description: Manage Segment sources, destinations, and events
+    category: analytics
+    tags: [analytics, cdp, data-pipeline]
+    mcp:
+      package: "mcp-server-segment"
+      command: "npx mcp-server-segment"
+      env: [SEGMENT_API_KEY]
+
+  # ===================================================================
+  # CRM & SALES
+  # ===================================================================
+
+  - name: salesforce
+    description: Manage Salesforce records, queries, and automation
+    category: crm
+    tags: [crm, salesforce, sales]
+    mcp:
+      package: "mcp-server-salesforce"
+      command: "npx mcp-server-salesforce"
+      env: [SALESFORCE_URL, SALESFORCE_TOKEN]
+
+  - name: hubspot
+    description: Manage HubSpot contacts, deals, and tickets
+    category: crm
+    tags: [crm, hubspot, marketing]
+    mcp:
+      package: "mcp-server-hubspot"
+      command: "npx mcp-server-hubspot"
+      env: [HUBSPOT_ACCESS_TOKEN]
+
+  - name: pipedrive
+    description: Manage Pipedrive deals, contacts, and activities
+    category: crm
+    tags: [crm, pipedrive, sales]
+    mcp:
+      package: "mcp-server-pipedrive"
+      command: "npx mcp-server-pipedrive"
+      env: [PIPEDRIVE_API_TOKEN]
+
+  - name: intercom
+    description: Manage Intercom conversations and contacts
+    category: crm
+    tags: [support, messaging, intercom]
+    mcp:
+      package: "mcp-server-intercom"
+      command: "npx mcp-server-intercom"
+      env: [INTERCOM_ACCESS_TOKEN]
+
+  - name: zendesk
+    description: Manage Zendesk tickets and help center
+    category: crm
+    tags: [support, tickets, zendesk]
+    mcp:
+      package: "mcp-server-zendesk"
+      command: "npx mcp-server-zendesk"
+      env: [ZENDESK_URL, ZENDESK_EMAIL, ZENDESK_TOKEN]
+
+  - name: freshdesk
+    description: Manage Freshdesk tickets and contacts
+    category: crm
+    tags: [support, tickets, freshdesk]
+    mcp:
+      package: "mcp-server-freshdesk"
+      command: "npx mcp-server-freshdesk"
+      env: [FRESHDESK_URL, FRESHDESK_API_KEY]
+
+  # ===================================================================
+  # PRODUCTIVITY & CALENDAR
+  # ===================================================================
+
+  - name: google-calendar
+    description: Manage Google Calendar events
+    category: calendar
+    tags: [calendar, google, scheduling]
+    mcp:
+      package: "mcp-server-google-calendar"
+      command: "npx mcp-server-google-calendar"
+      env: [GOOGLE_APPLICATION_CREDENTIALS]
+
+  - name: outlook-calendar
+    description: Manage Outlook calendar events
+    category: calendar
+    tags: [calendar, outlook, microsoft]
+    mcp:
+      package: "mcp-server-outlook-calendar"
+      command: "npx mcp-server-outlook-calendar"
+      env: [MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET]
+
+  - name: google-maps
+    description: Geocoding, directions, and place search
+    category: productivity
+    tags: [maps, geocoding, directions, google]
+    mcp:
+      package: "mcp-server-google-maps"
+      command: "npx mcp-server-google-maps"
+      env: [GOOGLE_MAPS_API_KEY]
+
+  - name: weather
+    description: Get weather forecasts and conditions
+    category: productivity
+    tags: [weather, forecast]
+    mcp:
+      package: "mcp-server-weather"
+      command: "npx mcp-server-weather"
+      env: [OPENWEATHER_API_KEY]
+
+  - name: time
+    description: Time zones, conversions, and scheduling
+    category: productivity
+    tags: [time, timezone, scheduling]
+    mcp:
+      package: "@anthropic/mcp-server-time"
+      command: "npx @anthropic/mcp-server-time"
+
+  # ===================================================================
+  # DATA PROCESSING
+  # ===================================================================
+
+  - name: pandas
+    description: Data analysis with Python pandas
+    category: data-processing
+    tags: [python, data, pandas, analysis]
+    procedures: |
+      ## Data Analysis with Pandas
+      - Use pandas for tabular data manipulation.
+      - Read CSV: pd.read_csv('file.csv')
+      - Read Excel: pd.read_excel('file.xlsx')
+      - Always use .head() to preview data before processing.
+      - Use .describe() for summary statistics.
+
+  - name: dbt
+    description: Data transformation with dbt
+    category: data-processing
+    tags: [dbt, sql, transformation, analytics]
+    mcp:
+      package: "mcp-server-dbt"
+      command: "npx mcp-server-dbt"
+
+  - name: snowflake
+    description: Query and manage Snowflake data warehouse
+    category: data-processing
+    tags: [snowflake, data-warehouse, sql]
+    mcp:
+      package: "mcp-server-snowflake"
+      command: "npx mcp-server-snowflake"
+      env: [SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD]
+
+  - name: bigquery
+    description: Query Google BigQuery datasets
+    category: data-processing
+    tags: [bigquery, google, data-warehouse]
+    mcp:
+      package: "mcp-server-bigquery"
+      command: "npx mcp-server-bigquery"
+      env: [GOOGLE_APPLICATION_CREDENTIALS]
+
+  - name: databricks
+    description: Manage Databricks workspaces and jobs
+    category: data-processing
+    tags: [databricks, spark, data-engineering]
+    mcp:
+      package: "mcp-server-databricks"
+      command: "npx mcp-server-databricks"
+      env: [DATABRICKS_HOST, DATABRICKS_TOKEN]
+
+  # ===================================================================
+  # FINANCE & PAYMENTS
+  # ===================================================================
+
+  - name: stripe
+    description: Manage Stripe payments, customers, and subscriptions
+    category: finance
+    tags: [payments, stripe, billing]
+    mcp:
+      package: "mcp-server-stripe"
+      command: "npx mcp-server-stripe"
+      env: [STRIPE_SECRET_KEY]
+
+  - name: plaid
+    description: Banking data via Plaid API
+    category: finance
+    tags: [banking, plaid, financial-data]
+    mcp:
+      package: "mcp-server-plaid"
+      command: "npx mcp-server-plaid"
+      env: [PLAID_CLIENT_ID, PLAID_SECRET]
+
+  - name: quickbooks
+    description: Manage QuickBooks accounting data
+    category: finance
+    tags: [accounting, quickbooks, invoicing]
+    mcp:
+      package: "mcp-server-quickbooks"
+      command: "npx mcp-server-quickbooks"
+      env: [QUICKBOOKS_CLIENT_ID, QUICKBOOKS_CLIENT_SECRET]
+
+  - name: xero
+    description: Manage Xero accounting data
+    category: finance
+    tags: [accounting, xero, invoicing]
+    mcp:
+      package: "mcp-server-xero"
+      command: "npx mcp-server-xero"
+      env: [XERO_CLIENT_ID, XERO_CLIENT_SECRET]
+
+  # ===================================================================
+  # MARKETING
+  # ===================================================================
+
+  - name: mailchimp
+    description: Manage Mailchimp campaigns and audiences
+    category: marketing
+    tags: [email, campaigns, mailchimp]
+    mcp:
+      package: "mcp-server-mailchimp"
+      command: "npx mcp-server-mailchimp"
+      env: [MAILCHIMP_API_KEY]
+
+  - name: google-ads
+    description: Manage Google Ads campaigns and reports
+    category: marketing
+    tags: [advertising, google, ppc]
+    mcp:
+      package: "mcp-server-google-ads"
+      command: "npx mcp-server-google-ads"
+      env: [GOOGLE_ADS_DEVELOPER_TOKEN]
+
+  - name: facebook-ads
+    description: Manage Facebook/Meta Ads campaigns
+    category: marketing
+    tags: [advertising, facebook, meta, social]
+    mcp:
+      package: "mcp-server-facebook-ads"
+      command: "npx mcp-server-facebook-ads"
+      env: [FACEBOOK_ACCESS_TOKEN]
+
+  # ===================================================================
+  # MEDIA
+  # ===================================================================
+
+  - name: youtube
+    description: Manage YouTube videos and channels
+    category: media
+    tags: [video, youtube, google]
+    mcp:
+      package: "mcp-server-youtube"
+      command: "npx mcp-server-youtube"
+      env: [YOUTUBE_API_KEY]
+
+  - name: spotify
+    description: Search and manage Spotify playlists
+    category: media
+    tags: [music, spotify, playlists]
+    mcp:
+      package: "mcp-server-spotify"
+      command: "npx mcp-server-spotify"
+      env: [SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET]
+
+  - name: cloudinary
+    description: Image and video management with Cloudinary
+    category: media
+    tags: [images, video, cdn, cloudinary]
+    mcp:
+      package: "mcp-server-cloudinary"
+      command: "npx mcp-server-cloudinary"
+      env: [CLOUDINARY_URL]
+
+  # ===================================================================
+  # ECOMMERCE
+  # ===================================================================
+
+  - name: shopify
+    description: Manage Shopify products, orders, and customers
+    category: ecommerce
+    tags: [ecommerce, shopify, products]
+    mcp:
+      package: "mcp-server-shopify"
+      command: "npx mcp-server-shopify"
+      env: [SHOPIFY_STORE_URL, SHOPIFY_ACCESS_TOKEN]
+
+  - name: woocommerce
+    description: Manage WooCommerce products and orders
+    category: ecommerce
+    tags: [ecommerce, woocommerce, wordpress]
+    mcp:
+      package: "mcp-server-woocommerce"
+      command: "npx mcp-server-woocommerce"
+      env: [WOOCOMMERCE_URL, WOOCOMMERCE_KEY, WOOCOMMERCE_SECRET]
+
+  # ===================================================================
+  # API INTEGRATION
+  # ===================================================================
+
+  - name: zapier
+    description: Trigger Zapier automations
+    category: api-integration
+    tags: [automation, zapier, integration]
+    mcp:
+      package: "mcp-server-zapier"
+      command: "npx mcp-server-zapier"
+      env: [ZAPIER_NLA_API_KEY]
+
+  - name: make
+    description: Trigger Make (Integromat) scenarios
+    category: api-integration
+    tags: [automation, make, integration]
+    mcp:
+      package: "mcp-server-make"
+      command: "npx mcp-server-make"
+      env: [MAKE_API_TOKEN]
+
+  - name: rest-api
+    description: Make arbitrary REST API calls
+    category: api-integration
+    tags: [api, rest, http]
+    mcp:
+      package: "mcp-server-rest"
+      command: "npx mcp-server-rest"
+
+  - name: graphql
+    description: Execute GraphQL queries
+    category: api-integration
+    tags: [api, graphql, queries]
+    mcp:
+      package: "mcp-server-graphql"
+      command: "npx mcp-server-graphql"
+
+  - name: webhook
+    description: Send and receive webhooks
+    category: api-integration
+    tags: [webhooks, events, http]
+    mcp:
+      package: "mcp-server-webhook"
+      command: "npx mcp-server-webhook"

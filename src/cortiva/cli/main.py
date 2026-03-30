@@ -570,6 +570,171 @@ def _print_hours(resp: dict) -> None:
                 print(f"    {wake} → {sleep_str}  ({e.get('hours', 0):.1f}h)")
 
 
+def cmd_skill_list(args: argparse.Namespace) -> None:
+    """List available skills or installed skills for an agent."""
+    from cortiva.core.skills import SkillRegistry
+
+    registry = SkillRegistry()
+    registry.load_bundled()
+
+    agent_id = getattr(args, "agent", None)
+    if agent_id:
+        from cortiva.core.skills import installed_skills
+
+        agent_dir = Path("agents") / agent_id
+        if not agent_dir.exists():
+            print(f"Agent '{agent_id}' not found.")
+            sys.exit(1)
+        skills = installed_skills(agent_dir)
+        if not skills:
+            print(f"No skills installed for {agent_id}.")
+            return
+        print(f"Skills installed for {agent_id} ({len(skills)}):\n")
+        for name in skills:
+            skill = registry.get(name)
+            desc = skill.description if skill else ""
+            print(f"  {name:<25} {desc}")
+        return
+
+    category = getattr(args, "category", None)
+    query = getattr(args, "query", "") or ""
+
+    if category:
+        results = registry.search(query=query, category=category)
+    elif query:
+        results = registry.search(query=query)
+    else:
+        results = registry.all_skills()
+
+    if not results:
+        print("No skills found.")
+        return
+
+    cats = registry.categories()
+    print(f"Cortiva Skill Registry — {registry.count} skills, {len(cats)} categories\n")
+
+    if not query and not category:
+        # Show category summary
+        for cat, count in cats.items():
+            print(f"  {cat:<30} {count:>4} skills")
+        print(f"\nUse: cortiva skill list --category <name>")
+        print(f"     cortiva skill search <query>")
+        return
+
+    print(f"  {'Skill':<25} {'Category':<22} Description")
+    print(f"  {'-'*25} {'-'*22} {'-'*40}")
+    for skill in results:
+        desc = skill.description[:40] if skill.description else ""
+        print(f"  {skill.name:<25} {skill.category:<22} {desc}")
+
+
+def cmd_skill_search(args: argparse.Namespace) -> None:
+    """Search for skills."""
+    from cortiva.core.skills import SkillRegistry
+
+    registry = SkillRegistry()
+    registry.load_bundled()
+
+    query = getattr(args, "query", "")
+    results = registry.search(query=query)
+
+    if not results:
+        print(f"No skills matching '{query}'.")
+        return
+
+    print(f"Found {len(results)} skills matching '{query}':\n")
+    print(f"  {'Skill':<25} {'Category':<22} Description")
+    print(f"  {'-'*25} {'-'*22} {'-'*40}")
+    for skill in results:
+        desc = skill.description[:40] if skill.description else ""
+        print(f"  {skill.name:<25} {skill.category:<22} {desc}")
+    print(f"\nInstall with: cortiva skill install <name> --agent <agent-id>")
+
+
+def cmd_skill_install(args: argparse.Namespace) -> None:
+    """Install a skill for an agent."""
+    from cortiva.core.skills import SkillRegistry, install_skill
+
+    agent_dir = Path("agents") / args.agent
+    if not agent_dir.exists():
+        print(f"Agent '{args.agent}' not found.")
+        sys.exit(1)
+
+    registry = SkillRegistry()
+    registry.load_bundled()
+
+    skill = registry.get(args.name)
+    if skill is None:
+        print(f"Skill '{args.name}' not found in registry.")
+        print(f"Use 'cortiva skill search' to find available skills.")
+        sys.exit(1)
+
+    try:
+        modified = install_skill(agent_dir, skill)
+    except ValueError as e:
+        print(str(e))
+        sys.exit(1)
+
+    print(f"Installed skill: {skill.name}")
+    print(f"  Agent: {args.agent}")
+    print(f"  Description: {skill.description}")
+    if skill.mcp:
+        print(f"  MCP server: {skill.mcp.command}")
+        if skill.mcp.env:
+            print(f"  Required env: {', '.join(skill.mcp.env)}")
+    print(f"  Files modified: {', '.join(modified)}")
+
+
+def cmd_skill_uninstall(args: argparse.Namespace) -> None:
+    """Uninstall a skill from an agent."""
+    from cortiva.core.skills import uninstall_skill
+
+    agent_dir = Path("agents") / args.agent
+    if not agent_dir.exists():
+        print(f"Agent '{args.agent}' not found.")
+        sys.exit(1)
+
+    try:
+        modified = uninstall_skill(agent_dir, args.name)
+    except ValueError as e:
+        print(str(e))
+        sys.exit(1)
+
+    print(f"Uninstalled skill: {args.name}")
+    print(f"  Agent: {args.agent}")
+    print(f"  Files modified: {', '.join(modified)}")
+
+
+def cmd_skill_info(args: argparse.Namespace) -> None:
+    """Show detailed info about a skill."""
+    from cortiva.core.skills import SkillRegistry
+
+    registry = SkillRegistry()
+    registry.load_bundled()
+
+    skill = registry.get(args.name)
+    if skill is None:
+        print(f"Skill '{args.name}' not found.")
+        sys.exit(1)
+
+    print(f"Skill: {skill.name}")
+    print(f"  Description: {skill.description}")
+    print(f"  Category:    {skill.category}")
+    print(f"  Version:     {skill.version}")
+    if skill.tags:
+        print(f"  Tags:        {', '.join(skill.tags)}")
+    if skill.mcp:
+        print(f"\n  MCP Server:")
+        print(f"    Package:   {skill.mcp.package}")
+        print(f"    Command:   {skill.mcp.command}")
+        if skill.mcp.env:
+            print(f"    Env vars:  {', '.join(skill.mcp.env)}")
+    if skill.procedures:
+        print(f"\n  Procedures:")
+        for line in skill.procedures.strip().splitlines():
+            print(f"    {line}")
+
+
 def cmd_discover(args: argparse.Namespace) -> None:
     """Run node capability discovery and display results."""
     import asyncio as _asyncio
@@ -1454,6 +1619,29 @@ def build_parser() -> argparse.ArgumentParser:
     template_sub = template_parser.add_subparsers(dest="template_command")
     template_sub.add_parser("list", help="List available templates")
 
+    # skill
+    skill_parser = subparsers.add_parser("skill", help="Skill management")
+    skill_sub = skill_parser.add_subparsers(dest="skill_command")
+
+    skill_list_parser = skill_sub.add_parser("list", help="List available or installed skills")
+    skill_list_parser.add_argument("--agent", help="Show skills installed for an agent")
+    skill_list_parser.add_argument("--category", help="Filter by category")
+    skill_list_parser.add_argument("--query", help="Search query", nargs="?", default="")
+
+    skill_search_parser = skill_sub.add_parser("search", help="Search for skills")
+    skill_search_parser.add_argument("query", help="Search query")
+
+    skill_install_parser = skill_sub.add_parser("install", help="Install a skill for an agent")
+    skill_install_parser.add_argument("name", help="Skill name")
+    skill_install_parser.add_argument("--agent", required=True, help="Agent ID")
+
+    skill_uninstall_parser = skill_sub.add_parser("uninstall", help="Uninstall a skill")
+    skill_uninstall_parser.add_argument("name", help="Skill name")
+    skill_uninstall_parser.add_argument("--agent", required=True, help="Agent ID")
+
+    skill_info_parser = skill_sub.add_parser("info", help="Show skill details")
+    skill_info_parser.add_argument("name", help="Skill name")
+
     # budget
     budget_parser = subparsers.add_parser("budget", help="Show consciousness budget status")
     budget_parser.add_argument("--agent", help="Show detail for a specific agent")
@@ -1539,6 +1727,19 @@ def main() -> None:
             cmd_cluster_nodes(args)
         else:
             parser.parse_args(["cluster", "--help"])
+    elif args.command == "skill":
+        if args.skill_command == "list":
+            cmd_skill_list(args)
+        elif args.skill_command == "search":
+            cmd_skill_search(args)
+        elif args.skill_command == "install":
+            cmd_skill_install(args)
+        elif args.skill_command == "uninstall":
+            cmd_skill_uninstall(args)
+        elif args.skill_command == "info":
+            cmd_skill_info(args)
+        else:
+            parser.parse_args(["skill", "--help"])
     elif args.command == "template":
         if args.template_command == "list":
             cmd_template_list(args)
