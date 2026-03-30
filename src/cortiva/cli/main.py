@@ -735,6 +735,124 @@ def cmd_skill_info(args: argparse.Namespace) -> None:
             print(f"    {line}")
 
 
+def cmd_org_status(args: argparse.Namespace) -> None:
+    """Show org structure."""
+    config_path = Path("cortiva.yaml")
+    if not config_path.exists():
+        print("Not a Cortiva workspace.")
+        sys.exit(1)
+
+    from cortiva.core.config import load_config
+    from cortiva.core.org import parse_org_config
+
+    config = load_config(config_path)
+    org = parse_org_config(config.get("org"))
+    if org is None:
+        print("No org section in cortiva.yaml.")
+        return
+
+    print(f"Organisation: {org.name}\n")
+
+    if org.departments:
+        print("Departments:")
+        for name, dept in org.departments.items():
+            lead_str = f" (lead: {dept.lead})" if dept.lead else ""
+            print(f"  {name}{lead_str}")
+            for member in dept.members:
+                role = "lead" if member == dept.lead else "member"
+                manager = org.manager_of(member)
+                mgr_str = f" → reports to {manager}" if manager else ""
+                print(f"    {member} [{role}]{mgr_str}")
+        print()
+
+    if org.reporting:
+        print("Reporting Lines:")
+        for agent, manager in org.reporting.items():
+            print(f"  {agent} → {manager}")
+
+
+def cmd_approve_list(args: argparse.Namespace) -> None:
+    """List pending approvals."""
+    from cortiva.core.approval import ApprovalQueue
+
+    agents_dir = Path("agents")
+    queue = ApprovalQueue(agents_dir / ".approvals")
+    pending = queue.all_pending()
+
+    if not pending:
+        print("No pending approvals.")
+        return
+
+    print(f"Pending Approvals ({len(pending)}):\n")
+    print(f"  {'ID':<10} {'Agent':<16} {'Approver':<16} Task")
+    print(f"  {'-'*10} {'-'*16} {'-'*16} {'-'*30}")
+    for r in pending:
+        desc = r.task_description[:30] if r.task_description else ""
+        print(f"  {r.id:<10} {r.agent_id:<16} {r.approver_id:<16} {desc}")
+    print(f"\nAccept: cortiva approve accept <id>")
+    print(f"Reject: cortiva approve reject <id> --reason '...'")
+
+
+def cmd_approve_accept(args: argparse.Namespace) -> None:
+    """Approve a request."""
+    from cortiva.core.approval import ApprovalQueue
+
+    queue = ApprovalQueue(Path("agents") / ".approvals")
+    result = queue.approve(args.id, resolved_by="human")
+    if result is None:
+        print(f"Approval '{args.id}' not found or already resolved.")
+        sys.exit(1)
+    print(f"Approved: {result.agent_id} may proceed with: {result.task_description}")
+
+
+def cmd_approve_reject(args: argparse.Namespace) -> None:
+    """Reject a request."""
+    from cortiva.core.approval import ApprovalQueue
+
+    reason = getattr(args, "reason", "")
+    queue = ApprovalQueue(Path("agents") / ".approvals")
+    result = queue.reject(args.id, resolved_by="human", reason=reason)
+    if result is None:
+        print(f"Approval '{args.id}' not found or already resolved.")
+        sys.exit(1)
+    print(f"Rejected: {result.task_description}")
+    if reason:
+        print(f"  Reason: {reason}")
+
+
+def cmd_delegate(args: argparse.Namespace) -> None:
+    """Manually delegate work to an agent."""
+    from cortiva.core.config import load_config
+    from cortiva.core.delegation import DelegationManager
+    from cortiva.core.org import parse_org_config
+
+    config_path = Path("cortiva.yaml")
+    org = None
+    if config_path.exists():
+        config = load_config(config_path)
+        org = parse_org_config(config.get("org"))
+
+    agents_dir = Path("agents")
+    mgr = DelegationManager(agents_dir / ".delegation")
+
+    try:
+        assignment = mgr.create_assignment(
+            from_agent=args.from_agent,
+            to_agent=args.to_agent,
+            description=args.description,
+            priority=getattr(args, "priority", 1),
+            org=org,
+        )
+    except PermissionError as e:
+        print(f"Delegation rejected: {e}")
+        sys.exit(1)
+
+    print(f"Assignment created: {assignment.id}")
+    print(f"  From: {assignment.from_agent}")
+    print(f"  To:   {assignment.to_agent}")
+    print(f"  Task: {assignment.description}")
+
+
 def cmd_discover(args: argparse.Namespace) -> None:
     """Run node capability discovery and display results."""
     import asyncio as _asyncio
@@ -1642,6 +1760,28 @@ def build_parser() -> argparse.ArgumentParser:
     skill_info_parser = skill_sub.add_parser("info", help="Show skill details")
     skill_info_parser.add_argument("name", help="Skill name")
 
+    # org
+    org_parser = subparsers.add_parser("org", help="Organisation management")
+    org_sub = org_parser.add_subparsers(dest="org_command")
+    org_sub.add_parser("status", help="Show org structure")
+
+    # approve
+    approve_parser = subparsers.add_parser("approve", help="Approval workflow")
+    approve_sub = approve_parser.add_subparsers(dest="approve_command")
+    approve_sub.add_parser("list", help="List pending approvals")
+    approve_accept_parser = approve_sub.add_parser("accept", help="Approve a request")
+    approve_accept_parser.add_argument("id", help="Approval request ID")
+    approve_reject_parser = approve_sub.add_parser("reject", help="Reject a request")
+    approve_reject_parser.add_argument("id", help="Approval request ID")
+    approve_reject_parser.add_argument("--reason", default="", help="Rejection reason")
+
+    # delegate
+    delegate_parser = subparsers.add_parser("delegate", help="Delegate work to an agent")
+    delegate_parser.add_argument("from_agent", metavar="from", help="Manager agent ID")
+    delegate_parser.add_argument("to_agent", metavar="to", help="Subordinate agent ID")
+    delegate_parser.add_argument("description", help="Task description")
+    delegate_parser.add_argument("--priority", type=int, default=1, help="Priority (0-2)")
+
     # budget
     budget_parser = subparsers.add_parser("budget", help="Show consciousness budget status")
     budget_parser.add_argument("--agent", help="Show detail for a specific agent")
@@ -1727,6 +1867,22 @@ def main() -> None:
             cmd_cluster_nodes(args)
         else:
             parser.parse_args(["cluster", "--help"])
+    elif args.command == "org":
+        if args.org_command == "status":
+            cmd_org_status(args)
+        else:
+            parser.parse_args(["org", "--help"])
+    elif args.command == "approve":
+        if args.approve_command == "list":
+            cmd_approve_list(args)
+        elif args.approve_command == "accept":
+            cmd_approve_accept(args)
+        elif args.approve_command == "reject":
+            cmd_approve_reject(args)
+        else:
+            parser.parse_args(["approve", "--help"])
+    elif args.command == "delegate":
+        cmd_delegate(args)
     elif args.command == "skill":
         if args.skill_command == "list":
             cmd_skill_list(args)

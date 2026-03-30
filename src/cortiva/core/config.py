@@ -17,6 +17,7 @@ from cortiva.core.budget import BackendType, ConsciousnessBudgetManager
 from cortiva.core.fabric import Fabric
 from cortiva.core.isolation import IsolationConfig, IsolationTier, build_enforcer
 from cortiva.core.memory_guard import GuardedMemoryAdapter
+from cortiva.core.org import parse_org_config
 
 # ---------------------------------------------------------------------------
 # Adapter registry — maps config names to (module, class) pairs.
@@ -281,6 +282,10 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
     schedules = config.get("schedules")
     if schedules and isinstance(schedules, dict):
         fabric.load_schedules(schedules)
+
+    # --- Org model (optional) ---
+    org_section = config.get("org")
+    fabric.org = parse_org_config(org_section)
 
     # --- Execution policies (optional) ---
     policies_section = config.get("policies")

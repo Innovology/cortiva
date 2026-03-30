@@ -30,6 +30,12 @@ class ReflectionSuffix:
     procedure_update: str | None = None
     messages: list[dict[str, str]] = field(default_factory=list)
     escalation: str | None = None
+    delegate: list[dict[str, Any]] = field(default_factory=list)
+    """Work assignments to create for subordinates."""
+    complete_assignment: str | None = None
+    """Assignment ID to mark as completed."""
+    shared_learning: str | None = None
+    """Knowledge to write to the org-wide shared memory tier."""
 
 
 @dataclass
@@ -71,6 +77,9 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
     messages_raw = data.get("messages", [])
     messages = messages_raw if isinstance(messages_raw, list) else []
 
+    delegate_raw = data.get("delegate", [])
+    delegate = delegate_raw if isinstance(delegate_raw, list) else []
+
     suffix = ReflectionSuffix(
         outcome=data.get("outcome"),
         learned=data.get("learned"),
@@ -78,6 +87,9 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         procedure_update=data.get("procedure_update"),
         messages=messages,
         escalation=data.get("escalation"),
+        delegate=delegate,
+        complete_assignment=data.get("complete_assignment"),
+        shared_learning=data.get("shared_learning"),
     )
 
     return ReflectionResult(clean_content=clean_content, suffix=suffix)

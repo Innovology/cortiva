@@ -26,6 +26,7 @@ from cortiva.adapters.protocols import (
     TerminalAgentAdapter,
 )
 from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
+from cortiva.core.approval import ApprovalQueue
 from cortiva.core.capacity import CapacityTracker
 from cortiva.core.events import EventBus, FabricEvent
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
@@ -36,7 +37,9 @@ from cortiva.core.discovery import NodeCapabilities
 from cortiva.core.familiarity import FamiliarityEngine
 from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
+from cortiva.core.delegation import DelegationManager
 from cortiva.core.living_summary import LivingSummaryRegenerator
+from cortiva.core.org import OrgModel
 from cortiva.core.policy import PolicyManager
 from cortiva.core.session import SessionManager
 from cortiva.core.timesheet import TimesheetManager
@@ -165,6 +168,9 @@ class Fabric:
         self.timesheet_manager = TimesheetManager(self.agents_dir)
         self.capacity_tracker = CapacityTracker()
         self.policy_manager = PolicyManager()
+        self.org: OrgModel | None = None
+        self.delegation = DelegationManager(self.agents_dir / ".delegation")
+        self.approval_queue = ApprovalQueue(self.agents_dir / ".approvals")
         self.communication_tracker = CommunicationTracker()
         self.cluster_metrics = ClusterMetrics(
             communication_tracker=self.communication_tracker,
@@ -378,6 +384,16 @@ class Fabric:
             "- [ ] Task description (for normal tasks)\n"
         )
 
+        # Inject org position and delegated tasks into planning context
+        if self.org:
+            org_text = self.org.org_context_for(agent_id)
+            if org_text:
+                context = context + "\n\n---\n\n" + org_text
+
+        delegation_text = self.delegation.pending_for_context(agent_id)
+        if delegation_text:
+            context = context + "\n\n---\n\n" + delegation_text
+
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent_id, context)
 
@@ -505,6 +521,9 @@ class Fabric:
         if agent.state not in (AgentState.EXECUTING, AgentState.REPLANNING):
             raise ValueError(f"Agent {agent_id} not in executable state: {agent.state.value}")
 
+        # Re-activate any tasks that have been approved since last cycle
+        self._check_approved_tasks(agent)
+
         result: dict[str, Any] = {
             "agent_id": agent_id,
             "action": "idle",
@@ -578,21 +597,37 @@ class Fabric:
             return
 
         if policy_result.needs_approval:
+            approver = "human"
+            if self.org:
+                approver = self.org.approver_for(agent.id)
+            self.approval_queue.submit(
+                agent_id=agent.id,
+                task_description=task.description,
+                policy_rule=policy_result.matched_rule,
+                approver_id=approver,
+            )
+            # Notify the approver via channel
+            if self.channel and approver != "human":
+                try:
+                    await self.channel.send(
+                        sender="cortiva-fabric",
+                        recipient=approver,
+                        content=(
+                            f"Approval needed: {agent.id} wants to: "
+                            f"{task.description}"
+                        ),
+                    )
+                except Exception:
+                    pass  # don't block on notification failure
             logger.info(
-                "Agent %s task requires approval: %s — %s",
-                agent.id, task.description, policy_result.reason,
+                "Agent %s task requires approval from %s: %s",
+                agent.id, approver, task.description,
             )
             self._emit(
-                "policy.approval_required", agent_id=agent.id,
-                task=task.description, reason=policy_result.reason,
+                "approval.requested", agent_id=agent.id,
+                task=task.description, approver=approver,
             )
-            # For now, defer tasks that need approval as exceptions.
-            # A future approval workflow would queue these for human review.
-            task.status = "exception"
-            task.error = f"Awaiting approval: {policy_result.reason}"
-            assert agent.task_queue is not None
-            agent.task_queue.exceptions.append(task)
-            agent.tasks_escalated_today += 1
+            task.status = "pending_approval"
             return
 
         task.status = "in_progress"
@@ -778,6 +813,71 @@ class Fabric:
                 f"Agent {agent.id} escalation on '{task.description}': "
                 f"{suffix.escalation}"
             )
+
+        # Process delegation requests (manager → subordinate)
+        if suffix.delegate:
+            for d in suffix.delegate:
+                to_agent = d.get("to", "")
+                desc = d.get("description", "")
+                prio = d.get("priority", 1)
+                if to_agent and desc:
+                    try:
+                        self.delegation.create_assignment(
+                            from_agent=agent.id,
+                            to_agent=to_agent,
+                            description=desc,
+                            priority=prio,
+                            org=self.org,
+                        )
+                        self._emit(
+                            "delegation.created", agent_id=agent.id,
+                            to_agent=to_agent, description=desc,
+                        )
+                    except PermissionError as exc:
+                        logger.warning("Delegation rejected: %s", exc)
+
+        # Process assignment completion
+        if suffix.complete_assignment:
+            completed = self.delegation.complete_assignment(
+                suffix.complete_assignment, task.outcome or task.description,
+            )
+            if completed:
+                self._emit(
+                    "delegation.completed", agent_id=agent.id,
+                    assignment_id=completed.id, outcome=completed.outcome,
+                )
+
+        # Process shared learning (org-wide knowledge)
+        if suffix.shared_learning:
+            await self.memory.store(
+                agent_id="__org_shared__",
+                content=suffix.shared_learning,
+                tags=["shared", "learning", f"author:{agent.id}"],
+                importance=7.0,
+            )
+            self._emit(
+                "shared_memory.stored", agent_id=agent.id,
+                content=suffix.shared_learning[:100],
+            )
+
+    def _check_approved_tasks(self, agent: Agent) -> None:
+        """Re-activate tasks that have been approved since last cycle."""
+        if agent.task_queue is None:
+            return
+        approved = self.approval_queue.approved_tasks_for(agent.id)
+        for req in approved:
+            for task in agent.task_queue.tasks:
+                if (
+                    task.description == req.task_description
+                    and task.status == "pending_approval"
+                ):
+                    task.status = "pending"
+                    task.priority = max(task.priority, 1)  # bump priority
+                    logger.info(
+                        "Agent %s task re-activated after approval: %s",
+                        agent.id, task.description[:60],
+                    )
+                    break
 
     # Terminal keywords that indicate a task should use the terminal agent
     _TERMINAL_KEYWORDS = frozenset({

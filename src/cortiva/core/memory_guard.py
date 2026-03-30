@@ -16,6 +16,9 @@ from cortiva.core.isolation import NoIsolation
 
 logger = logging.getLogger("cortiva.memory_guard")
 
+# Sentinel agent_id for org-wide shared memory
+SHARED_AGENT_ID = "__org_shared__"
+
 
 class GuardedMemoryAdapter:
     """Wraps a memory adapter to enforce agent-level isolation.
@@ -64,9 +67,12 @@ class GuardedMemoryAdapter:
         tags: list[str] | None = None,
         _caller_id: str | None = None,
     ) -> list[MemoryRecord]:
-        """Search memories — blocked if caller differs from target agent."""
+        """Search memories — blocked if caller differs from target agent.
+
+        Shared memory (``__org_shared__``) is always readable.
+        """
         caller = _caller_id or agent_id
-        if not self._enforcer.validate_memory_access(caller, agent_id):
+        if agent_id != SHARED_AGENT_ID and not self._enforcer.validate_memory_access(caller, agent_id):
             return []
         return await self._inner.search(
             agent_id, query, limit=limit, min_importance=min_importance, tags=tags,
@@ -80,9 +86,12 @@ class GuardedMemoryAdapter:
         min_importance: float = 0.0,
         _caller_id: str | None = None,
     ) -> list[MemoryRecord]:
-        """Recall memories — blocked if caller differs from target agent."""
+        """Recall memories — blocked if caller differs from target agent.
+
+        Shared memory (``__org_shared__``) is always readable.
+        """
         caller = _caller_id or agent_id
-        if not self._enforcer.validate_memory_access(caller, agent_id):
+        if agent_id != SHARED_AGENT_ID and not self._enforcer.validate_memory_access(caller, agent_id):
             return []
         return await self._inner.recall(
             agent_id, limit=limit, min_importance=min_importance,
@@ -99,6 +108,52 @@ class GuardedMemoryAdapter:
         if not self._enforcer.validate_memory_access(caller, agent_id):
             return False
         return await self._inner.delete(agent_id, memory_id)
+
+    # ------------------------------------------------------------------
+    # Shared memory tier (org-wide knowledge)
+    # ------------------------------------------------------------------
+
+    async def store_shared(
+        self,
+        caller_id: str,
+        content: str,
+        *,
+        tags: list[str] | None = None,
+        importance: float = 5.0,
+    ) -> MemoryRecord:
+        """Store a memory in the org-wide shared tier.
+
+        Any agent can write.  The memory is stored under
+        :const:`SHARED_AGENT_ID`.
+        """
+        all_tags = (tags or []) + ["shared", f"author:{caller_id}"]
+        return await self._inner.store(
+            SHARED_AGENT_ID, content, tags=all_tags, importance=importance,
+            metadata={"author": caller_id},
+        )
+
+    async def search_shared(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        min_importance: float = 0.0,
+    ) -> list[MemoryRecord]:
+        """Search org-wide shared memories.  Always allowed."""
+        return await self._inner.search(
+            SHARED_AGENT_ID, query, limit=limit, min_importance=min_importance,
+        )
+
+    async def recall_shared(
+        self,
+        *,
+        limit: int = 20,
+        min_importance: float = 0.0,
+    ) -> list[MemoryRecord]:
+        """Recall high-importance shared memories."""
+        return await self._inner.recall(
+            SHARED_AGENT_ID, limit=limit, min_importance=min_importance,
+        )
 
     # ------------------------------------------------------------------
     # GraphMemoryAdapter methods (proxied if inner supports them)
