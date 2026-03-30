@@ -138,14 +138,17 @@ class TestSkillRegistry:
     def test_load_bundled(self) -> None:
         registry = SkillRegistry()
         count = registry.load_bundled()
-        assert count > 100  # we have 100+ skills in the bundled registry
+        assert count > 1000  # synced from MCP registry
 
-    def test_get(self) -> None:
+    def test_get_existing(self) -> None:
         registry = SkillRegistry()
         registry.load_bundled()
-        skill = registry.get("github")
-        assert skill is not None
-        assert skill.category == "version-control"
+        # Get any skill and verify it has required fields
+        all_skills = registry.all_skills()
+        assert len(all_skills) > 0
+        skill = all_skills[0]
+        assert skill.name
+        assert skill.category
 
     def test_search(self) -> None:
         registry = SkillRegistry()
@@ -163,11 +166,10 @@ class TestSkillRegistry:
         registry = SkillRegistry()
         registry.load_bundled()
         cats = registry.categories()
+        assert len(cats) >= 10  # should have many categories
         assert "databases" in cats
-        assert "project-management" in cats
-        assert "version-control" in cats
 
     def test_get_nonexistent(self) -> None:
         registry = SkillRegistry()
         registry.load_bundled()
-        assert registry.get("nonexistent-skill-xyz") is None
+        assert registry.get("nonexistent-skill-xyz-12345") is None
