@@ -104,15 +104,52 @@ class TestCapacityTracker:
         ct.task_started("agent-1", "task-1")
         ct.task_finished("agent-1", "task-1")
 
-        snap = ct.snapshot(active_agents=1, total_agents=3)
+        snap = ct.snapshot(active_agents=1, total_agents=3, heartbeat_interval=30.0)
         assert "node" in snap
         assert snap["node"]["cpu_cores"] >= 1
         assert "agents" in snap
         assert snap["agents"]["active"] == 1
         assert snap["agents"]["total"] == 3
+        assert "max_concurrent" in snap["agents"]
+        assert "max_concurrent_basis" in snap["agents"]
         assert "contention" in snap
         assert "agent_share_pct" in snap
         assert "recent_tasks" in snap
+
+    def test_max_concurrent_measured(self) -> None:
+        """With heartbeat data, estimate is based on measured per-agent time."""
+        max_c, basis = CapacityTracker._estimate_max_concurrent(
+            heartbeat_interval=30.0,
+            avg_heartbeat_time=10.0,
+            active_agents=2,
+            ram_available_gb=16.0,
+        )
+        # 10s for 2 agents = 5s/agent, 30s interval = 6 agents
+        assert max_c == 6
+        assert "measured" in basis
+
+    def test_max_concurrent_ram_fallback(self) -> None:
+        """Without heartbeat data, falls back to RAM estimate."""
+        max_c, basis = CapacityTracker._estimate_max_concurrent(
+            heartbeat_interval=30.0,
+            avg_heartbeat_time=0.0,
+            active_agents=0,
+            ram_available_gb=3.0,
+        )
+        # 3GB / 0.3GB per agent = 10
+        assert max_c == 10
+        assert "RAM" in basis
+
+    def test_max_concurrent_default(self) -> None:
+        """With no data at all, returns conservative default."""
+        max_c, basis = CapacityTracker._estimate_max_concurrent(
+            heartbeat_interval=30.0,
+            avg_heartbeat_time=0.0,
+            active_agents=0,
+            ram_available_gb=0.0,
+        )
+        assert max_c == 10
+        assert "default" in basis
 
     def test_history_limit(self) -> None:
         ct = CapacityTracker(max_history=5)

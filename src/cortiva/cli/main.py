@@ -348,7 +348,7 @@ def cmd_watch(args: argparse.Namespace) -> None:
               f"{node.get('ram_available_gb', '?')}GB RAM free "
               f"({node.get('ram_percent', '?')}% used)")
         print(f"  Agents: {ag.get('active', 0)} active / {ag.get('total', 0)} total "
-              f"(max ~{ag.get('max_concurrent', '?')} concurrent)")
+              f"(max ~{ag.get('max_concurrent', '?')})")
         if cont.get("avg_queue_wait_s", 0) > 0:
             print(f"  Contention: avg queue wait {cont['avg_queue_wait_s']:.1f}s, "
                   f"avg LLM wait {cont.get('avg_consciousness_wait_s', 0):.1f}s, "
@@ -392,7 +392,8 @@ def cmd_capacity(args: argparse.Namespace) -> None:
     print(f"\nAgent Capacity\n")
     print(f"  Active agents:   {ag.get('active', 0)}")
     print(f"  Total agents:    {ag.get('total', 0)}")
-    print(f"  Max concurrent:  ~{ag.get('max_concurrent', '?')} (based on CPU cores)")
+    basis = ag.get("max_concurrent_basis", "")
+    print(f"  Max concurrent:  ~{ag.get('max_concurrent', '?')} ({basis})")
 
     print(f"\nContention\n")
     print(f"  Avg queue wait:        {cont.get('avg_queue_wait_s', 0):>6.1f}s")

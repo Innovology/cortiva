@@ -1181,7 +1181,9 @@ class Fabric:
                 1 for a in self.agents.values()
                 if a.state in (AgentState.EXECUTING, AgentState.REPLANNING)
             )
-            capacity = self.capacity_tracker.snapshot(active, len(self.agents))
+            capacity = self.capacity_tracker.snapshot(
+                active, len(self.agents), self.heartbeat_interval,
+            )
             return {"ok": True, "agents": agents_data, "capacity": capacity}
 
         async def _handle_capacity(**_kw: Any) -> dict[str, Any]:
@@ -1192,7 +1194,9 @@ class Fabric:
             )
             return {
                 "ok": True,
-                **self.capacity_tracker.snapshot(active, len(self.agents)),
+                **self.capacity_tracker.snapshot(
+                    active, len(self.agents), self.heartbeat_interval,
+                ),
             }
 
         server.register("status", _handle_status)

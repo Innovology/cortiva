@@ -187,7 +187,12 @@ class CapacityTracker:
 
     # ----- Capacity snapshot -----
 
-    def snapshot(self, active_agents: int, total_agents: int) -> dict[str, Any]:
+    def snapshot(
+        self,
+        active_agents: int,
+        total_agents: int,
+        heartbeat_interval: float = 30.0,
+    ) -> dict[str, Any]:
         """Build a capacity and contention report.
 
         Parameters
@@ -196,6 +201,8 @@ class CapacityTracker:
             Number of agents currently in EXECUTING/REPLANNING state.
         total_agents:
             Total number of registered agents.
+        heartbeat_interval:
+            Fabric heartbeat interval in seconds.
         """
         cpu_cores = os.cpu_count() or 1
 
@@ -250,6 +257,20 @@ class CapacityTracker:
             for aid, t in agent_hb_totals.items()
         }
 
+        # Estimate max concurrent agents.
+        #
+        # The bottleneck is almost never CPU — agents spend most of
+        # their cycle blocked on LLM API calls.  The real limit is
+        # how many cycles fit in one heartbeat interval.
+        #
+        # With measured data: heartbeat_interval / avg_per_agent_cycle.
+        # Without data: conservative estimate based on RAM (each agent
+        # + terminal subprocess uses ~200-500MB).
+        max_concurrent, max_basis = self._estimate_max_concurrent(
+            heartbeat_interval, avg_heartbeat, active_agents,
+            ram_available_gb,
+        )
+
         return {
             "node": {
                 "cpu_cores": cpu_cores,
@@ -261,7 +282,8 @@ class CapacityTracker:
             "agents": {
                 "active": active_agents,
                 "total": total_agents,
-                "max_concurrent": cpu_cores,  # rough heuristic
+                "max_concurrent": max_concurrent,
+                "max_concurrent_basis": max_basis,
             },
             "contention": {
                 "avg_queue_wait_s": round(avg_queue_wait, 2),
@@ -276,3 +298,33 @@ class CapacityTracker:
             "agent_share_pct": agent_share,
             "recent_tasks": [t.to_dict() for t in recent_tasks[-5:]],
         }
+
+    @staticmethod
+    def _estimate_max_concurrent(
+        heartbeat_interval: float,
+        avg_heartbeat_time: float,
+        active_agents: int,
+        ram_available_gb: float,
+    ) -> tuple[int, str]:
+        """Estimate how many agents this node can run concurrently.
+
+        Returns ``(count, basis)`` where *basis* explains the estimate.
+        """
+        # Method 1: Measured — if we have heartbeat data with active
+        # agents, extrapolate how many would fill the interval.
+        if avg_heartbeat_time > 0 and active_agents > 0:
+            per_agent = avg_heartbeat_time / active_agents
+            if per_agent > 0:
+                measured = int(heartbeat_interval / per_agent)
+                measured = max(measured, 1)
+                return (measured, f"measured: {per_agent:.1f}s/agent, {heartbeat_interval:.0f}s interval")
+
+        # Method 2: RAM-based — each agent with a terminal subprocess
+        # uses roughly 300MB.  This is conservative.
+        if ram_available_gb > 0:
+            ram_estimate = int(ram_available_gb / 0.3)
+            ram_estimate = max(ram_estimate, 1)
+            return (ram_estimate, "estimated from available RAM (~300MB/agent)")
+
+        # Fallback
+        return (10, "default estimate (no measured data)")
