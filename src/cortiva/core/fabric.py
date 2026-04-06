@@ -1088,17 +1088,25 @@ class Fabric:
                 except Exception as e:
                     logger.error(f"Scheduler action {action} for {agent_id}: {e}")
 
-        # Run cycles for active agents (sequential — contention tracked)
+        # Run cycles for active agents concurrently (with capacity tracking)
         self.capacity_tracker.heartbeat_start()
-        for agent_id, agent in self.agents.items():
-            if agent.state == AgentState.EXECUTING:
-                cycle_start = self.capacity_tracker.agent_cycle_start(agent_id)
-                try:
-                    await self.cycle(agent_id)
-                except Exception as e:
-                    logger.error(f"Cycle error for {agent_id}: {e}")
-                finally:
-                    self.capacity_tracker.agent_cycle_end(agent_id, cycle_start)
+
+        async def _run_cycle(aid: str) -> None:
+            cycle_start = self.capacity_tracker.agent_cycle_start(aid)
+            try:
+                await self.cycle(aid)
+            except Exception as e:
+                logger.error(f"Cycle error for {aid}: {e}")
+            finally:
+                self.capacity_tracker.agent_cycle_end(aid, cycle_start)
+
+        coros = [
+            _run_cycle(agent_id)
+            for agent_id, agent in self.agents.items()
+            if agent.state == AgentState.EXECUTING
+        ]
+        if coros:
+            await asyncio.gather(*coros, return_exceptions=True)
         self.capacity_tracker.heartbeat_end()
 
     async def _heartbeat_loop(self) -> None:
