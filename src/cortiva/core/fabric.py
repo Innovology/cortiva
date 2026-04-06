@@ -25,7 +25,7 @@ from cortiva.adapters.protocols import (
     RoutineAdapter,
     TerminalAgentAdapter,
 )
-from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
+from cortiva.core.agent import Agent, AgentState, Task, TaskQueue, _parse_plan
 from cortiva.core.approval import ApprovalQueue
 from cortiva.core.capacity import CapacityTracker
 from cortiva.core.events import EventBus, FabricEvent
@@ -416,9 +416,7 @@ class Fabric:
                     agent_id, approval.backend, response.tokens_in, response.tokens_out,
                 )
                 agent.spend_consciousness()
-                agent.write_identity("plan", response.content)
-                agent.task_queue = _parse_plan(response.content)
-                agent.persist_runtime_state()
+                agent.set_plan(response.content)
                 logger.info(f"Agent {agent_id} has planned their day")
         elif agent.spend_consciousness():
             response = await self.consciousness.think(
@@ -493,7 +491,7 @@ class Fabric:
 
         # Final runtime state persistence before clearing
         agent.persist_runtime_state()
-        agent.task_queue = None
+        agent.clear_plan()
         agent.transition(AgentState.SLEEPING)
 
         # Clock out and end conversation session
@@ -534,11 +532,6 @@ class Fabric:
             "all_tasks_complete": False,
         }
 
-        # Load task_queue from plan.md if not yet parsed
-        if agent.task_queue is None:
-            plan_text = agent.read_identity("plan")
-            agent.task_queue = _parse_plan(plan_text)
-
         # Check for messages
         messages: list[Any] = []
         if self.channel:
@@ -551,11 +544,13 @@ class Fabric:
             result["conscious_call"] = True
             return result
 
-        # Get next pending task
-        task = agent.task_queue.next_pending()
+        # Agent decides what to work on next
+        task = agent.next_task()
         if task is None:
             result["action"] = "idle"
-            result["all_tasks_complete"] = agent.task_queue.all_done()
+            result["all_tasks_complete"] = (
+                agent.task_queue.all_done() if agent.task_queue else True
+            )
             return result
 
         # Execute the task (with capacity tracking)
@@ -583,11 +578,7 @@ class Fabric:
         # Check execution policy before starting
         policy_result = self.policy_manager.check_action(agent.id, task.description)
         if policy_result.denied:
-            task.status = "exception"
-            task.error = f"Policy denied: {policy_result.reason}"
-            assert agent.task_queue is not None
-            agent.task_queue.exceptions.append(task)
-            agent.tasks_escalated_today += 1
+            agent.fail_task(task, f"Policy denied: {policy_result.reason}")
             logger.warning(
                 "Agent %s task blocked by policy: %s — %s",
                 agent.id, task.description, policy_result.reason,
@@ -629,7 +620,7 @@ class Fabric:
                 "approval.requested", agent_id=agent.id,
                 task=task.description, approver=approver,
             )
-            task.status = "pending_approval"
+            agent.defer_task(task, f"Awaiting approval: {policy_result.reason}")
             return
 
         task.status = "in_progress"
@@ -964,28 +955,8 @@ class Fabric:
         return True
 
     def _should_replan(self, agent: Agent, messages: list[Any]) -> bool:
-        """Check whether a replan is warranted."""
-        if agent.task_queue is None:
-            return False
-        if agent.task_queue.replan_count >= MAX_REPLANS:
-            return False
-
-        # Trigger 1: too many exceptions
-        if len(agent.task_queue.exceptions) >= EXCEPTION_THRESHOLD:
-            return True
-
-        # Trigger 2: urgent message
-        for msg in messages:
-            content = getattr(msg, "content", "")
-            if "urgent" in content.lower():
-                return True
-
-        # Trigger 3: all pending done but exceptions remain
-        pending = [t for t in agent.task_queue.tasks if t.status == "pending"]
-        if not pending and agent.task_queue.exceptions:
-            return True
-
-        return False
+        """Delegate replan decision to the agent."""
+        return agent.needs_replan(messages)
 
     async def _replan(self, agent: Agent, messages: list[Any]) -> None:
         """Trigger a replan: EXECUTING -> REPLANNING, build new plan, -> EXECUTING."""
@@ -1025,10 +996,7 @@ class Fabric:
                 )
                 agent.spend_consciousness()
 
-            new_queue = _parse_plan(response.content)
-            new_queue.replan_count = agent.task_queue.replan_count + 1
-            agent.task_queue = new_queue
-            agent.write_identity("plan", response.content)
+            agent.update_plan(response.content)
 
         if agent.state == AgentState.REPLANNING:
             agent.transition(AgentState.EXECUTING)

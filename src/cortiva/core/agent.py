@@ -9,6 +9,7 @@ across sleep cycles via markdown files on disk.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -54,6 +55,66 @@ class TaskQueue:
             summary[t.status] = summary.get(t.status, 0) + 1
         summary["exceptions"] = len(self.exceptions)
         return summary
+
+
+def _parse_plan(plan_text: str) -> TaskQueue:
+    """Parse plan markdown into a TaskQueue.
+
+    Recognises checkbox lists (``- [ ]`` / ``- [x]``), numbered lists
+    (``1.``), and plain bullet lists (``- ``).  Priority markers like
+    ``**[CRITICAL]**`` and ``**[HIGH]**`` are extracted.
+    """
+    tasks: list[Task] = []
+    task_id = 0
+
+    for line in plan_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        checkbox_match = re.match(r"^[-*]\s*\[([ xX])\]\s*(.*)", stripped)
+        numbered_match = re.match(r"^\d+[.)]\s+(.*)", stripped)
+        bullet_match = re.match(r"^[-*]\s+(.*)", stripped)
+
+        description: str | None = None
+        done = False
+
+        if checkbox_match:
+            done = checkbox_match.group(1).lower() == "x"
+            description = checkbox_match.group(2).strip()
+        elif numbered_match:
+            description = numbered_match.group(1).strip()
+        elif bullet_match:
+            candidate = bullet_match.group(1).strip()
+            if candidate and not candidate.startswith("#"):
+                description = candidate
+
+        if not description:
+            continue
+
+        priority = 0
+        priority_pattern = r"\*\*\[(\w+)\]\*\*\s*"
+        priority_match = re.search(priority_pattern, description)
+        if priority_match:
+            marker = priority_match.group(1).upper()
+            if marker == "CRITICAL":
+                priority = 2
+            elif marker == "HIGH":
+                priority = 1
+            description = re.sub(priority_pattern, "", description).strip()
+
+        if not description:
+            continue
+
+        task_id += 1
+        tasks.append(Task(
+            id=f"task-{task_id}",
+            description=description,
+            status="done" if done else "pending",
+            priority=priority,
+        ))
+
+    return TaskQueue(tasks=tasks)
 
 
 class AgentState(Enum):
@@ -339,6 +400,103 @@ class Agent:
             return False
         self.consciousness_budget_used += amount
         return True
+
+    # ----- Plan ownership -----
+    #
+    # The agent owns its planned work. The Fabric provides the plan
+    # text (from the LLM), but the agent decides what to work on next,
+    # when to replan, and whether to accept a task.
+
+    # How many exceptions before a replan is triggered
+    EXCEPTION_THRESHOLD = 3
+    # Maximum number of replans per wake cycle
+    MAX_REPLANS = 3
+
+    def set_plan(self, plan_text: str) -> TaskQueue:
+        """Parse a plan markdown into a TaskQueue and take ownership.
+
+        Called by the Fabric after the consciousness adapter produces a
+        plan.  The agent stores the plan text in its identity files and
+        parses it into an executable queue.
+        """
+        self.task_queue = _parse_plan(plan_text)
+        self.write_identity("plan", plan_text)
+        self.persist_runtime_state()
+        return self.task_queue
+
+    def update_plan(self, plan_text: str) -> TaskQueue:
+        """Replace the current plan (replan), preserving replan count."""
+        replan_count = self.task_queue.replan_count if self.task_queue else 0
+        self.task_queue = _parse_plan(plan_text)
+        self.task_queue.replan_count = replan_count + 1
+        self.write_identity("plan", plan_text)
+        self.persist_runtime_state()
+        return self.task_queue
+
+    def next_task(self) -> Task | None:
+        """Return the next task to work on (highest priority pending).
+
+        The agent decides the order, not the Fabric.
+        """
+        if self.task_queue is None:
+            plan_text = self.read_identity("plan")
+            self.task_queue = _parse_plan(plan_text)
+        return self.task_queue.next_pending()
+
+    def complete_task(self, task: Task, outcome: str) -> None:
+        """Mark a task as completed."""
+        task.status = "done"
+        task.outcome = outcome
+        self.tasks_completed_today += 1
+
+    def fail_task(self, task: Task, error: str) -> None:
+        """Mark a task as failed and add to exception pile."""
+        task.status = "exception"
+        task.error = error
+        if self.task_queue is not None:
+            self.task_queue.exceptions.append(task)
+        self.tasks_escalated_today += 1
+
+    def defer_task(self, task: Task, reason: str) -> None:
+        """Defer a task (pending_approval, budget exhausted, etc.)."""
+        task.status = "pending_approval" if "approv" in reason.lower() else "exception"
+        task.error = reason
+        if task.status == "exception" and self.task_queue is not None:
+            self.task_queue.exceptions.append(task)
+            self.tasks_escalated_today += 1
+
+    def needs_replan(self, messages: list[Any]) -> bool:
+        """Decide whether a replan is warranted.
+
+        The agent checks its own state — exception count, urgent
+        messages, and completion status — rather than the Fabric
+        deciding for it.
+        """
+        if self.task_queue is None:
+            return False
+        if self.task_queue.replan_count >= self.MAX_REPLANS:
+            return False
+
+        # Too many exceptions
+        if len(self.task_queue.exceptions) >= self.EXCEPTION_THRESHOLD:
+            return True
+
+        # Urgent message
+        for msg in messages:
+            content = getattr(msg, "content", "")
+            if "urgent" in content.lower():
+                return True
+
+        # All pending done but exceptions remain
+        pending = [t for t in self.task_queue.tasks if t.status == "pending"]
+        if not pending and self.task_queue.exceptions:
+            return True
+
+        return False
+
+    def clear_plan(self) -> None:
+        """Clear the task queue (called on sleep)."""
+        self.task_queue = None
 
     # ----- Serialisation -----
 
