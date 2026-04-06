@@ -56,6 +56,11 @@ Not every thought needs the expensive model. The budget manager tracks daily all
 
 Authority boundaries are defined per agent. The framework enforces primary responsibilities (unilateral), secondary (requires approval), and escalation (beyond authority). Governance flows through the same communication channels agents use for everything else.
 
+## Feature Guides
+
+- [Session Management](sessions.md) -- Conversation continuity within wake cycles, rolling buffers, and context injection
+- [Agent Lifecycle](lifecycle.md) -- The full state machine, daily cycle, termination, and successor handover
+
 ## Next Steps
 
 - [Quick Start](quickstart.md) -- Install and run your first agent team
