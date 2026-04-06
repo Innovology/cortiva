@@ -14,6 +14,9 @@ from typing import Any
 import yaml
 
 from cortiva.core.budget import BackendType, ConsciousnessBudgetManager
+from cortiva.core.credentials import CredentialConfig, CredentialProvider
+from cortiva.core.data_boundary import DataBoundaryConfig, DataBoundaryEnforcer
+from cortiva.core.encryption import EncryptionConfig, EncryptionVault
 from cortiva.core.fabric import Fabric
 from cortiva.core.isolation import IsolationConfig, IsolationTier, build_enforcer
 from cortiva.core.memory_guard import GuardedMemoryAdapter
@@ -286,6 +289,21 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
     # --- Org model (optional) ---
     org_section = config.get("org")
     fabric.org = parse_org_config(org_section)
+
+    # --- Encryption at rest (optional) ---
+    encryption_section = config.get("encryption", {})
+    encryption_config = EncryptionConfig.from_dict(encryption_section)
+    fabric.encryption_vault = EncryptionVault.from_config(encryption_config, agents_dir)
+
+    # --- Credential delegation (optional) ---
+    cred_section = config.get("credentials", {})
+    cred_config = CredentialConfig.from_dict(cred_section)
+    fabric.credential_provider = CredentialProvider(cred_config)
+
+    # --- Data boundary (optional) ---
+    boundary_section = config.get("data_boundary", {})
+    boundary_config = DataBoundaryConfig.from_dict(boundary_section)
+    fabric.data_boundary = DataBoundaryEnforcer(boundary_config)
 
     # --- Hooks (optional) ---
     hooks_section = config.get("hooks")

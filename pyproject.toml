@@ -68,6 +68,16 @@ dev = [
 # Container isolation (Tier 3) — optional Docker SDK
 container = ["docker>=7.0"]
 
+# Encryption at rest
+encryption = ["cryptography>=43.0"]
+
+# Azure integration (Managed Identity, Key Vault, Monitor)
+azure = [
+    "azure-identity>=1.17",
+    "azure-keyvault-keys>=4.9",
+    "azure-keyvault-secrets>=4.8",
+]
+
 # All adapters
 all = [
     "engram-core",

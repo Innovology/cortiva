@@ -180,6 +180,9 @@ class Fabric:
         self.capacity_tracker = CapacityTracker()
         self.policy_manager = PolicyManager()
         self.hook_router = HookRouter()
+        self.encryption_vault: Any = None  # EncryptionVault or None
+        self.credential_provider: Any = None  # CredentialProvider or None
+        self.data_boundary: Any = None  # DataBoundaryEnforcer or None
         self.org: OrgModel | None = None
         self.delegation = DelegationManager(self.agents_dir / ".delegation")
         self.approval_queue = ApprovalQueue(self.agents_dir / ".approvals")
