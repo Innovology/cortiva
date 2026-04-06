@@ -1404,12 +1404,53 @@ class Fabric:
                 "agents": agent_resources,
             }
 
+        async def _handle_agent_chat(
+            agent_id: str = "", message: str = "", **_kw: Any,
+        ) -> dict[str, Any]:
+            """Send a message to an agent and get a response."""
+            if not agent_id or not message:
+                return {"ok": False, "error": "agent_id and message required"}
+            if agent_id not in self.agents:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+
+            from cortiva.core.chat import AgentChat
+
+            agent = self.agents[agent_id]
+            chat = AgentChat(
+                agent=agent,
+                consciousness=self.consciousness,
+                memory=self.memory,
+                session_manager=self.session_manager,
+            )
+            try:
+                response = await chat.send(message)
+                return {"ok": True, "agent_id": agent_id, "response": response}
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
+
+        async def _handle_agent_logs(
+            agent_id: str = "", limit: int = 20, **_kw: Any,
+        ) -> dict[str, Any]:
+            """Get recent activity logs for an agent."""
+            if not agent_id:
+                return {"ok": False, "error": "agent_id required"}
+            if agent_id not in self.agents:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+
+            from cortiva.core.chat import get_agent_logs
+
+            agent = self.agents[agent_id]
+            logs = await get_agent_logs(agent, self.memory, limit=limit)
+            return {"ok": True, **logs}
+
         server.register("status", _handle_status)
         server.register("watch", _handle_watch)
         server.register("resources", _handle_resources)
         server.register("capacity", _handle_capacity)
         server.register("agent.activity", _handle_agent_activity)
         server.register("agent.hours", _handle_agent_hours)
+        server.register("agent.chat", _handle_agent_chat)
+        server.register("agent.logs", _handle_agent_logs)
         server.register("agent.wake", _handle_agent_wake)
         server.register("agent.sleep", _handle_agent_sleep)
         server.register("agent.cycle", _handle_agent_cycle)

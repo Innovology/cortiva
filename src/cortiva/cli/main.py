@@ -632,6 +632,167 @@ def _print_hours(resp: dict) -> None:
                 print(f"    {wake} → {sleep_str}  ({e.get('hours', 0):.1f}h)")
 
 
+def cmd_agent_chat(args: argparse.Namespace) -> None:
+    """Interactive conversation with an agent."""
+    from cortiva.cli.output import (
+        print_error,
+        print_header,
+        print_info,
+        print_muted,
+    )
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    if not client.is_daemon_running():
+        print_error("No running Cortiva daemon. Use 'cortiva start' first.")
+        sys.exit(1)
+
+    print_header(f"Chat with {args.id}", "Type 'quit' or 'exit' to end. Ctrl+C to abort.")
+    print()
+
+    while True:
+        try:
+            message = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if not message:
+            continue
+        if message.lower() in ("quit", "exit", "q"):
+            break
+
+        try:
+            resp = client.send_sync("agent.chat", agent_id=args.id, message=message)
+            if resp and resp.get("ok"):
+                response = resp.get("response", "")
+                print(f"\n{args.id}: {response}\n")
+            else:
+                print_error(resp.get("error", "unknown error") if resp else "no response")
+        except Exception as exc:
+            print_error(f"Error: {exc}")
+            break
+
+    print_muted("Chat ended.")
+
+
+def cmd_agent_logs(args: argparse.Namespace) -> None:
+    """Show recent activity logs for an agent."""
+    from cortiva.cli.output import (
+        create_table,
+        print_error,
+        print_header,
+        print_info,
+        print_kv,
+        print_muted,
+        print_table,
+    )
+
+    # Try live first
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    logs = None
+
+    if client.is_daemon_running():
+        try:
+            resp = client.send_sync("agent.logs", agent_id=args.id)
+            if resp and resp.get("ok"):
+                logs = resp
+        except Exception:
+            pass
+
+    if logs is None:
+        # Fallback: read from filesystem
+        import asyncio as _asyncio
+
+        agent_dir = Path("agents") / args.id
+        if not agent_dir.exists():
+            print_error(f"Agent '{args.id}' not found.")
+            sys.exit(1)
+
+        from cortiva.adapters.memory.inmemory import InMemoryAdapter
+        from cortiva.core.agent import Agent
+        from cortiva.core.chat import get_agent_logs
+
+        agent = Agent.from_directory(agent_dir)
+        memory = InMemoryAdapter()
+        logs = _asyncio.run(get_agent_logs(agent, memory))
+
+    print_header(f"Agent Logs: {args.id}", f"State: {logs.get('state', '?')}")
+
+    # Identity
+    identity = logs.get("identity")
+    if identity:
+        preview = identity[:200].replace("\n", " ").strip()
+        if len(identity) > 200:
+            preview += "..."
+        print_kv("Identity", preview)
+        print()
+
+    # Task queue
+    tq = logs.get("task_queue")
+    if tq:
+        tasks = tq.get("tasks", [])
+        summary = tq.get("summary", {})
+        print_info(
+            f"Tasks: {summary.get('done', 0)} done, "
+            f"{summary.get('pending', 0)} pending, "
+            f"{summary.get('exceptions', 0)} exceptions"
+        )
+        if tasks:
+            table = create_table()
+            table.add_column("ID")
+            table.add_column("Status")
+            table.add_column("Description")
+            for t in tasks[:15]:
+                desc = t.get("description", "")[:60]
+                table.add_row(t.get("id", ""), t.get("status", ""), desc)
+            print_table(table)
+        print()
+
+    # Exceptions
+    exceptions = logs.get("exceptions", [])
+    if exceptions:
+        print_error(f"Exceptions ({len(exceptions)}):")
+        for exc in exceptions[:5]:
+            print(f"  {exc.get('description', '?')}: {exc.get('error', '')}")
+        print()
+
+    # Recent journals
+    journals = logs.get("recent_journals", [])
+    if journals:
+        print_info(f"Recent Journal Entries ({len(journals)}):")
+        for j in journals:
+            preview = j.get("preview", "")[:100].replace("\n", " ")
+            print(f"  {j.get('date', '?')}: {preview}")
+        print()
+
+    # Recent memories
+    memories = logs.get("recent_memories", [])
+    if memories:
+        print_info(f"Recent Memories ({len(memories)}):")
+        table = create_table()
+        table.add_column("Importance", justify="right")
+        table.add_column("Content")
+        table.add_column("Tags")
+        for m in memories[:10]:
+            table.add_row(
+                f"{m.get('importance', 0):.0f}",
+                m.get("content", "")[:80],
+                ", ".join(m.get("tags", [])),
+            )
+        print_table(table)
+        print()
+
+    # Familiarity signals
+    fam = logs.get("familiarity", [])
+    if fam:
+        print_muted(f"Familiarity signals ({len(fam)}):")
+        for f in fam[:5]:
+            print(f"  [{f.get('strength', '?')}] {f.get('task', '')[:60]}")
+
+
 def cmd_skill_list(args: argparse.Namespace) -> None:
     """List available skills or installed skills for an agent."""
     from cortiva.core.skills import SkillRegistry
@@ -1745,6 +1906,12 @@ def build_parser() -> argparse.ArgumentParser:
     hours_parser.add_argument("id", help="Agent ID")
     hours_parser.add_argument("--week", action="store_true", help="Show weekly summary")
 
+    chat_parser = agent_sub.add_parser("chat", help="Talk directly to an agent")
+    chat_parser.add_argument("id", help="Agent ID")
+
+    logs_parser = agent_sub.add_parser("logs", help="Show agent activity logs")
+    logs_parser.add_argument("id", help="Agent ID")
+
     wake_parser = agent_sub.add_parser("wake", help="Wake an agent")
     wake_parser.add_argument("id", help="Agent ID")
 
@@ -1892,6 +2059,10 @@ def main() -> None:
             cmd_agent_activity(args)
         elif args.agent_command == "hours":
             cmd_agent_hours(args)
+        elif args.agent_command == "chat":
+            cmd_agent_chat(args)
+        elif args.agent_command == "logs":
+            cmd_agent_logs(args)
         elif args.agent_command == "wake":
             cmd_agent_wake(args)
         elif args.agent_command == "sleep":
