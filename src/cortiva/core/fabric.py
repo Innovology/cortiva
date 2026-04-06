@@ -35,6 +35,7 @@ from cortiva.core.cluster import Cluster, ClusterNode, move_agent
 from cortiva.core.context import ContextBuilder
 from cortiva.core.discovery import NodeCapabilities
 from cortiva.core.familiarity import FamiliarityEngine
+from cortiva.core.hooks import HookRouter
 from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
 from cortiva.core.delegation import DelegationManager
@@ -178,6 +179,7 @@ class Fabric:
         self.timesheet_manager = TimesheetManager(self.agents_dir)
         self.capacity_tracker = CapacityTracker()
         self.policy_manager = PolicyManager()
+        self.hook_router = HookRouter()
         self.org: OrgModel | None = None
         self.delegation = DelegationManager(self.agents_dir / ".delegation")
         self.approval_queue = ApprovalQueue(self.agents_dir / ".approvals")
@@ -444,6 +446,13 @@ class Fabric:
             context = context + "\n\n---\n\n" + cascade
 
         context = context + "\n\n---\n\n" + daily_ctx
+
+        # Inject any pending inbound hooks
+        hook_context = self.hook_router.pending_context(agent_id)
+        if hook_context:
+            context = context + "\n\n---\n\n" + hook_context
+        # Consume the hooks (they've been injected into the plan context)
+        self.hook_router.pending_for(agent_id)
 
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent_id, context)
@@ -1466,6 +1475,51 @@ class Fabric:
                 "agents": agent_resources,
             }
 
+        async def _handle_hook_receive(
+            source: str = "", event_type: str = "", payload: dict | None = None,
+            **_kw: Any,
+        ) -> dict[str, Any]:
+            """Receive an inbound hook and route to an agent."""
+            if not source or not event_type:
+                return {"ok": False, "error": "source and event_type required"}
+
+            event = self.hook_router.route(source, event_type, payload or {})
+            if event is None:
+                return {"ok": False, "error": "No route matched"}
+
+            # Wake the agent if sleeping and route says to
+            woke = False
+            if self.hook_router.should_wake(event):
+                agent_id = event.routed_to
+                if agent_id in self.agents:
+                    agent = self.agents[agent_id]
+                    if agent.state == AgentState.SLEEPING:
+                        try:
+                            await self.wake(agent_id)
+                            event.woke_agent = True
+                            woke = True
+                            logger.info(
+                                "Hook woke agent %s: %s/%s",
+                                agent_id, source, event_type,
+                            )
+                        except Exception as exc:
+                            logger.error("Failed to wake %s on hook: %s", agent_id, exc)
+
+            self._emit(
+                "hook.received", agent_id=event.routed_to,
+                source=source, event_type=event_type,
+                priority=event.priority, woke_agent=woke,
+            )
+
+            return {"ok": True, **event.to_dict()}
+
+        async def _handle_hook_list(**_kw: Any) -> dict[str, Any]:
+            """List recent hooks."""
+            return {
+                "ok": True,
+                "hooks": [h.to_dict() for h in self.hook_router.recent_hooks()],
+            }
+
         async def _handle_agent_chat(
             agent_id: str = "", message: str = "", **_kw: Any,
         ) -> dict[str, Any]:
@@ -1511,6 +1565,8 @@ class Fabric:
         server.register("capacity", _handle_capacity)
         server.register("agent.activity", _handle_agent_activity)
         server.register("agent.hours", _handle_agent_hours)
+        server.register("hook.receive", _handle_hook_receive)
+        server.register("hook.list", _handle_hook_list)
         server.register("agent.chat", _handle_agent_chat)
         server.register("agent.logs", _handle_agent_logs)
         server.register("agent.wake", _handle_agent_wake)
