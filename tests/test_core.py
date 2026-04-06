@@ -472,10 +472,10 @@ class TestCycle:
 
     @pytest.mark.asyncio
     async def test_budget_exhaustion_defers(self, tmp_path: Path) -> None:
-        # Budget of 2: 1 for wake planning, 1 remains but will be spent,
-        # then next task should defer
-        fabric = self._make_fabric(tmp_path, budget=2)
-        agent = await fabric.wake("worker-01")  # spends 1
+        # Budget of 4: 3 for wake planning (monthly+weekly+daily), 1 for
+        # first task, then budget exhausted on the second task.
+        fabric = self._make_fabric(tmp_path, budget=4)
+        agent = await fabric.wake("worker-01")  # spends up to 3
 
         # First cycle should succeed (spends 1)
         result1 = await fabric.cycle("worker-01")

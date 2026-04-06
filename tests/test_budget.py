@@ -357,10 +357,11 @@ class TestFabricBudgetIntegration:
 
     @pytest.mark.asyncio
     async def test_budget_exhaustion_defers_task(self, tmp_path: Path) -> None:
-        # Budget of 2: 1 for wake planning, 1 for first task
-        fabric = self._make_fabric_with_budget(tmp_path, calls_limit=2)
+        # Budget of 4: 3 for wake planning (monthly+weekly+daily), 1 for
+        # first task, then budget exhausted on the second task.
+        fabric = self._make_fabric_with_budget(tmp_path, calls_limit=4)
         fabric.register_agent("worker-01")
-        agent = await fabric.wake("worker-01")  # uses 1
+        agent = await fabric.wake("worker-01")  # uses up to 3
 
         result1 = await fabric.cycle("worker-01")  # uses 1
         assert result1["action"] == "executed_task"

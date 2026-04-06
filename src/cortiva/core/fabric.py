@@ -39,6 +39,15 @@ from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
 from cortiva.core.delegation import DelegationManager
 from cortiva.core.living_summary import LivingSummaryRegenerator
+from cortiva.core.planner import (
+    DAILY_PROMPT,
+    MONTHLY_PROMPT,
+    WEEKLY_PROMPT,
+    Planner,
+    build_daily_context,
+    build_monthly_context,
+    build_weekly_context,
+)
 from cortiva.core.org import OrgModel
 from cortiva.core.policy import PolicyManager
 from cortiva.core.resource_guard import ResourceGuard
@@ -375,64 +384,77 @@ class Fabric:
         if self.budget_manager:
             self.budget_manager.reset_agent(agent_id)
 
-        # Ask the conscious layer to build a plan (structured checklist)
-        context = await self.context_builder.build_plan_context(agent, identity, messages)
-        planning_prompt = (
-            "You are waking up. Review your identity, any pending messages, "
-            "and your previous plan. Create your plan for today as a structured "
-            "checklist. Use this format:\n\n"
-            "- [ ] **[CRITICAL]** Task description (for critical tasks)\n"
-            "- [ ] **[HIGH]** Task description (for high-priority tasks)\n"
-            "- [ ] Task description (for normal tasks)\n"
+        # --- Multi-horizon planning (monthly → weekly → daily) ---
+        planner = Planner(agent.directory)
+        delegation_text = self.delegation.pending_for_context(agent_id)
+
+        # Monthly plan (generated on first wake of the month)
+        if planner.needs_monthly_plan():
+            monthly_ctx = await build_monthly_context(
+                agent_id, self.memory,
+                goals_context=self._goals_context(agent_id),
+            )
+            await self._conscious_plan(
+                agent, identity, monthly_ctx, MONTHLY_PROMPT,
+                call_type="plan_monthly",
+                on_success=lambda text: planner.save_monthly(text),
+            )
+            logger.info(f"Agent {agent_id} created monthly plan")
+
+        # Weekly plan (generated on first wake of the week)
+        if planner.needs_weekly_plan():
+            weekly_ctx = await build_weekly_context(
+                agent_id, self.memory,
+                monthly_plan=planner.store.current_monthly(),
+                previous_weekly=planner.store.previous_weekly(),
+                delegation_context=delegation_text,
+            )
+            await self._conscious_plan(
+                agent, identity, weekly_ctx, WEEKLY_PROMPT,
+                call_type="plan_weekly",
+                on_success=lambda text: planner.save_weekly(text),
+            )
+            logger.info(f"Agent {agent_id} created weekly plan")
+
+        # Daily plan (every wake)
+        yesterday_journal = ""
+        journal_dir = agent.directory / "journal"
+        if journal_dir.is_dir():
+            journals = sorted(journal_dir.glob("*.md"), reverse=True)
+            if journals:
+                yesterday_journal = journals[0].read_text(encoding="utf-8")[:300]
+
+        daily_ctx = await build_daily_context(
+            agent_id, self.memory,
+            weekly_plan=planner.store.current_weekly(),
+            yesterday_reflection=yesterday_journal,
+            delegation_context=delegation_text,
         )
 
-        # Inject org position and delegated tasks into planning context
+        # Build full context: identity + messages + org + plan cascade + daily context
+        context = await self.context_builder.build_plan_context(agent, identity, messages)
+
         if self.org:
             org_text = self.org.org_context_for(agent_id)
             if org_text:
                 context = context + "\n\n---\n\n" + org_text
 
-        delegation_text = self.delegation.pending_for_context(agent_id)
-        if delegation_text:
-            context = context + "\n\n---\n\n" + delegation_text
+        cascade = planner.cascade_context()
+        if cascade:
+            context = context + "\n\n---\n\n" + cascade
+
+        context = context + "\n\n---\n\n" + daily_ctx
 
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent_id, context)
 
-        if self.budget_manager:
-            approval = self.budget_manager.request_budget(agent_id, "normal")
-            if approval.approved:
-                response = await self.consciousness.think(
-                    agent_id=agent_id,
-                    context=context,
-                    prompt=planning_prompt,
-                    priority=Priority.NORMAL,
-                    metadata={"call_type": "plan"},
-                )
-                self.session_manager.record(
-                    agent_id, planning_prompt, response.content, call_type="plan",
-                )
-                self.budget_manager.record_usage(
-                    agent_id, approval.backend, response.tokens_in, response.tokens_out,
-                )
-                agent.spend_consciousness()
-                agent.set_plan(response.content)
-                logger.info(f"Agent {agent_id} has planned their day")
-        elif agent.spend_consciousness():
-            response = await self.consciousness.think(
-                agent_id=agent_id,
-                context=context,
-                prompt=planning_prompt,
-                priority=Priority.NORMAL,
-                metadata={"call_type": "plan"},
-            )
-            self.session_manager.record(
-                agent_id, planning_prompt, response.content, call_type="plan",
-            )
-            agent.write_identity("plan", response.content)
-            agent.task_queue = _parse_plan(response.content)
-            agent.persist_runtime_state()
-            logger.info(f"Agent {agent_id} has planned their day")
+        # Generate daily plan
+        await self._conscious_plan(
+            agent, identity, context, DAILY_PROMPT,
+            call_type="plan",
+            on_success=lambda text: agent.set_plan(text),
+        )
+        logger.info(f"Agent {agent_id} has planned their day")
 
         agent.transition(AgentState.EXECUTING)
         self._emit("agent.wake", agent_id=agent_id, state=agent.state.value)
@@ -953,6 +975,68 @@ class Fabric:
 
         logger.info(f"Agent {agent.id} completed task via terminal: {task.description[:60]}")
         return True
+
+    async def _conscious_plan(
+        self,
+        agent: Agent,
+        identity: dict[str, str],
+        context: str,
+        prompt: str,
+        *,
+        call_type: str = "plan",
+        on_success: Any = None,
+    ) -> str | None:
+        """Make a consciousness call for planning and handle budget.
+
+        Returns the response content, or None if budget was exhausted.
+        Calls ``on_success(content)`` if provided.
+        """
+        can_plan = False
+        approval = None
+        if self.budget_manager:
+            approval = self.budget_manager.request_budget(agent.id, "normal")
+            can_plan = approval.approved
+        else:
+            can_plan = agent.spend_consciousness()
+
+        if not can_plan:
+            return None
+
+        response = await self.consciousness.think(
+            agent_id=agent.id,
+            context=context,
+            prompt=prompt,
+            priority=Priority.NORMAL,
+            metadata={"call_type": call_type},
+        )
+
+        self.session_manager.record(
+            agent.id, prompt, response.content, call_type=call_type,
+        )
+
+        if self.budget_manager and approval and approval.backend:
+            self.budget_manager.record_usage(
+                agent.id, approval.backend,
+                response.tokens_in, response.tokens_out,
+            )
+            agent.spend_consciousness()
+
+        if on_success:
+            on_success(response.content)
+
+        return response.content
+
+    def _goals_context(self, agent_id: str) -> str:
+        """Build goals context for planning, if GoalManager is available."""
+        try:
+            from cortiva.core.goals import GoalManager
+            goals_dir = self.agents_dir / ".goals"
+            if goals_dir.exists():
+                gm = GoalManager(goals_dir)
+                return gm.agent_goals_context(agent_id)
+        except Exception:
+            pass
+        return ""
 
     def _should_replan(self, agent: Agent, messages: list[Any]) -> bool:
         """Delegate replan decision to the agent."""
