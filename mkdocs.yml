@@ -28,6 +28,10 @@ nav:
   - Home: index.md
   - Quick Start: quickstart.md
   - Configuration: configuration.md
+  - Features:
+    - OKR / Goals: goals.md
+    - Performance Reviews: reviews.md
+    - Audit Log: audit.md
 
 markdown_extensions:
   - admonition

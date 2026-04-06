@@ -56,6 +56,12 @@ Not every thought needs the expensive model. The budget manager tracks daily all
 
 Authority boundaries are defined per agent. The framework enforces primary responsibilities (unilateral), secondary (requires approval), and escalation (beyond authority). Governance flows through the same communication channels agents use for everything else.
 
+## Feature Guides
+
+- [OKR / Goals](goals.md) -- Org-level objectives and key results with agent context injection
+- [Performance Reviews](reviews.md) -- Periodic review generation with trend analysis
+- [Audit Log](audit.md) -- Tamper-evident, hash-chained event logging
+
 ## Next Steps
 
 - [Quick Start](quickstart.md) -- Install and run your first agent team
