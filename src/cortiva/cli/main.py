@@ -95,9 +95,19 @@ def _try_ipc_status() -> dict | None:
 
 def cmd_status(args: argparse.Namespace) -> None:
     """Show fabric status."""
+    from cortiva.cli.output import (
+        budget_display,
+        create_table,
+        print_error,
+        print_header,
+        print_info,
+        print_table,
+        state_badge,
+    )
+
     config_path = Path("cortiva.yaml")
     if not config_path.exists():
-        print("Not a Cortiva workspace. Run 'cortiva init <name>' first.")
+        print_error("Not a Cortiva workspace. Run 'cortiva init <name>' first.")
         sys.exit(1)
 
     # Try live status from the daemon first
@@ -106,21 +116,33 @@ def cmd_status(args: argparse.Namespace) -> None:
         agents_data = live.get("agents", {})
         running = live.get("running", False)
         status_label = "running" if running else "stopped"
-        print(f"Cortiva fabric ({status_label}) — {len(agents_data)} agent(s)\n")
-        print(f"  {'Agent':<20} {'State':<14} {'Consciousness':>15} {'Tasks':>8}")
-        print(f"  {'-'*20} {'-'*14} {'-'*15} {'-'*8}")
+        print_header(
+            "Cortiva Fabric",
+            f"Status: {status_label}  |  Agents: {len(agents_data)}",
+        )
+
+        table = create_table()
+        table.add_column("Agent")
+        table.add_column("State")
+        table.add_column("Budget", justify="right")
+        table.add_column("Tasks", justify="right")
+
         for aid, info in agents_data.items():
             used = info.get("consciousness_used", 0)
             remaining = info.get("consciousness_remaining", 0)
-            budget = f"{used}/{used + remaining}"
-            tasks = info.get("tasks_today", 0)
-            print(f"  {aid:<20} {info['state']:<14} {budget:>15} {tasks:>8}")
+            table.add_row(
+                aid,
+                state_badge(info["state"]),
+                budget_display(used, used + remaining),
+                str(info.get("tasks_today", 0)),
+            )
+        print_table(table)
         return
 
     # Fallback: filesystem scan
     agents_dir = Path("agents")
     if not agents_dir.exists():
-        print("No agents directory found.")
+        print_info("No agents directory found.")
         return
 
     agents = sorted(
@@ -129,22 +151,33 @@ def cmd_status(args: argparse.Namespace) -> None:
     )
 
     if not agents:
-        print("No agents registered.")
+        print_info("No agents registered.")
         return
 
-    print(f"Cortiva workspace (daemon not running) — {len(agents)} agent(s)\n")
+    print_header(
+        "Cortiva Workspace",
+        f"Daemon not running  |  {len(agents)} agent(s)",
+    )
+
+    table = create_table()
+    table.add_column("Agent")
+    table.add_column("Identity")
+    table.add_column("Plan")
+
     for agent_id in agents:
         agent_dir = agents_dir / agent_id
-        # Check new subdirectory layout, fall back to flat layout
         identity = agent_dir / "identity" / "identity.md"
         if not identity.exists():
             identity = agent_dir / "identity.md"
-        has_identity = "+" if identity.exists() else "-"
         plan = agent_dir / "today" / "plan.md"
         if not plan.exists():
             plan = agent_dir / "plan.md"
-        has_plan = "+" if plan.exists() else "-"
-        print(f"  {agent_id:<20} identity:{has_identity}  plan:{has_plan}")
+        table.add_row(
+            agent_id,
+            "✓" if identity.exists() else "—",
+            "✓" if plan.exists() else "—",
+        )
+    print_table(table)
 
 
 def cmd_agent_create(args: argparse.Namespace) -> None:
@@ -290,52 +323,81 @@ def cmd_budget(args: argparse.Namespace) -> None:
 
 def cmd_watch(args: argparse.Namespace) -> None:
     """Show live dashboard of all agents."""
+    from cortiva.cli.output import (
+        budget_display,
+        create_table,
+        hours_display,
+        print_error,
+        print_header,
+        print_info,
+        print_kv,
+        print_muted,
+        print_table,
+        progress_bar,
+        state_badge,
+    )
     from cortiva.core.ipc import FabricClient
 
     client = FabricClient()
     if not client.is_daemon_running():
-        print("No running Cortiva daemon. Use 'cortiva start' first.")
+        print_error("No running Cortiva daemon. Use 'cortiva start' first.")
         sys.exit(1)
 
     try:
         resp = client.send_sync("watch")
         if not resp or not resp.get("ok"):
-            print(f"Failed: {resp.get('error', 'unknown') if resp else 'no response'}")
+            print_error(f"Failed: {resp.get('error', 'unknown') if resp else 'no response'}")
             sys.exit(1)
     except Exception as exc:
-        print(f"Error: {exc}")
+        print_error(f"Error: {exc}")
         sys.exit(1)
 
     agents = resp.get("agents", {})
     if not agents:
-        print("No agents registered.")
+        print_info("No agents registered.")
         return
 
-    print(f"Cortiva Watch — {len(agents)} agent(s)\n")
-    header = (
-        f"  {'Agent':<20} {'State':<12} {'Task':>6} "
-        f"{'Current Work':<35} {'Hours':>7} {'OT':>6} {'Budget':>10}"
-    )
-    print(header)
-    print(f"  {'-'*20} {'-'*12} {'-'*6} {'-'*35} {'-'*7} {'-'*6} {'-'*10}")
+    print_header("Cortiva Watch", f"{len(agents)} agent(s)")
+
+    table = create_table()
+    table.add_column("Agent")
+    table.add_column("State")
+    table.add_column("Progress", justify="center")
+    table.add_column("Current Work")
+    table.add_column("Hours", justify="right")
+    table.add_column("Budget", justify="right")
 
     for aid, info in agents.items():
         state = info.get("state", "?")
-        progress = info.get("task_progress", "-")
-        current = info.get("current_task", "-") or "-"
-        if len(current) > 33:
-            current = current[:30] + "..."
-        hours = info.get("hours_today", 0)
+        current = info.get("current_task") or "—"
+        if len(current) > 40:
+            current = current[:37] + "..."
+        hrs = info.get("hours_today", 0)
         overtime = info.get("overtime_hours", 0)
         c_used = info.get("consciousness_used", 0)
         c_limit = info.get("consciousness_limit", 0)
-        budget = f"{c_used}/{c_limit}"
 
-        ot_str = f"+{overtime:.1f}h" if overtime > 0 else "-"
-        print(
-            f"  {aid:<20} {state:<12} {progress:>6} "
-            f"{current:<35} {hours:>6.1f}h {ot_str:>6} {budget:>10}"
+        # Parse task progress "3/7" into progress bar
+        tp = info.get("task_progress", "")
+        if "/" in str(tp):
+            parts = str(tp).split("/")
+            try:
+                prog = progress_bar(float(parts[0]), float(parts[1]))
+            except (ValueError, IndexError):
+                prog = tp or "—"
+        else:
+            prog = "—"
+
+        table.add_row(
+            aid,
+            state_badge(state),
+            prog,
+            current,
+            hours_display(hrs, overtime),
+            budget_display(c_used, c_limit),
         )
+
+    print_table(table)
 
     # Show capacity summary if available
     cap = resp.get("capacity")
@@ -344,19 +406,19 @@ def cmd_watch(args: argparse.Namespace) -> None:
         cont = cap.get("contention", {})
         ag = cap.get("agents", {})
         print()
-        print(f"  Node: {node.get('cpu_cores', '?')} cores, "
-              f"{node.get('ram_available_gb', '?')}GB RAM free "
-              f"({node.get('ram_percent', '?')}% used)")
-        print(f"  Agents: {ag.get('active', 0)} active / {ag.get('total', 0)} total "
-              f"(max ~{ag.get('max_concurrent', '?')})")
+        print_muted(
+            f"  Node: {node.get('cpu_cores', '?')} cores, "
+            f"{node.get('ram_available_gb', '?')}GB RAM free "
+            f"({node.get('ram_percent', '?')}% used)  |  "
+            f"Agents: {ag.get('active', 0)}/{ag.get('total', 0)} active "
+            f"(max ~{ag.get('max_concurrent', '?')})"
+        )
         if cont.get("avg_queue_wait_s", 0) > 0:
-            print(f"  Contention: avg queue wait {cont['avg_queue_wait_s']:.1f}s, "
-                  f"avg LLM wait {cont.get('avg_consciousness_wait_s', 0):.1f}s, "
-                  f"heartbeat util {cont.get('heartbeat_utilisation_pct', 0):.0f}%")
-        share = cap.get("agent_share_pct", {})
-        if share:
-            parts = [f"{aid}: {pct}%" for aid, pct in share.items()]
-            print(f"  Heartbeat share: {', '.join(parts)}")
+            print_muted(
+                f"  Contention: queue {cont['avg_queue_wait_s']:.1f}s, "
+                f"LLM {cont.get('avg_consciousness_wait_s', 0):.1f}s, "
+                f"heartbeat {cont.get('heartbeat_utilisation_pct', 0):.0f}% util"
+            )
 
 
 def cmd_capacity(args: argparse.Namespace) -> None:
