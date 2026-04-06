@@ -68,7 +68,17 @@ Authority boundaries are defined per agent. The framework enforces primary respo
 - [Skills](skills.md) -- 13,000+ MCP skills, install/search/manage
 - [Policies](policies.md) -- Tool permissions, execution approvals, filesystem restrictions
 - [Isolation](isolation.md) -- Three-tier security isolation (soft, OS, container)
+- [Channels](channels.md) -- Slack, Discord, Teams, and Internal channel adapters
+- [Sessions](sessions.md) -- Conversation continuity within wake cycles
+- [Agent Lifecycle](lifecycle.md) -- State machine, daily cycle, termination, handover
+- [Goals and OKRs](goals.md) -- Org-level objectives and key results
+- [Performance Reviews](reviews.md) -- Periodic metrics aggregation and trends
 - [Observability](observability.md) -- Live dashboard, capacity, hours, contention
+- [Audit Log](audit.md) -- Tamper-evident hash-chained event logging
+
+## Extending
+
+- [Writing Custom Adapters](adapters.md) -- How to build and register your own adapters
 
 ## Architecture
 

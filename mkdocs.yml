@@ -35,7 +35,15 @@ nav:
     - Skills: skills.md
     - Policies: policies.md
     - Isolation: isolation.md
+    - Channels: channels.md
+    - Sessions: sessions.md
+    - Agent Lifecycle: lifecycle.md
+    - Goals and OKRs: goals.md
+    - Performance Reviews: reviews.md
     - Observability: observability.md
+    - Audit Log: audit.md
+  - Extending:
+    - Writing Custom Adapters: adapters.md
   - Architecture:
     - Security: security.md
     - Roadmap: roadmap-agent-autonomy.md
