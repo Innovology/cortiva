@@ -36,6 +36,8 @@ class ReflectionSuffix:
     """Assignment ID to mark as completed."""
     shared_learning: str | None = None
     """Knowledge to write to the org-wide shared memory tier."""
+    schedule: dict[str, Any] = field(default_factory=dict)
+    """Self-scheduling requests: overtime, early sleep, alarms, reminders."""
 
 
 @dataclass
@@ -90,6 +92,7 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         delegate=delegate,
         complete_assignment=data.get("complete_assignment"),
         shared_learning=data.get("shared_learning"),
+        schedule=data.get("schedule") or {},
     )
 
     return ReflectionResult(clean_content=clean_content, suffix=suffix)

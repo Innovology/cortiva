@@ -440,3 +440,132 @@ class TestConfigScheduleIntegration:
             fabric = build_fabric(config)
 
         assert fabric.scheduler.agent_ids == []
+
+
+# ---------------------------------------------------------------------------
+# Agent self-scheduling tests
+# ---------------------------------------------------------------------------
+
+
+class TestAgentSelfScheduling:
+    def test_add_alarm(self) -> None:
+        scheduler = Scheduler()
+        alarm = scheduler.add_alarm(
+            "dev-cortiva", "wake",
+            datetime(2026, 4, 7, 6, 0, tzinfo=timezone.utc),
+            "deploy day",
+        )
+        assert alarm.agent_id == "dev-cortiva"
+        assert alarm.action == "wake"
+        assert not alarm.fired
+
+    def test_alarm_fires_on_tick(self) -> None:
+        scheduler = Scheduler()
+        scheduler.add_alarm(
+            "dev-cortiva", "wake",
+            datetime(2026, 4, 7, 6, 0, tzinfo=timezone.utc),
+        )
+        # Before alarm time — nothing fires
+        result = scheduler.tick(datetime(2026, 4, 7, 5, 59, tzinfo=timezone.utc))
+        assert "dev-cortiva" not in result
+
+        # At alarm time — fires
+        result = scheduler.tick(datetime(2026, 4, 7, 6, 0, tzinfo=timezone.utc))
+        assert "dev-cortiva" in result
+        assert "wake" in result["dev-cortiva"]
+
+        # After firing — doesn't fire again
+        result = scheduler.tick(datetime(2026, 4, 7, 6, 1, tzinfo=timezone.utc))
+        assert "dev-cortiva" not in result
+
+    def test_request_overtime(self) -> None:
+        scheduler = Scheduler()
+        scheduler.register("dev-cortiva", {"wake": "09:00", "sleep": "17:00"})
+        alarm = scheduler.request_overtime("dev-cortiva", 2.0)
+        assert alarm.action == "sleep"
+        assert "overtime" in alarm.reason
+
+    def test_request_early_sleep(self) -> None:
+        scheduler = Scheduler()
+        alarm = scheduler.request_early_sleep("dev-cortiva")
+        assert alarm.action == "sleep"
+        assert "early" in alarm.reason
+
+    def test_set_wake_alarm(self) -> None:
+        scheduler = Scheduler()
+        alarm = scheduler.set_wake_alarm("dev-cortiva", 6, 0, "deploy")
+        assert alarm.action == "wake"
+        assert alarm.time.hour == 6
+        assert alarm.reason == "deploy"
+
+    def test_set_reminder(self) -> None:
+        scheduler = Scheduler()
+        alarm = scheduler.set_reminder("dev-cortiva", 14, 0, "check CI")
+        assert alarm.action == "remind"
+        assert "check CI" in alarm.reason
+
+    def test_pending_alarms(self) -> None:
+        scheduler = Scheduler()
+        scheduler.add_alarm(
+            "dev", "wake", datetime(2026, 4, 7, 6, 0, tzinfo=timezone.utc),
+        )
+        scheduler.add_alarm(
+            "dev", "remind", datetime(2026, 4, 7, 14, 0, tzinfo=timezone.utc),
+        )
+        assert len(scheduler.pending_alarms("dev")) == 2
+
+        # Fire one
+        scheduler.tick(datetime(2026, 4, 7, 6, 0, tzinfo=timezone.utc))
+        assert len(scheduler.pending_alarms("dev")) == 1
+
+    def test_apply_schedule_request_overtime(self) -> None:
+        scheduler = Scheduler()
+        scheduler.register("dev", {"sleep": "17:00"})
+        result = scheduler.apply_schedule_request("dev", {"overtime": 2.0})
+        assert result is not None
+        assert "Overtime" in result
+
+    def test_apply_schedule_request_early_sleep(self) -> None:
+        scheduler = Scheduler()
+        result = scheduler.apply_schedule_request("dev", {"early_sleep": True})
+        assert result is not None
+        assert "Early sleep" in result
+
+    def test_apply_schedule_request_wake_alarm(self) -> None:
+        scheduler = Scheduler()
+        result = scheduler.apply_schedule_request("dev", {
+            "wake_alarm": "06:00",
+            "reason": "deploy",
+        })
+        assert result is not None
+        assert "06:00" in result
+
+    def test_apply_schedule_request_reminder(self) -> None:
+        scheduler = Scheduler()
+        result = scheduler.apply_schedule_request("dev", {
+            "reminder": "14:00",
+            "content": "check CI pipeline",
+        })
+        assert result is not None
+        assert "14:00" in result
+
+    def test_apply_schedule_request_empty(self) -> None:
+        scheduler = Scheduler()
+        assert scheduler.apply_schedule_request("dev", {}) is None
+        assert scheduler.apply_schedule_request("dev", None) is None
+
+    def test_combined_schedule_and_alarm(self) -> None:
+        """Recurring schedule and one-shot alarm both fire."""
+        scheduler = Scheduler()
+        scheduler.register("dev", {"replan": "12:00"})
+        scheduler.add_alarm(
+            "dev", "remind",
+            datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),
+            "check deploy",
+        )
+
+        now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+        result = scheduler.tick(now)
+        assert "dev" in result
+        assert "replan" in result["dev"]
+        assert "remind" in result["dev"]

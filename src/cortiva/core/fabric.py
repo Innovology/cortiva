@@ -875,6 +875,16 @@ class Fabric:
                 content=suffix.shared_learning[:100],
             )
 
+        # Process self-scheduling requests
+        if suffix.schedule:
+            result = self.scheduler.apply_schedule_request(agent.id, suffix.schedule)
+            if result:
+                logger.info("Agent %s self-scheduled: %s", agent.id, result)
+                self._emit(
+                    "schedule.self_modified", agent_id=agent.id,
+                    changes=result,
+                )
+
     def _check_approved_tasks(self, agent: Agent) -> None:
         """Re-activate tasks that have been approved since last cycle."""
         if agent.task_queue is None:
