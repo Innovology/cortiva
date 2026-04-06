@@ -287,6 +287,11 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
     org_section = config.get("org")
     fabric.org = parse_org_config(org_section)
 
+    # --- Resource limits (optional) ---
+    resource_section = config.get("resource_limits")
+    if resource_section and isinstance(resource_section, dict):
+        fabric.resource_guard.load(resource_section)
+
     # --- Execution policies (optional) ---
     policies_section = config.get("policies")
     if policies_section and isinstance(policies_section, dict):

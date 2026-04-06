@@ -41,6 +41,7 @@ from cortiva.core.delegation import DelegationManager
 from cortiva.core.living_summary import LivingSummaryRegenerator
 from cortiva.core.org import OrgModel
 from cortiva.core.policy import PolicyManager
+from cortiva.core.resource_guard import ResourceGuard
 from cortiva.core.session import SessionManager
 from cortiva.core.timesheet import TimesheetManager
 from cortiva.core.models import ClusterModels
@@ -171,6 +172,7 @@ class Fabric:
         self.org: OrgModel | None = None
         self.delegation = DelegationManager(self.agents_dir / ".delegation")
         self.approval_queue = ApprovalQueue(self.agents_dir / ".approvals")
+        self.resource_guard = ResourceGuard(self.agents_dir)
         self.communication_tracker = CommunicationTracker()
         self.cluster_metrics = ClusterMetrics(
             communication_tracker=self.communication_tracker,
@@ -1088,17 +1090,43 @@ class Fabric:
                 except Exception as e:
                     logger.error(f"Scheduler action {action} for {agent_id}: {e}")
 
-        # Run cycles for active agents concurrently (with capacity tracking)
+        # Run cycles for active agents concurrently (with resource guards)
+        self.resource_guard.reset_heartbeat()
         self.capacity_tracker.heartbeat_start()
 
         async def _run_cycle(aid: str) -> None:
+            # Pre-cycle resource check
+            ts = self.timesheet_manager.get(aid)
+            hours = ts.today().total_hours
+            blocked = self.resource_guard.pre_cycle_check(aid, hours_today=hours)
+            if blocked:
+                logger.info("Cycle blocked for %s: %s", aid, blocked)
+                self._emit("resource.blocked", agent_id=aid, reason=blocked)
+                return
+
             cycle_start = self.capacity_tracker.agent_cycle_start(aid)
             try:
-                await self.cycle(aid)
+                # Wrap cycle with timeout from resource limits
+                result = await self.resource_guard.wrap_cycle(
+                    aid, self.cycle(aid),
+                )
+                if result is None:
+                    self._emit(
+                        "resource.timeout", agent_id=aid,
+                        timeout=self.resource_guard.limits_for(aid).cycle_timeout_s,
+                    )
             except Exception as e:
                 logger.error(f"Cycle error for {aid}: {e}")
             finally:
                 self.capacity_tracker.agent_cycle_end(aid, cycle_start)
+
+            # Post-cycle violation check
+            violations = self.resource_guard.post_cycle_check(aid)
+            if violations:
+                logger.warning("Agent %s resource violations: %s", aid, violations)
+                self._emit(
+                    "resource.violation", agent_id=aid, violations=violations,
+                )
 
         coros = [
             _run_cycle(agent_id)
@@ -1350,8 +1378,35 @@ class Fabric:
                 ),
             }
 
+        async def _handle_resources(**_kw: Any) -> dict[str, Any]:
+            """Return shared resource status — models, adapters, limits."""
+            models: list[str] = self.model_registry.all_model_names()
+            terminal_agents: list[str] = []
+            if self.capabilities:
+                terminal_agents = [
+                    t.name for t in self.capabilities.terminal_agents if t.available
+                ]
+
+            agent_resources: dict[str, Any] = {}
+            for aid in self.agents:
+                agent_resources[aid] = self.resource_guard.status(aid)
+
+            return {
+                "ok": True,
+                "shared": {
+                    "models": models,
+                    "terminal_agents": terminal_agents,
+                    "consciousness_provider": type(self.consciousness).__name__,
+                    "memory_adapter": type(self.memory).__name__,
+                    "channel_adapter": type(self.channel).__name__ if self.channel else None,
+                    "routine_adapter": type(self.routine).__name__ if self.routine else None,
+                },
+                "agents": agent_resources,
+            }
+
         server.register("status", _handle_status)
         server.register("watch", _handle_watch)
+        server.register("resources", _handle_resources)
         server.register("capacity", _handle_capacity)
         server.register("agent.activity", _handle_agent_activity)
         server.register("agent.hours", _handle_agent_hours)
