@@ -28,6 +28,10 @@ nav:
   - Home: index.md
   - Quick Start: quickstart.md
   - Configuration: configuration.md
+  - Features:
+    - Channel Adapters: channels.md
+  - Extending:
+    - Writing Custom Adapters: adapters.md
 
 markdown_extensions:
   - admonition

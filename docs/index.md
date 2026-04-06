@@ -34,7 +34,7 @@ Cortiva does not build what already exists. Every component is an adapter:
 - **Consciousness**: Anthropic, OpenAI, Google, or any LLM API
 - **Routine**: Ollama, Simple (local), or any local model
 - **Terminal**: Claude Code, Codex, Aider -- for agents that work through a terminal
-- **Channel**: Slack, or any messaging platform
+- **Channel**: Slack, Discord, Teams, Internal, or any messaging platform
 
 Use what works for you. Swap later without changing your agents.
 
@@ -60,3 +60,5 @@ Authority boundaries are defined per agent. The framework enforces primary respo
 
 - [Quick Start](quickstart.md) -- Install and run your first agent team
 - [Configuration Reference](configuration.md) -- Full reference for cortiva.yaml
+- [Channel Adapters](channels.md) -- Slack, Discord, Teams, and internal messaging
+- [Writing Custom Adapters](adapters.md) -- Build your own memory, channel, or consciousness adapter
