@@ -210,7 +210,7 @@ This ensures agent prompts (which contain sensitive context) are billed to separ
 
 ### 6. Internal Channel Adapter ("Walk Up to the Desk")
 
-**Status:** Not started
+**Status:** Implemented
 **Complexity:** Medium
 **Depends on:** Item 1
 
@@ -249,7 +249,7 @@ This is a small addition once agents own their own lifecycle processing (Item 3)
 
 ### 8. Tamper-Evident Audit Log
 
-**Status:** Not started
+**Status:** Implemented
 **Complexity:** Small
 **Depends on:** None
 

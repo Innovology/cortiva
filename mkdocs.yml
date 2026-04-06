@@ -26,8 +26,19 @@ theme:
 
 nav:
   - Home: index.md
-  - Quick Start: quickstart.md
-  - Configuration: configuration.md
+  - Getting Started:
+    - Quick Start: quickstart.md
+    - Configuration: configuration.md
+  - Features:
+    - Org Model: org-model.md
+    - Delegation: delegation.md
+    - Skills: skills.md
+    - Policies: policies.md
+    - Isolation: isolation.md
+    - Observability: observability.md
+  - Architecture:
+    - Security: security.md
+    - Roadmap: roadmap-agent-autonomy.md
 
 markdown_extensions:
   - admonition

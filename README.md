@@ -58,10 +58,10 @@ Cortiva has three cognitive layers, inspired by how biological nervous systems w
 Cortiva doesn't build what already exists. Every component is an adapter:
 
 - **Memory**: InMemory, Engram, Neo4j, or bring your own
-- **Consciousness**: Anthropic, OpenAI, Google, or any LLM API
+- **Consciousness**: Anthropic, OpenAI, OpenAI-compatible, Google, or any LLM API
 - **Routine**: Ollama, Simple (local), or any local model
 - **Terminal**: Claude Code, Codex, Aider — for agents that work through a terminal
-- **Channel**: Slack, or any messaging platform
+- **Channel**: Slack, Discord, Microsoft Teams, Internal (in-process), or any messaging platform
 
 Use what works for you. Swap later without changing your agents.
 
@@ -212,19 +212,26 @@ schedules:
 ## CLI Reference
 
 ```
+# Workspace
 cortiva init <name>                    Initialise a new workspace
 cortiva bootstrap [--dir <path>]       Bootstrap the dev team (dev, qa, pm agents)
 cortiva start                          Start the fabric daemon
 cortiva stop                           Stop the fabric daemon
 cortiva status                         Show agent status
-cortiva discover                       Discover node capabilities
-cortiva budget [--agent <id>]          Show consciousness budget status
-cortiva portal [--host H] [--port P]   Start the web portal
 
+# Monitoring
+cortiva watch                          Live dashboard of all agents
+cortiva capacity                       Node capacity and contention metrics
+cortiva budget [--agent <id>]          Show consciousness budget status
+cortiva discover                       Discover node capabilities
+
+# Agent management
 cortiva agent create <id> [-t <tpl>]   Register a new agent (optionally from template)
 cortiva agent list                     List all agents
 cortiva agent wake <id>                Wake an agent
 cortiva agent sleep <id>               Put an agent to sleep
+cortiva agent activity <id>            Show detailed agent activity and current task
+cortiva agent hours <id> [--week]      Show working hours and overtime
 cortiva agent move <id> --to <node>    Move an agent to another cluster node
 cortiva agent snapshot <id>            Create a snapshot
 cortiva agent snapshots <id>           List snapshots
@@ -232,9 +239,28 @@ cortiva agent rollback <id> --snapshot <sid>  Rollback to a snapshot
 cortiva agent clone <id> --as <new>    Clone an agent from a snapshot
 cortiva agent promote <id> --to <role> Promote an agent to a new role
 cortiva agent probation <id>           Manage probation (--confirm | --revert | --extend N)
+cortiva agent export <id>              Export an agent to a tarball
+cortiva agent import <tarball> --as <id>  Import an agent from a tarball
 
+# Skills (13,000+ from MCP ecosystem)
+cortiva skill list [--category <cat>]  List available skills
+cortiva skill search <query>           Search for skills
+cortiva skill install <name> --agent <id>  Install a skill for an agent
+cortiva skill uninstall <name> --agent <id>  Uninstall a skill
+cortiva skill info <name>              Show skill details
+
+# Organisation
+cortiva org status                     Show org structure and reporting lines
+cortiva delegate <from> <to> <desc>    Delegate work to an agent
+cortiva approve list                   List pending approvals
+cortiva approve accept <id>            Approve a request
+cortiva approve reject <id>            Reject a request
+
+# Templates & Portal
 cortiva template list                  List available agent templates
+cortiva portal [--host H] [--port P]   Start the web portal
 
+# Cluster
 cortiva cluster status                 Show cluster status
 cortiva cluster nodes                  Show cluster nodes with details
 cortiva cluster load                   Show load metrics and balancing suggestions
@@ -248,44 +274,70 @@ cortiva cluster load                   Show load metrics and balancing suggestio
 
 ### Implemented
 
+**Core Framework**
 - Agent lifecycle with subdirectory workspace (register, wake, sleep, status)
-- Plan-execute-replan cycle with exception batching
-- Pluggable adapters: memory (InMemory, Engram, Neo4j), consciousness (Anthropic, OpenAI, Google), routine (Ollama, Simple), channel (Slack), terminal (Claude Code, Codex, Aider)
-- Consciousness budget manager with backend fallback chains
-- ConsciousnessRouter for per-call-type backend selection
-- Familiarity engine and Living Summary regeneration
-- Multi-node cluster with discovery, model registry, agent mobility, auto-balancing
-- Snapshot engine with rollback, clone, and pre-edit safety snapshots
-- Promotion engine with probation
-- Web portal API (FastAPI) with auth, JWT, roles, audit logging
-- CLI with 25+ commands
-- IPC daemon communication via Unix sockets
-- Scheduled wake/replan/sleep cycles
-- Agent templates and bootstrap workflow
+- Plan-execute-replan cycle with exception batching and parallel heartbeat
+- Session management for conversation continuity within wake cycles
+- Per-agent API clients for credential isolation
 
+**Adapters**
+- Memory: InMemory, Engram, Neo4j (with graph operations)
+- Consciousness: Anthropic, OpenAI, OpenAI-compatible, Google
+- Routine: Ollama, Simple
+- Terminal: Claude Code, Codex, Aider
+- Channel: Slack, Discord, Microsoft Teams, Internal (in-process)
+
+**Organisation**
+- Org model with departments, reporting lines, and roles
+- Work delegation from managers to subordinates
+- Shared org-wide knowledge tier
+- Approval workflow with policy-driven routing
+- OKR/Goals system for org-level objective tracking
+- Performance reviews with periodic metrics aggregation
+- Agent termination with knowledge handover and archival
+
+**Security & Isolation**
 - Three-tier agent isolation (none, soft, os, container)
+- Execution policies: tool permissions, action approvals, filesystem restrictions
 - Governance enforcement via keyword-overlap AuthorityValidator
 - GuardedMemoryAdapter for cross-agent memory isolation
-- Container templates (Dockerfile, docker-compose)
+- Context cross-contamination guard
+- Tamper-evident hash-chained audit log
+- Container templates (Dockerfile, docker-compose) with browser sidecar
 
-### In Progress — Agent Autonomy ([roadmap](docs/roadmap-agent-autonomy.md))
+**Observability**
+- Live dashboard TUI (`cortiva watch`)
+- Node capacity and contention tracking
+- Agent timesheet with working hours and overtime
+- Consciousness budget manager with backend fallback chains
+
+**Ecosystem**
+- 13,000+ skills synced from the MCP server registry
+- Skill install/uninstall/search CLI
+- ConsciousnessRouter for per-call-type backend selection
+- Familiarity engine and Living Summary regeneration
+- Multi-node cluster with discovery, model registry, agent mobility
+- Snapshot engine with rollback, clone, and pre-edit safety snapshots
+- Promotion engine with probation and auto-assessment
+- Web portal API (FastAPI) with auth, JWT, roles
+- 40+ CLI commands
+- PyPI release workflow
+
+### Planned — Agent Autonomy ([roadmap](docs/roadmap-agent-autonomy.md))
 
 - Agent-owned cognitive loop (move context/LLM/memory from Fabric to agent boundary)
 - Per-agent memory stores (physical isolation, independent growth)
 - Agent-side budget and schedule enforcement (contract.yaml)
 - Budget proxy consciousness adapter (hard external limits)
 - Per-agent API credentials via secret store
-- Internal channel adapter (agent-to-agent without Slack)
 - Signed lifecycle commands
-- Tamper-evident audit logging
 
 ### Remaining
 
 - Persona parameter evolution
 - AR evaluation (comparing outputs against outcomes)
 - Template marketplace
-- Discord channel adapter
-- Dashboard UI (portal API exists, frontend pending)
+- Dashboard web UI (portal API exists, frontend pending)
 
 ## Contributing
 

@@ -34,7 +34,7 @@ Cortiva does not build what already exists. Every component is an adapter:
 - **Consciousness**: Anthropic, OpenAI, Google, or any LLM API
 - **Routine**: Ollama, Simple (local), or any local model
 - **Terminal**: Claude Code, Codex, Aider -- for agents that work through a terminal
-- **Channel**: Slack, or any messaging platform
+- **Channel**: Slack, Discord, Microsoft Teams, Internal (in-process), or any messaging platform
 
 Use what works for you. Swap later without changing your agents.
 
@@ -60,3 +60,17 @@ Authority boundaries are defined per agent. The framework enforces primary respo
 
 - [Quick Start](quickstart.md) -- Install and run your first agent team
 - [Configuration Reference](configuration.md) -- Full reference for cortiva.yaml
+
+## Feature Guides
+
+- [Org Model](org-model.md) -- Departments, reporting lines, and roles
+- [Delegation](delegation.md) -- Structured work assignment between agents
+- [Skills](skills.md) -- 13,000+ MCP skills, install/search/manage
+- [Policies](policies.md) -- Tool permissions, execution approvals, filesystem restrictions
+- [Isolation](isolation.md) -- Three-tier security isolation (soft, OS, container)
+- [Observability](observability.md) -- Live dashboard, capacity, hours, contention
+
+## Architecture
+
+- [Security](security.md) -- Trust model, limitations, deployment recommendations
+- [Agent Autonomy Roadmap](roadmap-agent-autonomy.md) -- Future architecture plans

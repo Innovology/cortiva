@@ -237,6 +237,15 @@ cluster:
 
 Clustering enables agent mobility (`cortiva agent move`), distributed discovery (`cortiva discover`), and automatic load balancing across nodes.
 
+## Additional Configuration Sections
+
+The following sections have their own dedicated documentation with full config references:
+
+- **[isolation](isolation.md)** -- Three-tier agent isolation (none, soft, os, container). Controls filesystem, memory, environment, and container boundaries.
+- **[org](org-model.md)** -- Organisational model with departments, reporting lines, and roles. Enables delegation and approval routing.
+- **[policies](policies.md)** -- Execution policies controlling tools, actions, and filesystem access per agent.
+- **[skills](skills.md)** -- Skill registry and the 13,000+ MCP skill ecosystem.
+
 ## Full Example
 
 ```yaml
