@@ -28,6 +28,9 @@ nav:
   - Home: index.md
   - Quick Start: quickstart.md
   - Configuration: configuration.md
+  - Features:
+    - Session Management: sessions.md
+    - Agent Lifecycle: lifecycle.md
 
 markdown_extensions:
   - admonition
