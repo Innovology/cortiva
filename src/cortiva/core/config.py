@@ -310,6 +310,18 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
     if hooks_section and isinstance(hooks_section, dict):
         fabric.hook_router.load(hooks_section)
 
+    # --- Plugins (optional) ---
+    plugins_list = config.get("plugins")
+    if plugins_list and isinstance(plugins_list, list):
+        from cortiva.core.plugins import load_plugins_from_config
+        for plugin in load_plugins_from_config(plugins_list):
+            fabric.plugin_manager.register(plugin)
+
+    # --- Reactive triggers (optional) ---
+    triggers_list = config.get("triggers")
+    if triggers_list and isinstance(triggers_list, list):
+        fabric.reactive_engine.load(triggers_list)
+
     # --- Resource limits (optional) ---
     resource_section = config.get("resource_limits")
     if resource_section and isinstance(resource_section, dict):

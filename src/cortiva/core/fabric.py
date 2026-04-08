@@ -50,7 +50,9 @@ from cortiva.core.planner import (
     build_weekly_context,
 )
 from cortiva.core.org import OrgModel
+from cortiva.core.plugins import PluginManager
 from cortiva.core.policy import PolicyManager
+from cortiva.core.reactive import ReactiveEngine
 from cortiva.core.resource_guard import ResourceGuard
 from cortiva.core.session import SessionManager
 from cortiva.core.timesheet import TimesheetManager
@@ -180,6 +182,8 @@ class Fabric:
         self.capacity_tracker = CapacityTracker()
         self.policy_manager = PolicyManager()
         self.hook_router = HookRouter()
+        self.plugin_manager = PluginManager()
+        self.reactive_engine = ReactiveEngine()
         self.encryption_vault: Any = None  # EncryptionVault or None
         self.credential_provider: Any = None  # CredentialProvider or None
         self.data_boundary: Any = None  # DataBoundaryEnforcer or None
@@ -470,6 +474,7 @@ class Fabric:
 
         agent.transition(AgentState.EXECUTING)
         self._emit("agent.wake", agent_id=agent_id, state=agent.state.value)
+        await self.plugin_manager.dispatch_wake(agent_id, agent)
         return agent
 
     async def sleep(self, agent_id: str) -> Agent:
@@ -539,6 +544,7 @@ class Fabric:
         self.isolation.cleanup(agent_id)
 
         self._emit("agent.sleep", agent_id=agent_id, state=agent.state.value)
+        await self.plugin_manager.dispatch_sleep(agent_id)
         logger.info(f"Agent {agent_id} is now sleeping")
         return agent
 
@@ -1163,6 +1169,9 @@ class Fabric:
                         await self._replan(agent, [])
                 except Exception as e:
                     logger.error(f"Scheduler action {action} for {agent_id}: {e}")
+
+        # Plugin heartbeat hook
+        await self.plugin_manager.dispatch_heartbeat()
 
         # Run cycles for active agents concurrently (with resource guards)
         self.resource_guard.reset_heartbeat()
