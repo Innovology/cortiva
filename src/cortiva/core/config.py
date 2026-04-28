@@ -38,6 +38,10 @@ _CONSCIOUSNESS_ADAPTERS: dict[str, tuple[str, str]] = {
     "openai": ("cortiva.adapters.consciousness.openai_compat", "OpenAICompatibleAdapter"),
     "openai-compatible": ("cortiva.adapters.consciousness.openai_compat", "OpenAICompatibleAdapter"),
     "google": ("cortiva.adapters.consciousness.google", "GoogleAdapter"),
+    "cortiva-routed": (
+        "cortiva.adapters.consciousness.cortiva_routed",
+        "CortivaRoutedConsciousnessAdapter",
+    ),
 }
 
 _CHANNEL_ADAPTERS: dict[str, tuple[str, str]] = {
