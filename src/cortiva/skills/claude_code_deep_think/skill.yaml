@@ -1,0 +1,57 @@
+# claude_code_deep_think — local subshell skill
+#
+# Hires a more capable model on demand. The agent's routine consciousness
+# runs on a local model (typically Qwen on the customer's hardware) which is
+# fast and cheap but not Claude-class. For genuinely hard reasoning — UX
+# critique with nuance, prioritisation under deep uncertainty, persona
+# synthesis, cross-product strategy — this skill subshells out to the
+# `claude` CLI with the operator's API key and returns the result.
+#
+# Not an MCP server. The runtime calls `wrapper.deep_think(prompt)`
+# directly when the agent invokes the skill. Cost is billed against the
+# agent's `budget_daily_gbp`.
+
+name: claude_code_deep_think
+description: >
+  Invoke Claude (via the `claude` CLI) to think harder than the local
+  model can. Use for hard reasoning, UX critique, prioritisation under
+  uncertainty, and persona synthesis. Cost is real — every invocation
+  costs API tokens and is billed against the agent's daily budget.
+category: meta-reasoning
+version: "0.1.0"
+author: innovology
+
+# Tools the skill exposes to the agent (in tool-use schema).
+tools_allowed:
+  - claude_code_deep_think.think
+
+# Runtime hook — local Python module, not an MCP server.
+runtime:
+  kind: local_python
+  module: cortiva.skills.claude_code_deep_think.wrapper
+  entrypoint: deep_think
+
+# Environment / preflight requirements. The runtime checks these
+# before allowing an agent to use the skill.
+requires:
+  binary: claude
+  env: [ANTHROPIC_API_KEY]
+  binary_install_hint: "npm install -g @anthropic-ai/claude-code"
+
+# Cost model — used by runtime to deduct from budget_daily_gbp.
+# The wrapper reads the actual usage from `claude` output and updates
+# this estimate; these defaults bound the call before it runs.
+cost_estimate:
+  min_gbp_per_call: 0.05
+  typical_gbp_per_call: 0.50
+  max_gbp_per_call: 5.00
+
+tags:
+  - meta
+  - reasoning
+  - subprocess
+  - claude
+
+# Procedures appended to agent's procedures.md when this skill is installed.
+procedures_file: procedures.md
+skills_text_file: skills_text.md
