@@ -180,6 +180,34 @@ def cmd_status(args: argparse.Namespace) -> None:
     print_table(table)
 
 
+def _resolve_hq_url(config_path: Path) -> str | None:
+    """Read the HQ base URL the node is paired with.
+
+    Resolution order: ``CORTIVA_HQ_URL`` env var > ``hq.portal_url`` in
+    cortiva.yaml. Returns None if neither is set so the caller can
+    surface an actionable error.
+    """
+    import os
+    env_url = os.environ.get("CORTIVA_HQ_URL")
+    if env_url:
+        return env_url.strip()
+
+    if not config_path.exists():
+        return None
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(config_path.read_text()) or {}
+    except Exception:
+        return None
+    hq = data.get("hq") if isinstance(data, dict) else None
+    if not isinstance(hq, dict):
+        return None
+    url = hq.get("portal_url")
+    if isinstance(url, str) and url.strip():
+        return url.strip()
+    return None
+
+
 def cmd_agent_create(args: argparse.Namespace) -> None:
     """Register a new agent, optionally from a template."""
     config_path = Path("cortiva.yaml")
@@ -195,17 +223,46 @@ def cmd_agent_create(args: argparse.Namespace) -> None:
     template_name = getattr(args, "template", None)
 
     if template_name:
-        from cortiva.templates import apply_template
+        from cortiva.templates import (
+            HqFetchError,
+            apply_hq_template,
+            apply_template,
+            is_hq_template,
+            parse_hq_slug,
+        )
 
-        try:
-            written = apply_template(template_name, agent_dir)
-        except KeyError as exc:
-            print(str(exc))
-            sys.exit(1)
+        if is_hq_template(template_name):
+            # hq://<slug> — fetch the agent definition from Cortiva HQ
+            # at create time. No bundled template required; new agents
+            # land on nodes without a wheel rebuild.
+            slug = parse_hq_slug(template_name)
+            hq_url = _resolve_hq_url(config_path)
+            if not hq_url:
+                print(
+                    "Cannot fetch from HQ: cortiva.yaml has no "
+                    "`hq.portal_url` (or it is empty). Set it before "
+                    "using -t hq://... ; alternatively use a bundled "
+                    "template name.",
+                )
+                sys.exit(1)
+            try:
+                written = apply_hq_template(slug, agent_dir, hq_url)
+            except HqFetchError as exc:
+                print(f"HQ fetch failed: {exc}")
+                sys.exit(1)
+            print(f"Created agent: {args.id} (fetched from HQ: {template_name})")
+            print(f"  Directory: {agent_dir}/")
+            print(f"  Files: {', '.join(written)}")
+        else:
+            try:
+                written = apply_template(template_name, agent_dir)
+            except KeyError as exc:
+                print(str(exc))
+                sys.exit(1)
 
-        print(f"Created agent: {args.id} (from template '{template_name}')")
-        print(f"  Directory: {agent_dir}/")
-        print(f"  Files: {', '.join(written)}")
+            print(f"Created agent: {args.id} (from template '{template_name}')")
+            print(f"  Directory: {agent_dir}/")
+            print(f"  Files: {', '.join(written)}")
     else:
         from cortiva.core.agent import WORKSPACE_DIRS
 
