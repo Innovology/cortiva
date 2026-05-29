@@ -135,17 +135,19 @@ def _check_preconditions() -> None:
     """Validate that the runtime can actually invoke claude.
 
     Cheap on the hot path — `shutil.which` is filesystem-only.
+
+    Note: we deliberately do NOT require ``ANTHROPIC_API_KEY`` in env.
+    The ``claude`` CLI handles authentication itself — either an
+    interactive OAuth session (``claude`` was logged in) or
+    ``ANTHROPIC_API_KEY``. Either is fine. If neither is configured the
+    CLI itself fails with a clear "not authenticated" message that
+    surfaces through our subprocess error path.
     """
     if shutil.which(_BINARY) is None:
         raise DeepThinkError(
             f"`{_BINARY}` binary not found on PATH. Install with: "
-            "npm install -g @anthropic-ai/claude-code",
-        )
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise DeepThinkError(
-            "ANTHROPIC_API_KEY env var is not set. The agent's "
-            "deep-think skill requires a key. Set it in ~/.cortiva/.env "
-            "on the node.",
+            "brew install --cask claude-code  (macOS) "
+            "or  npm install -g @anthropic-ai/claude-code  (Linux).",
         )
 
 
