@@ -364,3 +364,133 @@ class TestBootstrapConfigIntegration:
         assert fabric.terminal is not None
         assert len(fabric.scheduler.agent_ids) == 3
         assert "dev-cortiva" in fabric.scheduler.agent_ids
+
+
+class TestTerminalCredentialInjection:
+    """Per-agent credentials (credentials.json + CredentialProvider)
+    must reach the terminal subprocess env — without them agents can't
+    act on external systems (GitHub etc.)."""
+
+    def _make_fabric(self, tmp_path, *, terminal):
+        from cortiva.adapters.memory.inmemory import InMemoryAdapter
+        from cortiva.core.fabric import Fabric
+
+        class StubConsciousness:
+            async def think(self, **kw):
+                return ConsciousResponse(content="- [ ] Do stuff", model="stub")
+            async def reflect(self, **kw):
+                return ConsciousResponse(content="Reflected.", model="stub")
+
+        return Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=StubConsciousness(),
+            terminal=terminal,
+        )
+
+    @pytest.mark.asyncio
+    async def test_credentials_json_injected_into_terminal_env(
+        self, tmp_path,
+    ) -> None:
+        import json
+
+        terminal = AsyncMock()
+        terminal.is_available.return_value = True
+        terminal.invoke.return_value = AgentResponse(content="done")
+
+        fabric = self._make_fabric(tmp_path, terminal=terminal)
+        agent = fabric.register_agent("dev-01")
+        (agent.directory / "credentials.json").write_text(
+            json.dumps({"GH_TOKEN": "ghp_test", "GITHUB_ORG": "acme"}),
+        )
+
+        from cortiva.core.agent import Task
+
+        await fabric._execute_via_terminal(
+            agent, Task(id="t1", description="Create GitHub issue"),
+        )
+
+        env = terminal.invoke.call_args.kwargs["env"]
+        assert env is not None
+        assert env["GH_TOKEN"] == "ghp_test"
+        assert env["GITHUB_ORG"] == "acme"
+        # Base env preserved (envelope said inherit), creds layered on
+        import os
+        if "PATH" in os.environ:
+            assert "PATH" in env
+
+    @pytest.mark.asyncio
+    async def test_no_credentials_leaves_env_untouched(self, tmp_path) -> None:
+        terminal = AsyncMock()
+        terminal.is_available.return_value = True
+        terminal.invoke.return_value = AgentResponse(content="done")
+
+        fabric = self._make_fabric(tmp_path, terminal=terminal)
+        agent = fabric.register_agent("dev-01")
+
+        from cortiva.core.agent import Task
+
+        await fabric._execute_via_terminal(
+            agent, Task(id="t1", description="Fix the bug"),
+        )
+
+        # NoIsolation envelope returns env=None (inherit) — with no
+        # credentials we must not materialise a copy.
+        assert terminal.invoke.call_args.kwargs["env"] is None
+
+    @pytest.mark.asyncio
+    async def test_credential_provider_merged_with_file(
+        self, tmp_path,
+    ) -> None:
+        import json
+
+        from cortiva.core.credentials import (
+            CredentialConfig,
+            CredentialProvider,
+        )
+
+        terminal = AsyncMock()
+        terminal.is_available.return_value = True
+        terminal.invoke.return_value = AgentResponse(content="done")
+
+        fabric = self._make_fabric(tmp_path, terminal=terminal)
+        agent = fabric.register_agent("dev-01")
+
+        import os
+        os.environ["TEST_LINEAR_KEY"] = "lin_123"
+        try:
+            fabric.credential_provider = CredentialProvider(
+                CredentialConfig(
+                    provider="env",
+                    agents={"dev-01": {"LINEAR_API_KEY": "TEST_LINEAR_KEY"}},
+                ),
+            )
+            # File wins over provider on key collision
+            (agent.directory / "credentials.json").write_text(
+                json.dumps({"GH_TOKEN": "ghp_file"}),
+            )
+
+            from cortiva.core.agent import Task
+
+            await fabric._execute_via_terminal(
+                agent, Task(id="t1", description="Open PR"),
+            )
+        finally:
+            del os.environ["TEST_LINEAR_KEY"]
+
+        env = terminal.invoke.call_args.kwargs["env"]
+        assert env["LINEAR_API_KEY"] == "lin_123"
+        assert env["GH_TOKEN"] == "ghp_file"
+
+    def test_github_phrases_route_to_terminal(self, tmp_path) -> None:
+        terminal = AsyncMock()
+        fabric = self._make_fabric(tmp_path, terminal=terminal)
+        assert fabric._is_terminal_task("Create issue for the login bug")
+        assert fabric._is_terminal_task("Update the GitHub project board")
+        assert fabric._is_terminal_task(
+            "Write up the pricing decision in the wiki",
+        )
+        # Plain prose with "issue" mid-sentence shouldn't over-route
+        assert not fabric._is_terminal_task(
+            "Think about the customer's billing issue and reply",
+        )

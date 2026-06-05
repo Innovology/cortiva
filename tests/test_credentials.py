@@ -99,3 +99,38 @@ class TestCredentialConfig:
         assert config.provider == "azure-keyvault"
         assert "dev-cortiva" in config.agents
         assert config.agents["dev-cortiva"]["GITHUB_TOKEN"] == "secret/github"
+
+
+class TestLoadAgentCredentials:
+    """credentials.json in the agent dir — written by the management
+    layer when integrations are granted, injected into terminal env."""
+
+    def test_missing_file_returns_empty(self, tmp_path) -> None:
+        from cortiva.core.credentials import load_agent_credentials
+
+        assert load_agent_credentials(tmp_path) == {}
+
+    def test_reads_flat_mapping(self, tmp_path) -> None:
+        import json
+
+        from cortiva.core.credentials import load_agent_credentials
+
+        (tmp_path / "credentials.json").write_text(
+            json.dumps({"GH_TOKEN": "ghp_x", "GITHUB_ORG": "acme"}),
+        )
+        assert load_agent_credentials(tmp_path) == {
+            "GH_TOKEN": "ghp_x",
+            "GITHUB_ORG": "acme",
+        }
+
+    def test_bad_json_returns_empty(self, tmp_path) -> None:
+        from cortiva.core.credentials import load_agent_credentials
+
+        (tmp_path / "credentials.json").write_text("{not json")
+        assert load_agent_credentials(tmp_path) == {}
+
+    def test_non_object_returns_empty(self, tmp_path) -> None:
+        from cortiva.core.credentials import load_agent_credentials
+
+        (tmp_path / "credentials.json").write_text('["a", "b"]')
+        assert load_agent_credentials(tmp_path) == {}

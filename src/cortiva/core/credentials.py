@@ -40,9 +40,11 @@ Per-agent credentials can override the default::
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("cortiva.credentials")
@@ -201,3 +203,38 @@ class CredentialProvider:
     def clear_cache(self) -> None:
         """Clear the credential cache."""
         self._cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Agent-directory credential file
+# ---------------------------------------------------------------------------
+
+CREDENTIALS_FILENAME = "credentials.json"
+
+
+def load_agent_credentials(agent_dir: Path) -> dict[str, str]:
+    """Load per-agent credentials from ``<agent_dir>/credentials.json``.
+
+    Written by the management layer (e.g. Cortiva HQ's node client) when
+    an agent is granted an integration — a flat ``{ENV_VAR: value}``
+    mapping injected into the agent's terminal subprocess environment.
+
+    The file lives outside ``identity/`` and ``today/`` so snapshot and
+    clone pipelines (which exclude ``credentials`` paths by design)
+    never pick it up.
+
+    Returns an empty dict when the file is missing or unreadable —
+    credential absence must never break task execution.
+    """
+    cred_file = Path(agent_dir) / CREDENTIALS_FILENAME
+    if not cred_file.exists():
+        return {}
+    try:
+        data = json.loads(cred_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Unreadable %s: %s", cred_file, exc)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("%s is not a JSON object — ignoring", cred_file)
+        return {}
+    return {str(k): str(v) for k, v in data.items()}

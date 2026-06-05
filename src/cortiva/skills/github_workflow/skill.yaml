@@ -1,0 +1,33 @@
+# github_workflow — issues, projects, and wiki-based product thinking
+#
+# Gives an agent working procedures for GitHub via the `gh` CLI and git
+# in its terminal environment. Auth comes from the GH_TOKEN environment
+# variable injected by the runtime (see core/credentials.py
+# load_agent_credentials) — the skill itself stores no secrets.
+#
+# Not an MCP server: the agent's terminal adapter (claude CLI) simply
+# runs `gh` / `git` commands following these procedures.
+
+name: github_workflow
+description: >
+  Work with GitHub as a team member: create and triage issues, keep
+  project boards current, and develop product thinking in repo wikis.
+  Requires the gh CLI and a GH_TOKEN delegated by the employer.
+category: version-control
+version: "0.1.0"
+author: innovology
+
+requires:
+  binary: gh
+  env: [GH_TOKEN]
+  binary_install_hint: "brew install gh"
+
+tags:
+  - github
+  - issues
+  - projects
+  - wiki
+  - product
+
+procedures_file: procedures.md
+skills_text_file: skills_text.md

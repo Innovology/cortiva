@@ -39,6 +39,7 @@ from cortiva.core.hooks import HookRouter
 from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
 from cortiva.core.delegation import DelegationManager
+from cortiva.core.credentials import load_agent_credentials
 from cortiva.core.living_summary import (
     LivingSummaryRegenerator,
     split_identity_and_day_report,
@@ -942,6 +943,13 @@ class Fabric:
         "commit", "branch", "merge", "deploy", "build", "run", "install",
         "create file", "edit file", "update file", "delete file",
         "pytest", "ruff", "lint", "review code", "open pr", "push",
+        # GitHub work — issues, projects, wiki product-thinking — runs
+        # through the gh CLI / git in the terminal env. Compound phrases
+        # to avoid over-routing prose ("investigate the issue") away
+        # from consciousness execution.
+        "github", "wiki", "create issue", "create an issue", "file an issue",
+        "raise an issue", "triage issues", "project board", "milestone",
+        "pull request",
     })
 
     def _is_terminal_task(self, description: str) -> bool:
@@ -982,6 +990,28 @@ class Fabric:
         envelope = self.isolation.prepare_terminal_env(
             agent_id=agent.id, cmd=[], cwd=cwd,
         )
+
+        # Inject the agent's delegated credentials (GH_TOKEN etc.) into
+        # the subprocess env: the credential provider (cortiva.yaml) and
+        # the agent-dir credentials.json written by the management layer.
+        # Without this the CredentialProvider was configured but never
+        # consulted — agents had no way to act on external systems.
+        creds: dict[str, str] = {}
+        if self.credential_provider is not None:
+            try:
+                creds.update(self.credential_provider.get_env(agent.id))
+            except Exception:
+                logger.exception(
+                    f"Credential provider failed for {agent.id}; "
+                    "continuing without provider credentials",
+                )
+        creds.update(load_agent_credentials(agent.directory))
+        if creds:
+            base_env = (
+                dict(envelope.env) if envelope.env is not None
+                else dict(os.environ)
+            )
+            envelope.env = {**base_env, **creds}
 
         # Enforce tool-level policy
         policy = self.policy_manager.get(agent.id)

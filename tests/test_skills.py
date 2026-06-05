@@ -173,3 +173,58 @@ class TestSkillRegistry:
         registry = SkillRegistry()
         registry.load_bundled()
         assert registry.get("nonexistent-skill-xyz-12345") is None
+
+
+class TestDirectorySkills:
+    """Bundled directory skills (skills/<name>/skill.yaml) load with
+    their procedures_file / skills_text_file inlined."""
+
+    def test_load_bundled_includes_github_workflow(self) -> None:
+        registry = SkillRegistry()
+        registry.load_bundled()
+        skill = registry.get("github_workflow")
+        assert skill is not None
+        assert skill.category == "version-control"
+        # procedures_file resolved and inlined
+        assert "gh issue create" in skill.procedures
+        assert "wiki" in skill.procedures.lower()
+        assert "GitHub" in skill.skills_text
+
+    def test_load_skill_dirs_from_custom_dir(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "my_skill"
+        skill_dir.mkdir()
+        (skill_dir / "skill.yaml").write_text(
+            "name: my_skill\n"
+            "description: test skill\n"
+            "category: testing\n"
+            "procedures_file: procedures.md\n",
+        )
+        (skill_dir / "procedures.md").write_text("# Do the thing\n")
+
+        registry = SkillRegistry()
+        count = registry.load_skill_dirs(tmp_path)
+        assert count == 1
+        skill = registry.get("my_skill")
+        assert skill is not None
+        assert skill.procedures == "# Do the thing\n"
+
+    def test_load_skill_dirs_ignores_broken_yaml(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "broken"
+        skill_dir.mkdir()
+        (skill_dir / "skill.yaml").write_text(": not [ valid yaml")
+        registry = SkillRegistry()
+        assert registry.load_skill_dirs(tmp_path) == 0
+
+    def test_github_workflow_installs_procedures(self, tmp_path: Path) -> None:
+        registry = SkillRegistry()
+        registry.load_bundled()
+        skill = registry.get("github_workflow")
+        assert skill is not None
+
+        agent_dir = tmp_path / "agents" / "cpo"
+        (agent_dir / "identity").mkdir(parents=True)
+        install_skill(agent_dir, skill)
+
+        procedures = (agent_dir / "identity" / "procedures.md").read_text()
+        assert "gh issue create" in procedures
+        assert "github_workflow" in installed_skills(agent_dir)
