@@ -28,6 +28,35 @@ when your employer has granted you GitHub access. The `gh` CLI picks up
 - Treat the board as the single source of truth for state: if you start,
   finish, or block on something, reflect it on the board the same day.
 
+## Pull requests — authoring and reviewing
+
+Your employer may run separate machine-user accounts per role; your
+`GH_TOKEN` acts as *your role's* account, which means you can approve a
+PR authored by an agent in another role (GitHub refuses self-approval
+from the same account).
+
+Authoring:
+1. Branch, commit, push, then
+   `gh pr create -R "$GITHUB_ORG/<repo>" --title "..." --body "..."`.
+   The body states what changed, why, and how it was verified.
+2. Request a reviewer per your team's procedures (usually the role that
+   owns the area): `gh pr edit <num> --add-reviewer <login>`.
+
+Reviewing (when a PR is assigned to your role):
+1. Read the diff: `gh pr diff <num> -R "$GITHUB_ORG/<repo>"` and check
+   it against the issue it claims to close.
+2. Approve only what you'd stand behind:
+   `gh pr review <num> --approve --body "..."` — or
+   `gh pr review <num> --request-changes --body "..."` with specific,
+   actionable comments.
+3. If the review needs judgement you can't reach, escalate to your
+   employer rather than rubber-stamping.
+
+If an approval fails because author and reviewer are the same GitHub
+account, your employer is on the single shared machine user — flag it
+to them; the fix is switching the GitHub integration to per-role
+accounts in Cortiva-HQ settings.
+
 ## Wikis for product thinking
 
 Repo wikis are where you develop and maintain durable product thinking —
