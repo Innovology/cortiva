@@ -39,7 +39,10 @@ from cortiva.core.hooks import HookRouter
 from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
 from cortiva.core.delegation import DelegationManager
-from cortiva.core.living_summary import LivingSummaryRegenerator
+from cortiva.core.living_summary import (
+    LivingSummaryRegenerator,
+    split_identity_and_day_report,
+)
 from cortiva.core.planner import (
     DAILY_PROMPT,
     MONTHLY_PROMPT,
@@ -505,9 +508,12 @@ class Fabric:
             else:
                 can_reflect = agent.spend_consciousness()
 
+            day_report = None
             if can_reflect:
-                # Regenerate Living Summary from accumulated experience
-                new_identity = await self.living_summary.regenerate(
+                # Regenerate Living Summary from accumulated experience.
+                # The same consciousness call also produces a first-person
+                # day report after ---DAY-REPORT--- (see living_summary).
+                raw = await self.living_summary.regenerate(
                     agent, day_summary,
                 )
 
@@ -517,16 +523,24 @@ class Fabric:
                     )
                     agent.spend_consciousness()
 
+                new_identity, day_report = split_identity_and_day_report(
+                    raw or "",
+                )
+
                 # Update Living Summary with regenerated content
                 if new_identity:
                     agent.write_identity("identity", new_identity)
-
-                # Write journal entry
-                journal_path = agent.journal_path()
-                journal_path.write_text(
-                    new_identity or day_summary, encoding="utf-8",
-                )
                 logger.info(f"Agent {agent_id} reflected and updated identity")
+
+            # Always write the journal — the agent's own day report when
+            # reflection produced one, the stats summary otherwise.
+            # Previously the journal got `new_identity or day_summary`
+            # (the regenerated identity overwrote the day record) and was
+            # skipped entirely when reflection didn't run.
+            journal_path = agent.journal_path()
+            journal_path.write_text(
+                day_report or day_summary, encoding="utf-8",
+            )
 
         # Final runtime state persistence before clearing
         agent.persist_runtime_state()

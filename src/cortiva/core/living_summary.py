@@ -20,6 +20,30 @@ if TYPE_CHECKING:
     from cortiva.adapters.protocols import ConsciousnessAdapter, MemoryAdapter, MemoryRecord
     from cortiva.core.agent import Agent
 
+DAY_REPORT_DELIMITER = "---DAY-REPORT---"
+
+
+def split_identity_and_day_report(
+    content: str,
+) -> tuple[str | None, str | None]:
+    """Split a regeneration response into (identity, day_report).
+
+    The regeneration prompt asks for the updated identity.md followed
+    by ``---DAY-REPORT---`` and a first-person day report. Parsing is
+    graceful: if the delimiter is absent the whole response is treated
+    as identity and the day report is ``None`` (callers fall back to
+    the stats-based day summary for the journal).
+    """
+    if not content:
+        return None, None
+    if DAY_REPORT_DELIMITER not in content:
+        identity = content.strip()
+        return (identity or None), None
+    identity_part, report_part = content.split(DAY_REPORT_DELIMITER, 1)
+    identity = identity_part.strip()
+    report = report_part.strip()
+    return (identity or None), (report or None)
+
 
 class LivingSummaryRegenerator:
     """Regenerates identity.md from accumulated experience.
@@ -147,7 +171,13 @@ class LivingSummaryRegenerator:
             "- Your working style (evolved from experience)\n"
             "- Areas where you've grown or changed\n\n"
             "Write in first person. Be specific about what you've learned. "
-            "Don't just list facts — show how experience has shaped you."
+            "Don't just list facts — show how experience has shaped you.\n\n"
+            f"Then, on its own line, write exactly `{DAY_REPORT_DELIMITER}` "
+            "followed by a short first-person day report — your standup for "
+            "the humans you work with. Cover: what you worked on today, "
+            "what you completed, where you've got to, anything blocking "
+            "you, and what you plan to do next. Under 200 words, plain "
+            "prose or short bullets."
         )
 
         return "\n\n".join(sections)

@@ -8,7 +8,12 @@ import pytest
 
 from cortiva.adapters.memory.inmemory import InMemoryAdapter
 from cortiva.adapters.protocols import ConsciousResponse, MemoryRecord
-from cortiva.core.living_summary import LivingSummaryRegenerator, _extract_themes
+from cortiva.core.living_summary import (
+    DAY_REPORT_DELIMITER,
+    LivingSummaryRegenerator,
+    _extract_themes,
+    split_identity_and_day_report,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +50,48 @@ class TestExtractThemes:
         ]
         themes = _extract_themes(memories)
         assert len(themes) == 0
+
+
+# ---------------------------------------------------------------------------
+# split_identity_and_day_report
+# ---------------------------------------------------------------------------
+
+
+class TestSplitIdentityAndDayReport:
+    def test_splits_on_delimiter(self) -> None:
+        content = (
+            "# Identity\n\nI am a bookkeeper.\n"
+            f"{DAY_REPORT_DELIMITER}\n"
+            "Today I reconciled 12 invoices and got blocked on Xero auth."
+        )
+        identity, report = split_identity_and_day_report(content)
+        assert identity == "# Identity\n\nI am a bookkeeper."
+        assert report is not None
+        assert report.startswith("Today I reconciled")
+
+    def test_no_delimiter_is_all_identity(self) -> None:
+        identity, report = split_identity_and_day_report("# Just identity")
+        assert identity == "# Just identity"
+        assert report is None
+
+    def test_empty_content(self) -> None:
+        assert split_identity_and_day_report("") == (None, None)
+
+    def test_empty_parts_become_none(self) -> None:
+        identity, report = split_identity_and_day_report(
+            f"  \n{DAY_REPORT_DELIMITER}\n  ",
+        )
+        assert identity is None
+        assert report is None
+
+    def test_delimiter_only_splits_once(self) -> None:
+        content = (
+            f"# Identity\n{DAY_REPORT_DELIMITER}\n"
+            f"Report mentioning {DAY_REPORT_DELIMITER} inline."
+        )
+        identity, report = split_identity_and_day_report(content)
+        assert identity == "# Identity"
+        assert DAY_REPORT_DELIMITER in (report or "")
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +245,11 @@ class TestFabricLivingSummaryIntegration:
                 return ConsciousResponse(content="- [ ] Plan item", model="stub")
             async def reflect(self, **kw):
                 return ConsciousResponse(
-                    content="# Updated Identity\n\nI've grown today.",
+                    content=(
+                        "# Updated Identity\n\nI've grown today.\n"
+                        f"{DAY_REPORT_DELIMITER}\n"
+                        "Today I did important work and finished it."
+                    ),
                     model="stub",
                 )
 
@@ -226,9 +277,11 @@ class TestFabricLivingSummaryIntegration:
 
         await fabric.sleep("agent-01")
 
-        # Identity should have been updated
+        # Identity should have been updated — without the day report
         identity = agent.read_identity("identity")
         assert "grown today" in identity
+        assert DAY_REPORT_DELIMITER not in identity
+        assert "important work" not in identity
 
     @pytest.mark.asyncio
     async def test_sleep_writes_journal(self, tmp_path) -> None:
@@ -247,10 +300,12 @@ class TestFabricLivingSummaryIntegration:
 
         await fabric.sleep("agent-01")
 
+        # Journal gets the agent-written day report, not identity.md
         journal = agent.journal_path()
         assert journal.exists()
         content = journal.read_text()
-        assert len(content) > 0
+        assert "Today I did important work" in content
+        assert "grown today" not in content
 
     @pytest.mark.asyncio
     async def test_sleep_skips_regen_for_new_agent(self, tmp_path) -> None:
@@ -270,3 +325,46 @@ class TestFabricLivingSummaryIntegration:
         # Identity should NOT have been updated (no experience)
         identity = agent.read_identity("identity")
         assert identity == original_identity
+
+        # The journal is still written — stats summary fallback
+        journal = agent.journal_path()
+        assert journal.exists()
+        assert "Tasks completed" in journal.read_text()
+
+    @pytest.mark.asyncio
+    async def test_sleep_journal_falls_back_without_delimiter(
+        self, tmp_path,
+    ) -> None:
+        """Reflection response without a day report → journal gets stats."""
+        from cortiva.core.fabric import Fabric
+
+        class NoReportConsciousness:
+            async def think(self, **kw):
+                return ConsciousResponse(content="- [ ] Plan", model="stub")
+            async def reflect(self, **kw):
+                return ConsciousResponse(
+                    content="# Updated Identity only", model="stub",
+                )
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=NoReportConsciousness(),
+        )
+        agent = fabric.register_agent("agent-01")
+        await fabric.memory.store(
+            "agent-01", "Task: work. Outcome: ok",
+            tags=["task"], importance=7.0,
+        )
+
+        from cortiva.core.agent import AgentState
+        agent.state = AgentState.WAKING
+        agent.transition(AgentState.PLANNING)
+        agent.transition(AgentState.EXECUTING)
+
+        await fabric.sleep("agent-01")
+
+        assert agent.read_identity("identity") == "# Updated Identity only"
+        journal = agent.journal_path()
+        assert journal.exists()
+        assert "Tasks completed" in journal.read_text()
