@@ -695,6 +695,18 @@ class Fabric:
         })
         agent.persist_familiarity(signals)
 
+        # Hands-on tasks (coding, file ops, GitHub/wiki work) go to the
+        # terminal agent BEFORE the routine gate. The routine layer can
+        # only produce text: a "procedural" match marks the task done
+        # without doing anything in the world, and "defer" kills it —
+        # either way a task that needs side effects never reaches the
+        # executor. (This is exactly how the CPO's GitHub inventory
+        # sweep died as 'Routine deferred task' on 2026-06-06.)
+        if self.terminal and self._is_terminal_task(task.description):
+            terminal_result = await self._execute_via_terminal(agent, task)
+            if terminal_result is not None:
+                return
+
         if self.routine:
             # Ask the routine layer whether this can be handled procedurally
             routine_assessment = await self.routine.assess(
@@ -718,12 +730,6 @@ class Fabric:
                 agent.tasks_completed_today += 1
                 return
             # else: escalate — fall through to consciousness
-
-        # Try terminal agent for hands-on tasks (coding, file ops, testing)
-        if self.terminal and self._is_terminal_task(task.description):
-            terminal_result = await self._execute_via_terminal(agent, task)
-            if terminal_result is not None:
-                return
 
         # Consciousness execution (budget-permitting)
         task_priority = (

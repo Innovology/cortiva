@@ -494,3 +494,102 @@ class TestTerminalCredentialInjection:
         assert not fabric._is_terminal_task(
             "Think about the customer's billing issue and reply",
         )
+
+
+class TestTerminalBeforeRoutineGate:
+    """Hands-on tasks must reach the terminal executor even when the
+    routine layer would defer or procedurally 'complete' them — the
+    routine layer can only produce text, not side effects. Pin the
+    ordering that fixed the CPO's dead GitHub inventory sweep."""
+
+    @pytest.mark.asyncio
+    async def test_terminal_task_executes_despite_routine_defer(
+        self, tmp_path,
+    ) -> None:
+        from cortiva.adapters.memory.inmemory import InMemoryAdapter
+        from cortiva.core.fabric import Fabric
+
+        class StubConsciousness:
+            async def think(self, **kw):
+                return ConsciousResponse(content="- [ ] x", model="stub")
+            async def reflect(self, **kw):
+                return ConsciousResponse(content="r", model="stub")
+
+        class DeferringRoutine:
+            """Routine adapter that defers everything."""
+            calls: list = []
+            async def assess(self, **kw):
+                self.calls.append(kw["task_description"])
+                return {"action": "defer", "procedure_match": None,
+                        "confidence": 0.3, "context_for_conscious": None}
+
+        terminal = AsyncMock()
+        terminal.is_available.return_value = True
+        terminal.invoke.return_value = AgentResponse(
+            content="Inventoried 5 repos, wiki updated.",
+        )
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=StubConsciousness(),
+            terminal=terminal,
+            routine=DeferringRoutine(),
+        )
+        agent = fabric.register_agent("cpo")
+
+        from cortiva.core.agent import Task, TaskQueue
+
+        agent.task_queue = TaskQueue()
+        task = Task(
+            id="t1",
+            description="Scan the GitHub org and update wiki pages",
+        )
+        await fabric._execute_task(agent, task, [])
+
+        assert task.status == "done"
+        assert "Inventoried" in task.outcome
+        terminal.invoke.assert_called_once()
+        # The routine layer never got the chance to eat it.
+        assert DeferringRoutine.calls == []
+
+    @pytest.mark.asyncio
+    async def test_non_terminal_task_still_uses_routine_gate(
+        self, tmp_path,
+    ) -> None:
+        from cortiva.adapters.memory.inmemory import InMemoryAdapter
+        from cortiva.core.fabric import Fabric
+
+        class StubConsciousness:
+            async def think(self, **kw):
+                return ConsciousResponse(content="- [ ] x", model="stub")
+            async def reflect(self, **kw):
+                return ConsciousResponse(content="r", model="stub")
+
+        class DeferringRoutine:
+            async def assess(self, **kw):
+                return {"action": "defer", "procedure_match": None,
+                        "confidence": 0.3, "context_for_conscious": None}
+
+        terminal = AsyncMock()
+        terminal.is_available.return_value = True
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=StubConsciousness(),
+            terminal=terminal,
+            routine=DeferringRoutine(),
+        )
+        agent = fabric.register_agent("cpo")
+
+        from cortiva.core.agent import Task, TaskQueue
+
+        agent.task_queue = TaskQueue()
+        task = Task(id="t1", description="Reflect on the quarterly themes")
+        await fabric._execute_task(agent, task, [])
+
+        # Not terminal-shaped → routine gate applies as before.
+        assert task.status == "exception"
+        assert task.error == "Routine deferred task"
+        terminal.invoke.assert_not_called()
