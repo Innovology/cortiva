@@ -179,3 +179,156 @@ class TestDeriveEmotions:
         e1 = derive_emotions(signals, None)
         e2 = derive_emotions(signals, PersonaModifiers())
         assert e1.to_dict() == e2.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Live wiring — emotions update from task outcomes (2026-06-06)
+# ---------------------------------------------------------------------------
+
+
+class TestEmotionWiring:
+    def test_blend_moves_toward_new(self) -> None:
+        from cortiva.core.emotions import EmotionDimensions, blend_emotions
+
+        calm = EmotionDimensions(satisfaction=0.8, frustration=0.0)
+        bad = EmotionDimensions(satisfaction=-0.5, frustration=0.9)
+        blended = blend_emotions(calm, bad)
+        assert blended.satisfaction < 0.8
+        assert blended.frustration > 0.0
+        assert blended.frustration < 0.9
+
+    def test_parse_persona_modifiers_from_soul(self) -> None:
+        from cortiva.core.emotions import parse_persona_modifiers
+
+        soul = (
+            "---\n"
+            "agent_id: cpo\n"
+            "emotional_modifiers:\n"
+            "  frustration_weight: 1.4\n"
+            "  satisfaction_weight: 1.2\n"
+            "---\n\n# Persona\n"
+        )
+        m = parse_persona_modifiers(soul)
+        assert m.frustration_weight == 1.4
+        assert m.satisfaction_weight == 1.2
+        assert m.curiosity_weight == 1.0
+
+    def test_parse_persona_modifiers_graceful(self) -> None:
+        from cortiva.core.emotions import parse_persona_modifiers
+
+        for text in ("", "no frontmatter", "---\nbroken: [\n---\n"):
+            m = parse_persona_modifiers(text)
+            assert m.frustration_weight == 1.0
+
+    def test_signals_from_failed_task(self) -> None:
+        from types import SimpleNamespace
+
+        from cortiva.core.emotions import signals_from_task
+
+        task = SimpleNamespace(status="exception")
+        fam = SimpleNamespace(strength="familiar")
+        s = signals_from_task(task, fam)
+        assert s.error_count == 1
+        assert s.was_escalated is True
+        assert s.outcome_matched_prediction is False
+        assert s.familiarity_at_execution == 0.6
+
+
+import pytest as _pytest
+
+
+class TestFabricEmotionIntegration:
+    @_pytest.mark.asyncio
+    async def test_failed_task_raises_frustration_and_persists(
+        self, tmp_path,
+    ) -> None:
+        """A regression-hating soul (frustration 1.4) that hits an
+        exception must show it — in memory state AND on disk where the
+        heartbeat reads it. Pre-wiring, the mood grid showed soul.md
+        weights clamped to 1.0 forever."""
+        import json
+        from unittest.mock import AsyncMock
+
+        from cortiva.adapters.memory.inmemory import InMemoryAdapter
+        from cortiva.adapters.protocols import AgentResponse, ConsciousResponse
+        from cortiva.core.fabric import Fabric
+
+        class StubConsciousness:
+            async def think(self, **kw):
+                return ConsciousResponse(content="- [ ] x", model="stub")
+            async def reflect(self, **kw):
+                return ConsciousResponse(content="r", model="stub")
+
+        terminal = AsyncMock()
+        terminal.is_available.return_value = True
+        terminal.invoke.return_value = AgentResponse(
+            content="claude exploded", is_error=True,
+        )
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=StubConsciousness(),
+            terminal=terminal,
+        )
+        agent = fabric.register_agent("cpo")
+        agent.write_identity(
+            "soul",
+            "---\nagent_id: cpo\nemotional_modifiers:\n"
+            "  frustration_weight: 1.4\n---\n\n# P\n",
+        )
+
+        from cortiva.core.agent import Task, TaskQueue
+
+        agent.task_queue = TaskQueue()
+        task = Task(id="t1", description="Update the GitHub project board")
+        await fabric._execute_task(agent, task, [])
+
+        assert task.status == "exception"
+        state = fabric._emotional_states["cpo"]
+        assert state.frustration > 0.3
+        assert state.satisfaction < 0.2
+
+        on_disk = json.loads(
+            (agent.directory / "today" / "emotions.json").read_text(),
+        )
+        assert on_disk["frustration"] == round(state.frustration, 3)
+
+    @_pytest.mark.asyncio
+    async def test_successful_task_builds_satisfaction(
+        self, tmp_path,
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        from cortiva.adapters.memory.inmemory import InMemoryAdapter
+        from cortiva.adapters.protocols import AgentResponse, ConsciousResponse
+        from cortiva.core.fabric import Fabric
+
+        class StubConsciousness:
+            async def think(self, **kw):
+                return ConsciousResponse(content="- [ ] x", model="stub")
+            async def reflect(self, **kw):
+                return ConsciousResponse(content="r", model="stub")
+
+        terminal = AsyncMock()
+        terminal.is_available.return_value = True
+        terminal.invoke.return_value = AgentResponse(content="Done cleanly.")
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=StubConsciousness(),
+            terminal=terminal,
+        )
+        agent = fabric.register_agent("cpo")
+
+        from cortiva.core.agent import Task, TaskQueue
+
+        agent.task_queue = TaskQueue()
+        await fabric._execute_task(
+            agent, Task(id="t1", description="Create issue for login bug"), [],
+        )
+
+        state = fabric._emotional_states["cpo"]
+        assert state.satisfaction > 0.0
+        assert state.frustration == 0.0

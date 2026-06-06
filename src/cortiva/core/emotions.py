@@ -1,15 +1,17 @@
 """
-Emotion derivation spec (design only — issue #9).
+Emotion derivation (issue #9).
 
-After each task execution, the subconscious computes emotional dimensions
-from task signals weighted by persona modifiers from soul.md.  This is
-arithmetic, not LLM inference.
+After each task execution, the fabric computes emotional dimensions
+from task signals weighted by persona modifiers from soul.md — pure
+arithmetic, no LLM inference — and blends them into the agent's rolling
+emotional state (persisted to ``today/emotions.json`` for the node
+heartbeat → HQ mood grid). Per-task dimensions are also stored with the
+experience memory record via :pyattr:`MemoryRecord.emotion_dimensions`.
 
-The derived emotions are stored with the experience memory record via
-:pyattr:`MemoryRecord.emotion_dimensions` and surface during replan /
-reflection to inform autonomous goal generation.
-
-Implementation is planned for v0.2.
+Wired into fabric._execute_task on 2026-06-06 — before that this module
+was design-only and the dashboard's mood grid displayed soul.md's
+static disposition WEIGHTS clamped to 1.0 (every agent permanently
+"maxed out", which is how the flatline was caught).
 """
 
 from __future__ import annotations
@@ -205,4 +207,78 @@ def derive_emotions(
         curiosity=curiosity,
         confidence=confidence,
         caution=caution,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rolling per-agent emotional state
+# ---------------------------------------------------------------------------
+
+EMOTIONS_FILENAME = "emotions.json"
+
+_BLEND_ALPHA = 0.4
+"""Weight of the newest task's emotions vs accumulated state. 0.4 means
+a single bad task visibly moves the needle; three in a row dominate it —
+emotional state tracks the recent day, not the whole career (that's what
+memory's emotion_dimensions records are for)."""
+
+
+def blend_emotions(
+    current: EmotionDimensions,
+    new: EmotionDimensions,
+    alpha: float = _BLEND_ALPHA,
+) -> EmotionDimensions:
+    """Exponentially blend a new task's emotions into the rolling state."""
+    def mix(a: float, b: float) -> float:
+        return _clamp(a * (1.0 - alpha) + b * alpha)
+
+    return EmotionDimensions(
+        satisfaction=mix(current.satisfaction, new.satisfaction),
+        frustration=mix(current.frustration, new.frustration),
+        curiosity=mix(current.curiosity, new.curiosity),
+        confidence=mix(current.confidence, new.confidence),
+        caution=mix(current.caution, new.caution),
+    )
+
+
+def parse_persona_modifiers(soul_text: str) -> PersonaModifiers:
+    """Extract PersonaModifiers from soul.md's YAML front-matter.
+
+    Graceful: missing file content, missing front-matter, or a missing
+    ``emotional_modifiers`` block all yield neutral modifiers.
+    """
+    if not soul_text or not soul_text.startswith("---"):
+        return PersonaModifiers()
+    parts = soul_text.split("---", 2)
+    if len(parts) < 3:
+        return PersonaModifiers()
+    try:
+        import yaml
+
+        front = yaml.safe_load(parts[1]) or {}
+    except Exception:
+        return PersonaModifiers()
+    block = front.get("emotional_modifiers") or front.get("disposition") or {}
+    if not isinstance(block, dict):
+        return PersonaModifiers()
+    return PersonaModifiers.from_dict(block)
+
+
+def signals_from_task(task: Any, familiarity: Any) -> TaskSignals:
+    """Build TaskSignals from a completed/failed Task + familiarity.
+
+    Approximations, documented: ``completion_speed`` is neutral (the
+    framework doesn't predict durations yet); ``outcome_matched_
+    prediction`` is inferred from success (the reflection suffix's
+    prediction_error refines memory records, not this live signal).
+    """
+    failed = getattr(task, "status", "") == "exception"
+    strength = getattr(familiarity, "strength", "novel")
+    fam_value = {"routine": 0.9, "familiar": 0.6}.get(strength, 0.2)
+    return TaskSignals(
+        completion_speed=1.0,
+        error_count=1 if failed else 0,
+        was_escalated=failed,
+        outcome_matched_prediction=not failed,
+        familiarity_at_execution=fam_value,
     )

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import os
 import platform
 import re
@@ -40,6 +41,13 @@ from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
 from cortiva.core.delegation import DelegationManager
 from cortiva.core.credentials import load_agent_credentials
+from cortiva.core.emotions import (
+    EMOTIONS_FILENAME,
+    blend_emotions,
+    derive_emotions,
+    parse_persona_modifiers,
+    signals_from_task,
+)
 from cortiva.core.living_summary import (
     LivingSummaryRegenerator,
     split_identity_and_day_report,
@@ -220,6 +228,7 @@ class Fabric:
         self._heartbeat_task: asyncio.Task | None = None
         # Per-agent accumulated familiarity signals for today
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
+        self._emotional_states: dict[str, Any] = {}
         # Event listeners for portal/WebSocket integration
         self._event_listeners: list[Any] = []
         # Structured event bus (new — used alongside legacy listeners)
@@ -679,13 +688,58 @@ class Fabric:
             return
 
         task.status = "in_progress"
-        routine_assessment: dict[str, Any] | None = None
 
         if self.budget_manager:
             self.budget_manager.record_task_attempt(agent.id)
 
         # Compute familiarity signal from memory and accumulate for persistence
         familiarity = await self.familiarity_engine.assess(agent.id, task.description)
+        try:
+            await self._execute_task_inner(
+                agent, task, messages, familiarity,
+            )
+        finally:
+            # Every exit path (terminal, routine, consciousness,
+            # deferral) feeds the emotion engine — this is what makes
+            # the mood grid live state instead of soul.md constants.
+            self._record_task_emotions(agent, task, familiarity)
+
+    def _record_task_emotions(
+        self, agent: Agent, task: Task, familiarity: Any,
+    ) -> None:
+        """Derive emotions from the task outcome and update the agent's
+        rolling emotional state (persisted to today/emotions.json for
+        the heartbeat → HQ mood grid). Never raises — emotional
+        bookkeeping must not break execution."""
+        try:
+            if task.status == "in_progress":
+                return  # deferred to approval queue etc. — no outcome yet
+            modifiers = parse_persona_modifiers(agent.read_identity("soul"))
+            dims = derive_emotions(
+                signals_from_task(task, familiarity), modifiers,
+            )
+            current = self._emotional_states.get(agent.id)
+            state = (
+                blend_emotions(current, dims) if current is not None else dims
+            )
+            self._emotional_states[agent.id] = state
+            agent.write_today(
+                EMOTIONS_FILENAME,
+                json.dumps(state.to_dict(), indent=2),
+            )
+        except Exception:
+            logger.debug(
+                "Emotion bookkeeping failed for %s", agent.id, exc_info=True,
+            )
+
+    async def _execute_task_inner(
+        self,
+        agent: Agent,
+        task: Task,
+        messages: list[Any],
+        familiarity: Any,
+    ) -> None:
+        routine_assessment: dict[str, Any] | None = None
         signals = self._familiarity_signals.setdefault(agent.id, [])
         signals.append({
             "task": task.description,
