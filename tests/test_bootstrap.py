@@ -668,3 +668,76 @@ class TestDeepThinkWiring:
             agent, Task(id="t1", description="x"),
             ReflectionSuffix(deep_think="hard question"),
         )
+
+
+class TestAgentCommandedHiring:
+    """The CEO/COO can command a new hire via the reflection suffix; the
+    fabric provisions a diverse persona and boots it. Unauthorised
+    agents cannot hire."""
+
+    def _fabric(self, tmp_path):
+        from unittest.mock import AsyncMock
+        from cortiva.adapters.memory.inmemory import InMemoryAdapter
+        from cortiva.core.fabric import Fabric
+        return Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=AsyncMock(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_ceo_hire_provisions_new_agent(self, tmp_path):
+        from cortiva.core.agent import Task
+        from cortiva.core.reflection import ReflectionSuffix
+
+        fab = self._fabric(tmp_path)
+        ceo = fab.register_agent("ceo")
+        before = set(fab.agents)
+
+        await fab._process_reflection(
+            ceo, Task(id="t1", description="grow the team"),
+            ReflectionSuffix(hire={
+                "role": "Developer", "department": "engineering",
+                "justification": "dev capacity gap blocking delivery",
+            }),
+        )
+
+        new = set(fab.agents) - before
+        assert len(new) == 1
+        slug = new.pop()
+        # Seed files written + registered live
+        d = fab.agents_dir / slug
+        assert (d / "identity" / "identity.md").exists()
+        assert (d / "identity" / "soul.md").exists()
+        assert (d / "deploy.yaml").exists()
+        soul = (d / "identity" / "soul.md").read_text()
+        assert "disposition" in soul  # emotion engine will read it
+
+    @pytest.mark.asyncio
+    async def test_unauthorised_agent_cannot_hire(self, tmp_path):
+        from cortiva.core.agent import Task
+        from cortiva.core.reflection import ReflectionSuffix
+
+        fab = self._fabric(tmp_path)
+        po = fab.register_agent("po-marketmesh")  # not in hiring_authorised
+        before = set(fab.agents)
+
+        await fab._process_reflection(
+            po, Task(id="t1", description="x"),
+            ReflectionSuffix(hire={"role": "Developer"}),
+        )
+        assert set(fab.agents) == before  # nothing provisioned
+
+    @pytest.mark.asyncio
+    async def test_coo_can_hire_too(self, tmp_path):
+        from cortiva.core.agent import Task
+        from cortiva.core.reflection import ReflectionSuffix
+
+        fab = self._fabric(tmp_path)
+        coo = fab.register_agent("coo")
+        before = set(fab.agents)
+        await fab._process_reflection(
+            coo, Task(id="t1", description="x"),
+            ReflectionSuffix(hire={"role": "QA Engineer"}),
+        )
+        assert len(set(fab.agents) - before) == 1

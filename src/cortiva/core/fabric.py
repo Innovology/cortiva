@@ -10,8 +10,8 @@ plan-execute-replan cycle.
 from __future__ import annotations
 
 import asyncio
-import logging
 import json
+import logging
 import os
 import platform
 import re
@@ -28,19 +28,14 @@ from cortiva.adapters.protocols import (
 )
 from cortiva.core.agent import Agent, AgentState, Task, TaskQueue, _parse_plan
 from cortiva.core.approval import ApprovalQueue
-from cortiva.core.capacity import CapacityTracker
-from cortiva.core.events import EventBus, FabricEvent
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
+from cortiva.core.capacity import CapacityTracker
 from cortiva.core.cluster import Cluster, ClusterNode, move_agent
 from cortiva.core.context import ContextBuilder
-from cortiva.core.discovery import NodeCapabilities
-from cortiva.core.familiarity import FamiliarityEngine
-from cortiva.core.hooks import HookRouter
-from cortiva.core.ipc import FabricServer
-from cortiva.core.isolation import NoIsolation
-from cortiva.core.delegation import DelegationManager
 from cortiva.core.credentials import load_agent_credentials
+from cortiva.core.delegation import DelegationManager
+from cortiva.core.discovery import NodeCapabilities
 from cortiva.core.emotions import (
     EMOTIONS_FILENAME,
     blend_emotions,
@@ -48,10 +43,17 @@ from cortiva.core.emotions import (
     parse_persona_modifiers,
     signals_from_task,
 )
+from cortiva.core.events import EventBus
+from cortiva.core.familiarity import FamiliarityEngine
+from cortiva.core.hooks import HookRouter
+from cortiva.core.ipc import FabricServer
+from cortiva.core.isolation import NoIsolation
 from cortiva.core.living_summary import (
     LivingSummaryRegenerator,
     split_identity_and_day_report,
 )
+from cortiva.core.models import ClusterModels
+from cortiva.core.org import OrgModel
 from cortiva.core.planner import (
     DAILY_PROMPT,
     MONTHLY_PROMPT,
@@ -61,16 +63,14 @@ from cortiva.core.planner import (
     build_monthly_context,
     build_weekly_context,
 )
-from cortiva.core.org import OrgModel
 from cortiva.core.plugins import PluginManager
 from cortiva.core.policy import PolicyManager
 from cortiva.core.reactive import ReactiveEngine
+from cortiva.core.reflection import ReflectionSuffix, parse_reflection_suffix
 from cortiva.core.resource_guard import ResourceGuard
+from cortiva.core.scheduler import Scheduler
 from cortiva.core.session import SessionManager
 from cortiva.core.timesheet import TimesheetManager
-from cortiva.core.models import ClusterModels
-from cortiva.core.reflection import ReflectionSuffix, parse_reflection_suffix
-from cortiva.core.scheduler import Scheduler
 
 logger = logging.getLogger("cortiva.fabric")
 
@@ -202,6 +202,9 @@ class Fabric:
         self.org: OrgModel | None = None
         self.delegation = DelegationManager(self.agents_dir / ".delegation")
         self.approval_queue = ApprovalQueue(self.agents_dir / ".approvals")
+        # Agents permitted to command a hire (CEO commands, COO
+        # provisions). Others emitting `hire` are ignored.
+        self.hiring_authorised: set[str] = {"ceo", "coo"}
         self.resource_guard = ResourceGuard(self.agents_dir)
         if self.terminal is not None:
             # The cycle guard must outlast a terminal run, or long
@@ -929,6 +932,92 @@ class Fabric:
         except Exception:
             logger.debug("Could not write deep_think.md", exc_info=True)
 
+    async def _run_hire(self, agent: Agent, spec: dict[str, Any]) -> None:
+        """Provision a new team member commanded by an authorised agent.
+
+        Authority-gated: only agents in ``hiring_authorised`` (CEO/COO by
+        default) can hire. Generates a diverse persona via HiringManager,
+        writes its seed identity to a new agent directory, and registers
+        it live with the fabric so it boots like any other agent. Never
+        raises into the cycle.
+        """
+        if agent.id not in self.hiring_authorised:
+            logger.info(
+                "Agent %s emitted a hire request but lacks hiring "
+                "authority — ignored.", agent.id,
+            )
+            return
+        role = str(spec.get("role", "")).strip()
+        if not role:
+            logger.info("Hire request from %s had no role — ignored.", agent.id)
+            return
+        try:
+            from cortiva.core.hiring import HiringManager
+
+            persona = HiringManager().generate(
+                role=role,
+                department=str(spec.get("department", "")),
+                justification=str(spec.get("justification", "")),
+            )
+            if persona.slug in self.agents:
+                logger.info(
+                    "Hire %s already exists — skipping duplicate.",
+                    persona.slug,
+                )
+                return
+
+            new_dir = self.agents_dir / persona.slug
+            (new_dir / "identity").mkdir(parents=True, exist_ok=True)
+            for key, content in HiringManager().identity_files(persona).items():
+                (new_dir / "identity" / f"{key}.md").write_text(
+                    content, encoding="utf-8",
+                )
+            # soul.md with disposition front-matter so the emotion engine
+            # reads this hire's individual weights.
+            import yaml as _yaml
+
+            soul = (
+                "---\n"
+                + _yaml.safe_dump(persona.soul_frontmatter(), sort_keys=False)
+                + "---\n\n"
+                + f"# {persona.name} — Persona\n\n"
+                + f"Ambition: {persona.ambition.label}. "
+                + f"Social style: {persona.social.label}.\n"
+            )
+            (new_dir / "identity" / "soul.md").write_text(soul, encoding="utf-8")
+            # Minimal deploy.yaml so HQ/portal and node scans see the hire.
+            (new_dir / "deploy.yaml").write_text(
+                _yaml.safe_dump({
+                    "agent": {
+                        "name": persona.name,
+                        "role": persona.role,
+                        "department": persona.department,
+                        "reports_to": agent.id,
+                        "hired_by": agent.id,
+                    }
+                }, sort_keys=False),
+                encoding="utf-8",
+            )
+
+            self.register_agent(persona.slug)
+            logger.info(
+                "Agent %s HIRED %s (%s, %s) — ambition: %s, social: %s",
+                agent.id, persona.name, persona.role, persona.gender,
+                persona.ambition.label, persona.social.label,
+            )
+            await self.memory.store(
+                agent_id=agent.id,
+                content=(
+                    f"Hired {persona.name} as {persona.role} "
+                    f"({persona.gender}; {persona.ambition.label}, "
+                    f"{persona.social.label}). Reason: {persona.justification}"
+                ),
+                tags=["hire", "decision"],
+                importance=8.0,
+            )
+        except Exception:
+            logger.exception("Hire provisioning failed for %s", agent.id)
+
     async def _process_reflection(
         self, agent: Agent, task: Task, suffix: ReflectionSuffix
     ) -> None:
@@ -963,6 +1052,12 @@ class Fabric:
         # fatal — a failed deep-think must not break the task.
         if suffix.deep_think:
             await self._run_deep_think(agent, task, suffix.deep_think)
+
+        # Hire — bring on a new team member. Authority-gated: only the
+        # CEO/COO can command it. Generates a diverse persona and boots
+        # the new colleague live (see HiringManager).
+        if suffix.hire:
+            await self._run_hire(agent, suffix.hire)
 
         # Send inter-agent messages via channel adapter and persist to outbox
         if suffix.messages:

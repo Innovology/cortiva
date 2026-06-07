@@ -44,6 +44,11 @@ class ReflectionSuffix:
     on its own conclusion. The runtime subshells to the ``claude`` CLI
     (claude_code_deep_think skill) and feeds the answer back into the
     agent's memory. Budget-gated; this is the expensive path."""
+    hire: dict[str, Any] | None = None
+    """A request to bring on a new team member: ``{"role": ...,
+    "department": ..., "justification": ...}``. Only honoured for
+    agents with hiring authority (the CEO commands, the COO provisions).
+    The runtime generates the new colleague and boots them."""
 
 
 @dataclass
@@ -100,6 +105,7 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         shared_learning=data.get("shared_learning"),
         schedule=data.get("schedule") or {},
         deep_think=data.get("deep_think"),
+        hire=data.get("hire") if isinstance(data.get("hire"), dict) else None,
     )
 
     return ReflectionResult(clean_content=clean_content, suffix=suffix)
