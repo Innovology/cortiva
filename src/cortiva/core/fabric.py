@@ -968,25 +968,19 @@ class Fabric:
             f"Execute this task: {task.description}\n\n"
             "Describe what you did and the outcome."
         )
-        if _is_sched_action:
-            # The optimiser only runs if the agent emits the structured
-            # action. Local models tend to narrate instead, so make the
-            # contract explicit with the exact format right where the
-            # response is produced (the runtime guarantees feasibility and
-            # only applies it if this agent is authorised).
-            prompt += (
-                "\n\nThis is a scheduling action. The optimiser ONLY runs if "
-                "you end your response with a reflection suffix containing an "
-                "`optimize_schedule` object — narrating it does nothing. Emit "
-                "exactly:\n"
-                "---REFLECTION---\n"
-                '{"optimize_schedule": {"capacity_ceiling": 130, '
-                '"w_overtime": 1.5, "w_blocked": 2.0, "w_spread": 0.5, '
-                '"apply": true}}\n'
-                "Set the weights to fit the signals you reviewed (raise "
-                "w_blocked to protect oversight, w_overtime to relieve "
-                "overworked agents). Use \"apply\": false for a dry-run."
-            )
+
+        # Offer the agent its native tools (e.g. the rota optimiser for
+        # scheduling-authorised agents). Function-calling is far more
+        # reliable than coaxing a JSON suffix out of prose — the model
+        # returns validated tool_calls we overlay onto the reflection.
+        from cortiva.core.agent_tools import (
+            apply_tool_calls_to_suffix,
+            tools_for_agent,
+        )
+
+        agent_tools = tools_for_agent(
+            agent.id, scheduling_authorised=self.scheduling_authorised,
+        )
 
         response = await self.consciousness.think(
             agent_id=agent.id,
@@ -994,6 +988,7 @@ class Fabric:
             prompt=prompt,
             priority=Priority.HIGH if task.priority >= 1 else Priority.NORMAL,
             metadata={"call_type": "execute", "task_execution": True},
+            tools=agent_tools or None,
         )
 
         # Record in session for continuity across tasks
@@ -1008,19 +1003,24 @@ class Fabric:
             )
             agent.spend_consciousness()
 
-        # Parse reflection suffix from response
+        # Parse the prose reflection suffix, then overlay any native
+        # tool_calls (the structured, validated source — takes precedence).
         reflection = parse_reflection_suffix(response.content)
+        suffix = reflection.suffix
+        if response.tool_calls:
+            suffix = suffix or ReflectionSuffix()
+            apply_tool_calls_to_suffix(suffix, response.tool_calls)
 
         task.status = "done"
-        if reflection.suffix and reflection.suffix.outcome:
-            task.outcome = reflection.suffix.outcome
+        if suffix and suffix.outcome:
+            task.outcome = suffix.outcome
         else:
             task.outcome = reflection.clean_content
         agent.tasks_completed_today += 1
 
-        # Process structured reflection metadata if present
-        if reflection.suffix:
-            await self._process_reflection(agent, task, reflection.suffix)
+        # Process structured reflection metadata / tool calls if present
+        if suffix:
+            await self._process_reflection(agent, task, suffix)
 
         # Store as memory
         await self.memory.store(

@@ -61,6 +61,11 @@ class ConsciousResponse:
     tokens_out: int = 0
     model: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    """Native tool/function calls the model emitted, each
+    ``{"name": str, "arguments": dict}``. Populated when ``think`` is
+    given ``tools`` and the backend supports function-calling. Preferred
+    over the prose ``---REFLECTION---`` suffix for agent actions."""
 
 
 @dataclass
@@ -203,9 +208,15 @@ class ConsciousnessAdapter(Protocol):
         priority: Priority = Priority.NORMAL,
         max_tokens: int = 4096,
         metadata: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> ConsciousResponse:
         """
         Invoke a moment of conscious thought.
+
+        When ``tools`` (OpenAI-style function schemas) are supplied and the
+        backend supports function-calling, structured calls are returned on
+        ``ConsciousResponse.tool_calls``. Backends without tool support
+        ignore ``tools`` and fall back to the reflection-suffix convention.
 
         The context contains the agent's identity, state, and relevant
         memories assembled by the subconscious layer. The prompt is

@@ -10,6 +10,7 @@ Install: pip install openai
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -113,6 +114,7 @@ class OpenAICompatibleAdapter:
         priority: Priority = Priority.NORMAL,
         max_tokens: int | None = None,
         metadata: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> ConsciousResponse:
         client = self._get_client(agent_id)
 
@@ -128,18 +130,39 @@ class OpenAICompatibleAdapter:
         if metadata and metadata.get("task_execution"):
             effective_prompt = prompt + "\n\n" + REFLECTION_SUFFIX_INSTRUCTIONS
 
-        response = client.chat.completions.create(
-            model=self.model,
-            max_tokens=max_tokens or self.max_tokens,
-            messages=[
+        create_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens or self.max_tokens,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": effective_prompt},
             ],
-        )
+        }
+        # Native function-calling: hand the model real tool schemas instead
+        # of asking it to hand-write a JSON suffix. Far more reliable for
+        # structured actions (the model returns validated tool_calls).
+        if tools:
+            create_kwargs["tools"] = tools
+            create_kwargs["tool_choice"] = "auto"
+
+        response = client.chat.completions.create(**create_kwargs)
 
         choice = response.choices[0]
         content = choice.message.content or ""
         usage = response.usage
+
+        tool_calls: list[dict[str, Any]] = []
+        raw_calls = getattr(choice.message, "tool_calls", None) or []
+        for tc in raw_calls:
+            fn = getattr(tc, "function", None)
+            if fn is None:
+                continue
+            raw_args = getattr(fn, "arguments", "") or "{}"
+            try:
+                args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                args = {}
+            tool_calls.append({"name": getattr(fn, "name", ""), "arguments": args})
 
         return ConsciousResponse(
             content=content,
@@ -147,6 +170,7 @@ class OpenAICompatibleAdapter:
             tokens_out=usage.completion_tokens if usage else 0,
             model=self.model,
             metadata={"agent_id": agent_id, "priority": priority.value},
+            tool_calls=tool_calls,
         )
 
     async def reflect(

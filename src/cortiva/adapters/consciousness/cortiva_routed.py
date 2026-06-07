@@ -111,6 +111,7 @@ class CortivaRoutedConsciousnessAdapter:
         priority: Priority = Priority.NORMAL,
         max_tokens: int | None = None,
         metadata: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,  # accepted; relay path doesn't yet forward
     ) -> ConsciousResponse:
         call_type = (metadata or {}).get("call_type", "execute")
         system_prompt = (

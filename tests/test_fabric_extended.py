@@ -595,3 +595,55 @@ class TestScheduleOptimization:
         fresh.discover_agents()
         fresh._load_persisted_schedules()
         assert fresh.scheduler.get_schedule("dev-0") is not None
+
+
+class TestToolCallExecutionPath:
+    @pytest.mark.asyncio
+    async def test_tool_call_applies_rota_through_execution(self, tmp_path: Path) -> None:
+        """A native optimize_schedule tool_call flows through _execute_task
+        -> overlay -> _process_reflection -> _run_schedule_optimization and
+        applies the rota (no prose suffix needed)."""
+
+        class _ToolMock:
+            async def think(self, agent_id, context, prompt, **kwargs):
+                if "plan" in prompt.lower() or "checklist" in prompt.lower():
+                    return ConsciousResponse(content="- [ ] Optimise the rota\n", model="m")
+                # Execution call: return a native tool_call, no prose suffix.
+                return ConsciousResponse(
+                    content="Optimising the workforce rota.",
+                    model="m",
+                    tool_calls=[{"name": "optimize_schedule",
+                                 "arguments": {"capacity_ceiling": 200, "apply": True}}],
+                )
+            async def reflect(self, agent_id, context, day_summary):
+                return ConsciousResponse(content="", model="m")
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=_ToolMock(),
+        )
+        agents_dir = tmp_path / "agents"
+        _write_deploy(agents_dir, "coo", name="Marcus", department="operations",
+                      reports_to="ceo")
+        _write_deploy(agents_dir, "ceo", name="Maren", department="executive",
+                      reports_to="human-founder")
+        for i in range(4):
+            _write_deploy(agents_dir, f"dev-{i}", name=f"D{i}",
+                          department="engineering", reports_to="coo")
+        fabric.discover_agents()
+
+        coo = fabric.get_agent("coo")
+        coo.task_queue = TaskQueue(tasks=[
+            Task(id="t1", description="Optimise the workforce rota", status="pending", priority=2),
+        ])
+        coo.transition(AgentState.WAKING)
+        coo.transition(AgentState.PLANNING)
+        coo.transition(AgentState.EXECUTING)
+
+        await fabric.cycle("coo")
+
+        assert (tmp_path / "agents" / ".schedules.json").exists(), \
+            "tool_call did not apply the rota"
+        note = tmp_path / "agents" / "coo" / "today" / "schedule_optimization.md"
+        assert note.exists() and "Applied:** True" in note.read_text()

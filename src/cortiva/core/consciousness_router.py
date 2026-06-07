@@ -52,6 +52,7 @@ class ConsciousnessRouter:
         priority: Priority = Priority.NORMAL,
         max_tokens: int = 4096,
         metadata: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> ConsciousResponse:
         call_type = (metadata or {}).get("call_type", "default")
         adapter = self.resolve(call_type)
@@ -62,6 +63,7 @@ class ConsciousnessRouter:
             priority=priority,
             max_tokens=max_tokens,
             metadata=metadata,
+            tools=tools,
         )
 
     async def reflect(

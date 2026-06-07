@@ -102,6 +102,7 @@ class AnthropicConsciousnessAdapter:
         priority: Priority = Priority.NORMAL,
         max_tokens: int | None = None,
         metadata: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,  # accepted; not yet used here
     ) -> ConsciousResponse:
         client = self._get_client(agent_id)
 
