@@ -262,3 +262,44 @@ async def test_listen_idempotent(adapter: InternalChannelAdapter):
 
     received = await adapter.receive("bob")
     assert len(received) == 1
+
+
+class TestDurablePeerMessaging:
+    """Direct messages must survive a fabric restart — the in-memory
+    queue is lost on every bounce, which silently dropped unread
+    inter-agent messages (CEO→CFO etc., 2026-06-07)."""
+
+    async def test_message_survives_new_adapter_instance(self, tmp_path):
+        import pytest
+        from cortiva.adapters.channel.internal import InternalChannelAdapter
+
+        # Process 1: CEO sends to CFO, CFO never reads
+        a1 = InternalChannelAdapter(persist_dir=tmp_path / ".messages")
+        await a1.send("ceo", "cfo", "approve the staging spend")
+
+        # Process 2 (fabric restarted): fresh adapter, same disk
+        a2 = InternalChannelAdapter(persist_dir=tmp_path / ".messages")
+        msgs = await a2.receive("cfo")
+        assert len(msgs) == 1
+        assert msgs[0].content == "approve the staging spend"
+        assert msgs[0].sender == "ceo"
+
+    async def test_delivered_message_not_redelivered(self, tmp_path):
+        from cortiva.adapters.channel.internal import InternalChannelAdapter
+
+        a1 = InternalChannelAdapter(persist_dir=tmp_path / ".messages")
+        await a1.send("ceo", "cfo", "one-time note")
+        first = await a1.receive("cfo")
+        assert len(first) == 1
+
+        # After delivery, a restart must NOT replay it
+        a2 = InternalChannelAdapter(persist_dir=tmp_path / ".messages")
+        assert await a2.receive("cfo") == []
+
+    async def test_no_persist_dir_is_pure_in_memory(self, tmp_path):
+        from cortiva.adapters.channel.internal import InternalChannelAdapter
+
+        a1 = InternalChannelAdapter()  # no persistence
+        await a1.send("ceo", "cfo", "ephemeral")
+        a2 = InternalChannelAdapter()
+        assert await a2.receive("cfo") == []  # lost on "restart", by design
