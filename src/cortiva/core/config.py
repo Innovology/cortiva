@@ -233,6 +233,14 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
                 token = chan_kwargs.pop("token", None) or os.environ.get("SLACK_BOT_TOKEN")
                 if token:
                     chan_kwargs["token"] = token
+            # Durable peer messaging by default: the internal channel keeps
+            # messages in memory, so a fabric restart would drop anything
+            # in flight between agents. Default persist_dir to
+            # <agents_dir>/.messages so peer messages survive restarts
+            # (exactly-once on redelivery). Explicit config still wins.
+            if chan_name == "internal" and "persist_dir" not in chan_kwargs:
+                _adir = Path(config.get("agents", {}).get("directory", "./agents"))
+                chan_kwargs["persist_dir"] = str(_adir / ".messages")
             channel = chan_cls(**chan_kwargs)
 
     # --- Routine adapter (optional) ---
@@ -291,8 +299,13 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
         fabric.load_schedules(schedules)
 
     # --- Org model (optional) ---
+    # An explicit `org:` section wins and pins the structure. When absent,
+    # the fabric derives the org from each agent's deploy.yaml at discovery
+    # (see Fabric.refresh_org_from_agents) so the chart tracks hires and
+    # reassignments without a parallel config that drifts.
     org_section = config.get("org")
     fabric.org = parse_org_config(org_section)
+    fabric._org_from_config = fabric.org is not None
 
     # --- Encryption at rest (optional) ---
     encryption_section = config.get("encryption", {})

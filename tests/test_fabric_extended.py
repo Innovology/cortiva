@@ -456,3 +456,80 @@ class TestWakeMultiHorizonPlanning:
         monthly = planner.store.current_monthly()
         assert monthly is not None
         assert "Pre-existing" in monthly.content
+
+
+# ---------------------------------------------------------------------------
+# Org derived from agents' deploy.yaml (refresh_org_from_agents)
+# ---------------------------------------------------------------------------
+
+
+def _write_deploy(agents_dir: Path, slug: str, **agent_fields) -> None:
+    import yaml
+
+    d = agents_dir / slug
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "deploy.yaml").write_text(
+        yaml.safe_dump({"agent": agent_fields}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+class TestOrgFromAgents:
+    def test_derives_reporting_and_departments(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        agents_dir = tmp_path / "agents"
+        _write_deploy(agents_dir, "ceo", name="Maren", department="executive",
+                      reports_to="human-founder", authority_level=5)
+        _write_deploy(agents_dir, "cpo", name="Astrid", department="product",
+                      reports_to="ceo", authority_level=5)
+        _write_deploy(agents_dir, "po", name="Yuki", department="product",
+                      reports_to="cpo")
+        _write_deploy(agents_dir, "dev", name="Amara", department="engineering",
+                      reports_to="po")
+
+        fabric.discover_agents()
+
+        assert fabric.org is not None
+        # human-founder is outside the org → ceo has no in-org manager
+        assert fabric.org.manager_of("ceo") is None
+        assert fabric.org.manager_of("cpo") == "ceo"
+        assert fabric.org.manager_of("dev") == "po"
+        # subordinates
+        assert set(fabric.org.subordinates_of("cpo")) == {"po"}
+        # departments → peers
+        assert set(fabric.org.peers_of("cpo")) == {"po"}
+        # delegation authority follows the reporting line
+        assert fabric.org.can_delegate_to("cpo", "po") is True
+        assert fabric.org.can_delegate_to("dev", "po") is False
+
+    def test_org_context_names_manager_and_reports(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        agents_dir = tmp_path / "agents"
+        _write_deploy(agents_dir, "ceo", name="Maren", department="executive",
+                      reports_to="human-founder")
+        _write_deploy(agents_dir, "cpo", name="Astrid", department="product",
+                      reports_to="ceo")
+        _write_deploy(agents_dir, "po", name="Yuki", department="product",
+                      reports_to="cpo")
+
+        fabric.discover_agents()
+        ctx = fabric.org.org_context_for("cpo")
+        assert "Manager: ceo" in ctx
+        assert "po" in ctx  # direct report listed
+
+    def test_explicit_config_not_overridden(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        # Pin an explicit org as config.py would
+        from cortiva.core.org import parse_org_config
+
+        fabric.org = parse_org_config({"reporting": {"b": "a"}})
+        fabric._org_from_config = True
+        agents_dir = tmp_path / "agents"
+        _write_deploy(agents_dir, "x", name="X", department="d", reports_to="y")
+        _write_deploy(agents_dir, "y", name="Y", department="d",
+                      reports_to="human")
+
+        fabric.discover_agents()
+        # Untouched: still the explicit config, not derived from deploy.yaml
+        assert fabric.org.manager_of("b") == "a"
+        assert fabric.org.manager_of("x") is None

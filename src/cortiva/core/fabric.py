@@ -200,6 +200,10 @@ class Fabric:
         self.credential_provider: Any = None  # CredentialProvider or None
         self.data_boundary: Any = None  # DataBoundaryEnforcer or None
         self.org: OrgModel | None = None
+        # True when org structure came from an explicit cortiva.yaml `org:`
+        # section; when False, the org is derived from agents' deploy.yaml
+        # at discovery (and after hire/reassign) so it stays current.
+        self._org_from_config = False
         self.delegation = DelegationManager(self.agents_dir / ".delegation")
         self.approval_queue = ApprovalQueue(self.agents_dir / ".approvals")
         # Agents permitted to command a hire (CEO commands, COO
@@ -300,7 +304,91 @@ class Fabric:
                     discovered.append(agent.id)
                     logger.info(f"Discovered agent: {agent.id}")
 
+        # Derive the org structure from the agents on disk, unless an
+        # explicit org section was supplied in cortiva.yaml. deploy.yaml
+        # carries role/department/reports_to for every agent — and is kept
+        # current by deploy, reassign, and hire — so building the org from
+        # it means the org chart is always correct without a parallel
+        # config that drifts. This is what lets agents "play together":
+        # without it, fabric.org is None and no manager/reports/peers
+        # context is ever injected into planning.
+        if not self._org_from_config:
+            self.refresh_org_from_agents()
+
         return discovered
+
+    def refresh_org_from_agents(self) -> None:
+        """Rebuild ``self.org`` from each agent's ``deploy.yaml``.
+
+        The single source of truth for org structure is the per-agent
+        deploy.yaml (``agent.role`` / ``agent.department`` /
+        ``agent.reports_to`` / ``agent.authority_level``). Managers named
+        outside the agent set (e.g. ``human-founder``) are treated as the
+        top of the chart — that agent simply has no in-org manager.
+        """
+        import yaml
+
+        from cortiva.core.org import Department, RoleDefinition
+
+        known = set(self.agents.keys())
+        reporting: dict[str, str] = {}
+        departments: dict[str, list[str]] = {}
+        roles: dict[str, RoleDefinition] = {}
+
+        for aid in self.agents:
+            deploy = self.agents_dir / aid / "deploy.yaml"
+            if not deploy.exists():
+                continue
+            try:
+                data = yaml.safe_load(deploy.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            spec = data.get("agent", data) or {}
+            mgr = spec.get("reports_to")
+            if mgr and mgr in known:  # ignore human-* / unknown managers
+                reporting[aid] = mgr
+            dept = str(spec.get("department") or "general")
+            departments.setdefault(dept, []).append(aid)
+            authority = spec.get("authority_level")
+            if authority is not None:
+                roles[aid] = RoleDefinition(authority_level=int(authority))
+
+        if not reporting and len(departments) <= 1:
+            # Nothing to model (single flat group, no reporting lines).
+            return
+
+        dept_payload: dict[str, dict[str, Any]] = {}
+        for name, members in departments.items():
+            # The dept lead is the member whose manager is NOT in the same
+            # department (i.e. the senior-most in that group); fall back to
+            # the first member.
+            lead = next(
+                (m for m in members if reporting.get(m) not in members),
+                members[0],
+            )
+            dept_payload[name] = {"lead": lead, "members": sorted(members)}
+
+        payload: dict[str, Any] = {
+            "name": self.org.name if self.org else "Cortiva",
+            "reporting": reporting,
+            "departments": dept_payload,
+        }
+        if roles:
+            payload["roles"] = {
+                aid: {
+                    "authority_level": r.authority_level,
+                    "can_delegate": r.can_delegate,
+                    "can_approve": r.can_approve,
+                }
+                for aid, r in roles.items()
+            }
+
+        self.org = OrgModel.from_dict(payload)
+        logger.info(
+            "Org model derived from agents: %d reporting lines, %d departments",
+            len(reporting),
+            len(dept_payload),
+        )
 
     def register_agent(
         self,
@@ -376,6 +464,13 @@ class Fabric:
         agent = self.get_agent(agent_id)
         agent.transition(AgentState.WAKING)
         logger.info(f"Waking agent: {agent_id}")
+
+        # Keep the org chart current. Reassignments are applied to
+        # deploy.yaml out-of-band (by the node client, a separate process),
+        # so re-deriving here means this agent plans against its real
+        # current manager/reports/peers — a few tiny YAML reads.
+        if not self._org_from_config:
+            self.refresh_org_from_agents()
 
         # Migrate flat layout if needed
         agent.migrate_flat_layout()
@@ -1013,6 +1108,11 @@ class Fabric:
             )
 
             self.register_agent(persona.slug)
+            # New hire reports to the hiring agent — fold them into the org
+            # chart immediately so manager/reports/peers context is correct
+            # on everyone's very next wake.
+            if not self._org_from_config:
+                self.refresh_org_from_agents()
             logger.info(
                 "Agent %s HIRED %s (%s, %s) — ambition: %s, social: %s",
                 agent.id, persona.name, persona.role, persona.gender,
