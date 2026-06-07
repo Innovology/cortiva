@@ -224,6 +224,7 @@ def optimize_schedule(
 
     ics = [a for a in agents if a.role_type == RoleType.IC]
     managers = [a for a in agents if a.role_type == RoleType.MANAGER]
+    by_id_set = {a.agent_id for a in agents}
     # Managers are placed after ICs (they need reports' spans first) and add
     # load. Reserve worst-case manager headroom in the IC ceiling so the
     # combined peak can never breach, whatever the coverage repair does.
@@ -250,14 +251,29 @@ def optimize_schedule(
         schedules[a.agent_id] = [w]
         rationale[a.agent_id] = _ic_rationale(a, w, sig)
 
-    # --- 2. Place manager availability windows to cover reports -----------
-    for a in sorted(managers, key=lambda m: m.agent_id):
-        windows = _place_manager_windows(c, obj, sig, load, a, schedules)
-        for w in windows:
-            _add_block(load, _hour_to_slot(c, w.start_h),
-                       _block_slots(c, w.length_h))
-        schedules[a.agent_id] = windows
-        rationale[a.agent_id] = _manager_rationale(a, windows, schedules)
+    # --- 2. Place manager windows, deepest first --------------------------
+    # A manager whose reports are themselves managers (e.g. a CEO over the
+    # C-suite) must be placed AFTER those reports, or its coverage repair
+    # sees no report windows and leaves an oversight gap. Place in reverse
+    # org-depth order: a manager is placed only once all its reports are.
+    placed = set(schedules.keys())  # the ICs
+    remaining = list(managers)
+    while remaining:
+        ready = [
+            m for m in remaining
+            if all((r in placed) or (r not in by_id_set) for r in m.reports)
+        ]
+        if not ready:  # cycle or dangling reports — place the rest as-is
+            ready = list(remaining)
+        for a in sorted(ready, key=lambda m: m.agent_id):
+            windows = _place_manager_windows(c, obj, sig, load, a, schedules)
+            for w in windows:
+                _add_block(load, _hour_to_slot(c, w.start_h),
+                           _block_slots(c, w.length_h))
+            schedules[a.agent_id] = windows
+            rationale[a.agent_id] = _manager_rationale(a, windows, schedules)
+            placed.add(a.agent_id)
+            remaining.remove(a)
 
     # --- 3. Validate invariants + impact ----------------------------------
     violations = _validate(c, agents, schedules, load)

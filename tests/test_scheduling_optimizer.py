@@ -207,3 +207,30 @@ class TestScheduleConfigOutput:
         cfg = windows_to_schedule_config(p.schedules[ic.agent_id])
         assert "," not in cfg["wake"]
         assert "replan" not in cfg  # single window → no mid-window replan
+
+
+class TestMultiLevelOrg:
+    def test_ceo_over_managers_has_no_oversight_gap(self) -> None:
+        """A 3-level org (CEO -> managers -> ICs): the CEO's reports are
+        themselves managers, so they must be placed before the CEO or the
+        CEO is left with an oversight gap. Deepest-first placement fixes it."""
+        agents = [
+            AgentSpec("ceo", RoleType.MANAGER, manager=None,
+                      reports=["mgr-a", "mgr-b"]),
+            AgentSpec("mgr-a", RoleType.MANAGER, manager="ceo",
+                      reports=["ic-0", "ic-1"]),
+            AgentSpec("mgr-b", RoleType.MANAGER, manager="ceo",
+                      reports=["ic-2", "ic-3"]),
+            AgentSpec("ic-0", RoleType.IC, manager="mgr-a"),
+            AgentSpec("ic-1", RoleType.IC, manager="mgr-a"),
+            AgentSpec("ic-2", RoleType.IC, manager="mgr-b"),
+            AgentSpec("ic-3", RoleType.IC, manager="mgr-b"),
+        ]
+        p = optimize_schedule(agents, constraints=Constraints(capacity_ceiling=8))
+        assert p.feasible, p.violations
+        assert p.impact.reports_with_oversight_gap == 0
+        # CEO actually overlaps its manager-reports.
+        ceo = p.schedules["ceo"]
+        for r in ("mgr-a", "mgr-b"):
+            assert any(mw.overlaps(rw) for mw in ceo for rw in p.schedules[r]), \
+                f"CEO has no oversight overlap with {r}"
