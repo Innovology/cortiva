@@ -142,3 +142,40 @@ class TestResourceGuard:
         assert len(violations) == 1
         # Violations are cleared after check
         assert len(guard.post_cycle_check("agent-1")) == 0
+
+
+def test_raise_cycle_timeout_floor_outlasts_terminal():
+    """The guard must not kill cycles below the terminal's own timeout,
+    or long claude runs get hard-killed and retried forever (Astrid's
+    120s-timeout loop, 2026-06-07)."""
+    from pathlib import Path
+    from cortiva.core.resource_guard import ResourceGuard
+
+    g = ResourceGuard(Path("/tmp"))
+    assert g.limits_for("x").cycle_timeout_s == 120.0  # default
+    g.raise_cycle_timeout_floor(360.0)
+    assert g.limits_for("x").cycle_timeout_s == 360.0
+    # Never lowers an already-higher ceiling
+    g.raise_cycle_timeout_floor(200.0)
+    assert g.limits_for("x").cycle_timeout_s == 360.0
+
+
+def test_fabric_with_terminal_raises_cycle_timeout():
+    """Fabric wires the floor from the terminal's timeout automatically."""
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+    from cortiva.adapters.memory.inmemory import InMemoryAdapter
+    from cortiva.core.fabric import Fabric
+
+    terminal = AsyncMock()
+    terminal._timeout = 300.0
+    with tempfile.TemporaryDirectory() as d:
+        fab = Fabric(
+            agents_dir=Path(d) / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=AsyncMock(),
+            terminal=terminal,
+        )
+        # 300 (terminal) + 60 headroom = 360, above the 120 default
+        assert fab.resource_guard.limits_for("a").cycle_timeout_s == 360.0

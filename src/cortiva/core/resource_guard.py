@@ -115,6 +115,22 @@ class ResourceGuard:
         """Get the effective limits for an agent."""
         return self._overrides.get(agent_id, self._defaults)
 
+    def raise_cycle_timeout_floor(self, seconds: float) -> None:
+        """Ensure the default cycle timeout is at least ``seconds``.
+
+        The guard catches *runaway* cycles, not legitimately-long work.
+        With a terminal adapter, one cycle is a full agentic CLI run
+        that can take minutes — if the guard ceiling sits below the
+        terminal's own timeout, the task is hard-cancelled mid-run,
+        marked an exception, and retried identically every cycle
+        forever (Astrid's repeating 120s-timeout loop, 2026-06-07).
+        Fabric calls this so the guard outlasts the terminal: a long
+        task either finishes, or fails cleanly on the terminal's own
+        timeout, and the agent moves on.
+        """
+        if seconds > self._defaults.cycle_timeout_s:
+            self._defaults.cycle_timeout_s = seconds
+
     def _state_for(self, agent_id: str) -> AgentResourceState:
         if agent_id not in self._state:
             self._state[agent_id] = AgentResourceState()

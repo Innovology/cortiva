@@ -203,6 +203,12 @@ class Fabric:
         self.delegation = DelegationManager(self.agents_dir / ".delegation")
         self.approval_queue = ApprovalQueue(self.agents_dir / ".approvals")
         self.resource_guard = ResourceGuard(self.agents_dir)
+        if self.terminal is not None:
+            # The cycle guard must outlast a terminal run, or long
+            # claude tasks get hard-killed and retried forever. Give
+            # 60s headroom over the terminal's own timeout.
+            term_timeout = float(getattr(self.terminal, "_timeout", 300.0))
+            self.resource_guard.raise_cycle_timeout_floor(term_timeout + 60.0)
         self.communication_tracker = CommunicationTracker()
         self.cluster_metrics = ClusterMetrics(
             communication_tracker=self.communication_tracker,
