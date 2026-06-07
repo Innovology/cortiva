@@ -729,3 +729,78 @@ class TestPreSleepJournalRitual:
         await self._sleep_once(fabric, agent)
         # After one sleep today, identity regen is no longer due.
         assert fabric._identity_regen_due(agent) is False
+
+
+class TestRoutineDeferDoesNotKill:
+    @pytest.mark.asyncio
+    async def test_defer_falls_through_to_consciousness(self, tmp_path: Path) -> None:
+        """A routine 'defer' must NOT bin the task as an exception — it falls
+        through to consciousness so the work actually gets done."""
+
+        class _DeferRoutine:
+            async def assess(self, **kw):
+                return {"action": "defer", "procedure_match": "x", "confidence": 0.5}
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=_MockConsciousness(),
+            routine=_DeferRoutine(),
+        )
+        agent = fabric.register_agent("d-1", consciousness_budget=50)
+        task = Task(id="t1", description="Send the cadence template to the team",
+                    status="pending", priority=1)
+        agent.task_queue = TaskQueue(tasks=[task])
+        agent.transition(AgentState.WAKING)
+        agent.transition(AgentState.PLANNING)
+        agent.transition(AgentState.EXECUTING)
+
+        await fabric.cycle("d-1")
+
+        assert task.status == "done", "defer killed the task instead of doing it"
+        assert task not in agent.task_queue.exceptions
+
+
+class TestSleepGapCatchUp:
+    def test_in_sleep_gap_detects_overrun(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        fabric = _make_fabric(tmp_path)
+        fabric.scheduler.register("g-1", {"wake": "08:00", "sleep": "16:00"})
+
+        def at(h, m=0):
+            return datetime(2026, 6, 7, h, m, tzinfo=UTC)
+
+        assert fabric._in_sleep_gap("g-1", at(17)) is True   # past sleep
+        assert fabric._in_sleep_gap("g-1", at(12)) is False  # working
+        assert fabric._in_sleep_gap("g-1", at(16, 5)) is False  # within grace
+
+    def test_multi_window_gap(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        fabric = _make_fabric(tmp_path)
+        fabric.scheduler.register(
+            "g-2", {"wake": "08:00,12:00", "sleep": "10:00,14:00"},
+        )
+
+        def at(h, m=0):
+            return datetime(2026, 6, 7, h, m, tzinfo=UTC)
+
+        assert fabric._in_sleep_gap("g-2", at(11)) is True   # gap between windows
+        assert fabric._in_sleep_gap("g-2", at(9)) is False   # in window 1
+        assert fabric._in_sleep_gap("g-2", at(13)) is False  # in window 2
+
+
+class TestOrphanedSessionReconcile:
+    def test_reconcile_closes_open_session_and_journals(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("o-1", consciousness_budget=50)
+        # Simulate an open session left by a crash (clock in, never out).
+        fabric.timesheet_manager.clock_in("o-1", scheduled_hours=8.0)
+
+        fabric._reconcile_orphaned_sessions()
+
+        today = fabric.timesheet_manager.get("o-1").today()
+        assert all(e.sleep_time is not None for e in today.entries), "session left open"
+        journal = agent.journal_path().read_text()
+        assert "restart" in journal.lower() and "pre-sleep reflection" in journal.lower()

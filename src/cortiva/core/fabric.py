@@ -663,16 +663,15 @@ class Fabric:
     async def _session_reflection(
         self, agent: Agent, day_summary: str, emotion: dict[str, float],
     ) -> str:
-        """Short, first-person note for the pre-sleep ritual. Best-effort —
-        returns '' if it can't run (the journal still records felt state +
-        the stats summary)."""
+        """Short, first-person note for the pre-sleep ritual.
+
+        This is a lifecycle ritual (part of clocking off), not competing
+        task work — so it is NOT hard-gated on the consciousness budget
+        (which previously made it silently lose the budget race and fall
+        back to bare stats). It's a single cheap call per sleep; usage is
+        still accounted. Best-effort — returns '' only on real failure (the
+        journal then still records felt state + the stats summary)."""
         try:
-            if self.budget_manager:
-                can = self.budget_manager.request_budget(agent.id, "normal").approved
-            else:
-                can = agent.spend_consciousness()
-            if not can:
-                return ""
             context = _identity_to_context(agent.read_all_identity())
             prompt = (
                 "Your work session has ended. In 2-4 short sentences, reflect "
@@ -686,6 +685,7 @@ class Fabric:
                 priority=Priority.NORMAL, max_tokens=300,
                 metadata={"call_type": "reflect"},
             )
+            agent.spend_consciousness()  # account for the call (non-blocking)
             return (resp.content or "").strip()
         except Exception:
             logger.debug("session reflection failed for %s", agent.id, exc_info=True)
@@ -736,6 +736,65 @@ class Fabric:
             )
         except OSError:
             pass
+
+    def _in_sleep_gap(self, agent_id: str, now: Any) -> bool:
+        """True if *now* falls in a scheduled sleep gap for this agent — past
+        a sleep time and before the following wake — i.e. it should be asleep.
+
+        Uses the same UTC time basis as the scheduler. A 10-minute grace past
+        the sleep boundary avoids racing the normal sleep tick.
+        """
+        sched = self.scheduler.get_schedule(agent_id)
+        if sched is None:
+            return False
+        sleep_mins = [
+            h * 60 + m for e in sched.entries
+            if e.action == "sleep" for (h, m) in e.times
+        ]
+        wake_mins = [
+            h * 60 + m for e in sched.entries
+            if e.action == "wake" for (h, m) in e.times
+        ]
+        if not sleep_mins:
+            return False
+        now_min = now.hour * 60 + now.minute
+        for s in sleep_mins:
+            if s + 10 <= now_min:  # past this sleep boundary (with grace)
+                next_wake = min((w for w in wake_mins if w > s), default=24 * 60)
+                if now_min < next_wake:
+                    return True
+        return False
+
+    def _reconcile_orphaned_sessions(self) -> None:
+        """Close timesheet sessions left open by a crash/restart.
+
+        After a restart an agent comes up SLEEPING but may have an open
+        work session (clocked in, never clocked out) from before the
+        restart. Without this it's silently dropped on the next wake with no
+        journal and no clock-off (this is what stranded the CEO on
+        2026-06-07). Here we write a brief pre-sleep journal note and clock
+        the session out, so no shift is ever lost to a restart.
+        """
+        for agent_id, agent in self.agents.items():
+            try:
+                today = self.timesheet_manager.get(agent_id).today()
+                entries = getattr(today, "entries", [])
+                if not any(e.sleep_time is None for e in entries):
+                    continue
+                emotion = self._read_emotion(agent)
+                self._write_session_journal(
+                    agent,
+                    "Session interrupted by a node restart — recovered and closed.",
+                    emotion,
+                    "My last work session was cut short by a restart before I "
+                    "could clock off. Closing it out; fresh start next shift.",
+                )
+                self.timesheet_manager.clock_out(agent_id)
+                logger.info("Reconciled orphaned session for %s", agent_id)
+            except Exception:
+                logger.debug(
+                    "Could not reconcile session for %s", agent_id, exc_info=True,
+                )
 
     async def sleep(self, agent_id: str) -> Agent:
         """Put an agent to sleep after reflection."""
@@ -1029,19 +1088,22 @@ class Fabric:
             )
             action = routine_assessment.get("action", "escalate")
 
-            if action == "defer":
-                task.status = "exception"
-                task.error = "Routine deferred task"
-                assert agent.task_queue is not None
-                agent.task_queue.exceptions.append(task)
-                agent.tasks_escalated_today += 1
-                return
-            elif action == "procedural":
+            # The routine gate must never KILL real work. Only a confident
+            # procedural match short-circuits (handled cheaply). The middle
+            # "defer" band (task is *somewhat* like a known procedure but not
+            # confidently) previously became a "Routine deferred task"
+            # exception — silently binning genuine work (it dropped the CPO's
+            # GitHub sweep, the AR Scheduler's optimiser runs, and the CEO's
+            # delegation/comms tasks, who then completed 0 tasks and felt it).
+            # "defer" now falls through to consciousness like "escalate":
+            # if it isn't confidently routine, the agent actually does it.
+            if action == "procedural":
                 task.status = "done"
                 task.outcome = routine_assessment.get("result", "Completed procedurally")
                 agent.tasks_completed_today += 1
                 return
-            # else: escalate — fall through to consciousness
+            # "defer" and "escalate" both fall through to consciousness —
+            # the work gets done, never dropped.
 
         # Consciousness execution (budget-permitting)
         task_priority = (
@@ -1960,6 +2022,27 @@ class Fabric:
                 except Exception as e:
                     logger.error(f"Scheduler action {action} for {agent_id}: {e}")
 
+        # Missed-sleep catch-up: an agent still executing during a scheduled
+        # sleep gap (the sleep tick was missed, or a restart reset the
+        # scheduler's trigger state) would otherwise never clock off or run
+        # its pre-sleep journal ritual. Force a clean sleep so no agent is
+        # stranded mid-shift.
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        for agent_id, agent in list(self.agents.items()):
+            if agent.state in (
+                AgentState.EXECUTING, AgentState.REPLANNING,
+            ) and self._in_sleep_gap(agent_id, now):
+                try:
+                    logger.info(
+                        "Catch-up sleep for %s — overran its sleep window",
+                        agent_id,
+                    )
+                    await self.sleep(agent_id)
+                except Exception as e:
+                    logger.error("Catch-up sleep failed for %s: %s", agent_id, e)
+
         # Plugin heartbeat hook
         await self.plugin_manager.dispatch_heartbeat()
 
@@ -2477,6 +2560,7 @@ class Fabric:
         # Register local node
         self.discover_agents()
         self._load_persisted_schedules()
+        self._reconcile_orphaned_sessions()
         local_node = ClusterNode(
             node_id=node_id,
             host=self._cluster_config.get("host", "localhost"),
