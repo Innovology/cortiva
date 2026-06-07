@@ -533,3 +533,65 @@ class TestOrgFromAgents:
         # Untouched: still the explicit config, not derived from deploy.yaml
         assert fabric.org.manager_of("b") == "a"
         assert fabric.org.manager_of("x") is None
+
+
+# ---------------------------------------------------------------------------
+# AR Scheduler: optimize_schedule runtime wiring (handler -> tool -> apply)
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleOptimization:
+    def _org_on_disk(self, tmp_path: Path) -> Fabric:
+        fabric = _make_fabric(tmp_path)
+        agents_dir = tmp_path / "agents"
+        # COO has scheduling authority; give it reports so it's a manager.
+        _write_deploy(agents_dir, "coo", name="Marcus", department="operations",
+                      reports_to="ceo")
+        _write_deploy(agents_dir, "ceo", name="Maren", department="executive",
+                      reports_to="human-founder")
+        for i in range(6):
+            _write_deploy(agents_dir, f"dev-{i}", name=f"Dev{i}",
+                          department="engineering", reports_to="coo")
+        fabric.discover_agents()
+        return fabric
+
+    @pytest.mark.asyncio
+    async def test_authorised_agent_optimises_and_applies(self, tmp_path: Path) -> None:
+        fabric = self._org_on_disk(tmp_path)
+        coo = fabric.get_agent("coo")
+
+        await fabric._run_schedule_optimization(coo, {"capacity_ceiling": 200})
+
+        # Schedules were registered with the live scheduler for the workforce.
+        sched = fabric.scheduler.get_schedule("dev-0")
+        assert sched is not None and sched.entries, "dev-0 got no schedule"
+        # Persisted to disk for restart survival.
+        assert (tmp_path / "agents" / ".schedules.json").exists()
+        # Reviewable artifact written.
+        note = (tmp_path / "agents" / "coo" / "today" / "schedule_optimization.md")
+        assert note.exists()
+        assert "Applied:** True" in note.read_text()
+
+    @pytest.mark.asyncio
+    async def test_unauthorised_agent_is_ignored(self, tmp_path: Path) -> None:
+        fabric = self._org_on_disk(tmp_path)
+        dev = fabric.get_agent("dev-0")  # an IC, no scheduling authority
+
+        await fabric._run_schedule_optimization(dev, {"capacity_ceiling": 200})
+
+        # Nothing applied — no persisted schedule, no artifact.
+        assert not (tmp_path / "agents" / ".schedules.json").exists()
+        assert not (tmp_path / "agents" / "dev-0" / "today"
+                    / "schedule_optimization.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_persisted_rota_reloads_on_start(self, tmp_path: Path) -> None:
+        fabric = self._org_on_disk(tmp_path)
+        coo = fabric.get_agent("coo")
+        await fabric._run_schedule_optimization(coo, {"capacity_ceiling": 200})
+
+        # A fresh fabric over the same dir reloads the optimised rota.
+        fresh = _make_fabric(tmp_path)
+        fresh.discover_agents()
+        fresh._load_persisted_schedules()
+        assert fresh.scheduler.get_schedule("dev-0") is not None

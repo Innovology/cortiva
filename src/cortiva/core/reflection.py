@@ -49,6 +49,15 @@ class ReflectionSuffix:
     "department": ..., "justification": ...}``. Only honoured for
     agents with hiring authority (the CEO commands, the COO provisions).
     The runtime generates the new colleague and boots them."""
+    optimize_schedule: dict[str, Any] | None = None
+    """A request to run the workforce rota optimiser and apply the result.
+    Only honoured for agents with scheduling authority (the AR Scheduler /
+    Head of AR / COO). Optional keys steer the optimiser without letting
+    the agent hand-edit rows: ``capacity_ceiling``, ``day_start``,
+    ``day_end``, and objective weights ``w_peak``/``w_blocked``/
+    ``w_overtime``/``w_spread``/``w_preference``, plus ``apply`` (default
+    true; false = dry-run preview only). The tool guarantees feasibility;
+    the runtime refuses to apply an infeasible proposal."""
 
 
 @dataclass
@@ -106,6 +115,11 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         schedule=data.get("schedule") or {},
         deep_think=data.get("deep_think"),
         hire=data.get("hire") if isinstance(data.get("hire"), dict) else None,
+        optimize_schedule=(
+            data.get("optimize_schedule")
+            if isinstance(data.get("optimize_schedule"), dict)
+            else None
+        ),
     )
 
     return ReflectionResult(clean_content=clean_content, suffix=suffix)

@@ -209,6 +209,12 @@ class Fabric:
         # Agents permitted to command a hire (CEO commands, COO
         # provisions). Others emitting `hire` are ignored.
         self.hiring_authorised: set[str] = {"ceo", "coo"}
+        # Agents permitted to run + apply the workforce rota optimiser.
+        # The AR Scheduler owns it; Head of AR and COO can also invoke it.
+        # Others emitting `optimize_schedule` are ignored.
+        self.scheduling_authorised: set[str] = {
+            "ar-scheduler", "head-of-ar", "coo",
+        }
         self.resource_guard = ResourceGuard(self.agents_dir)
         if self.terminal is not None:
             # The cycle guard must outlast a terminal run, or long
@@ -1131,6 +1137,174 @@ class Fabric:
         except Exception:
             logger.exception("Hire provisioning failed for %s", agent.id)
 
+    # ------------------------------------------------------------------
+    # Workforce scheduling — the AR Scheduler's tool
+    # ------------------------------------------------------------------
+
+    def _build_workforce_specs(self) -> list[Any]:
+        """Build the optimiser's view of the workforce from the org model.
+
+        An agent is a MANAGER if anyone reports to it, else an IC. Budgets
+        and preferred starts come from deploy.yaml where present.
+        """
+        import yaml
+
+        from cortiva.scheduling import AgentSpec, RoleType
+
+        specs: list[Any] = []
+        for aid in sorted(self.agents):
+            manager = self.org.manager_of(aid) if self.org else None
+            reports = self.org.subordinates_of(aid) if self.org else []
+            role_type = RoleType.MANAGER if reports else RoleType.IC
+            budget = 8.0
+            preferred_start = None
+            deploy = self.agents_dir / aid / "deploy.yaml"
+            if deploy.exists():
+                try:
+                    spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
+                            or {}).get("agent", {}) or {}
+                    budget = float(spec.get("daily_hours", spec.get("budget_hours", 8.0)))
+                    if spec.get("preferred_start") is not None:
+                        preferred_start = int(spec["preferred_start"])
+                except Exception:
+                    pass
+            specs.append(AgentSpec(
+                agent_id=aid, role_type=role_type, manager=manager,
+                reports=list(reports), budget_hours=budget,
+                preferred_start=preferred_start,
+            ))
+        return specs
+
+    def _gather_schedule_signals(self) -> Any:
+        """Collect current-state signals for the optimiser."""
+        from cortiva.scheduling import Signals
+
+        overtime: dict[str, float] = {}
+        try:
+            for aid, summary in self.timesheet_manager.all_today().items():
+                ot = getattr(summary, "overtime_hours", 0.0)
+                if ot:
+                    overtime[aid] = float(ot)
+        except Exception:
+            logger.debug("Could not gather timesheet signals", exc_info=True)
+        return Signals(overtime_hours=overtime)
+
+    def apply_schedule_proposal(self, proposal: Any) -> dict[str, Any]:
+        """Apply a feasible schedule proposal to the live scheduler + disk.
+
+        Defense in depth: refuses to apply an infeasible proposal even
+        though the optimiser already guarantees feasibility. Registers each
+        agent's new windows with the running Scheduler (immediate effect)
+        and persists them to ``.schedules.json`` so they survive a restart.
+        """
+        import json
+
+        from cortiva.scheduling import windows_to_schedule_config
+
+        if not proposal.feasible:
+            return {"applied": False, "reason": "infeasible",
+                    "violations": proposal.violations}
+
+        configs: dict[str, dict[str, str]] = {}
+        for aid, windows in proposal.schedules.items():
+            cfg = windows_to_schedule_config(windows)
+            self.scheduler.register(aid, cfg)
+            configs[aid] = cfg
+
+        # Persist so a restart reloads the optimised rota (see start()).
+        path = self.agents_dir / ".schedules.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(configs, indent=2), encoding="utf-8")
+        except OSError:
+            logger.warning("Could not persist schedules to %s", path)
+
+        return {"applied": True, "agents": len(configs), "configs": configs}
+
+    async def _run_schedule_optimization(
+        self, agent: Agent, spec: dict[str, Any],
+    ) -> None:
+        """Run the rota optimiser and apply the result. Authority-gated.
+
+        Only agents in ``scheduling_authorised`` may invoke this. The agent
+        steers via objective weights + constraints in ``spec``; the tool
+        guarantees a feasible rota or none. Never fatal to the cycle.
+        """
+        if agent.id not in self.scheduling_authorised:
+            logger.info(
+                "Agent %s emitted optimize_schedule but lacks scheduling "
+                "authority — ignored.", agent.id,
+            )
+            return
+        try:
+            from cortiva.scheduling import (
+                Constraints,
+                Objectives,
+                optimize_schedule,
+            )
+
+            specs = self._build_workforce_specs()
+            signals = self._gather_schedule_signals()
+            constraints = Constraints(
+                day_start_h=float(spec.get("day_start", 0.0)),
+                day_end_h=float(spec.get("day_end", 24.0)),
+                capacity_ceiling=int(spec.get("capacity_ceiling", 130)),
+            )
+            objectives = Objectives(
+                w_peak=float(spec.get("w_peak", 1.0)),
+                w_blocked=float(spec.get("w_blocked", 2.0)),
+                w_overtime=float(spec.get("w_overtime", 1.5)),
+                w_spread=float(spec.get("w_spread", 0.5)),
+                w_preference=float(spec.get("w_preference", 0.5)),
+            )
+            proposal = optimize_schedule(
+                specs, constraints=constraints,
+                objectives=objectives, signals=signals,
+            )
+
+            apply = bool(spec.get("apply", True))
+            applied: dict[str, Any] = {"applied": False, "reason": "dry-run"}
+            if apply:
+                applied = self.apply_schedule_proposal(proposal)
+
+            # Record the run as a reviewable artifact + memory.
+            note = (
+                f"## Schedule optimisation — {agent.id}\n\n"
+                f"**Summary:** {proposal.summary}\n\n"
+                f"**Impact:** {proposal.impact.to_dict()}\n\n"
+                f"**Applied:** {applied.get('applied')} "
+                f"({applied.get('agents', 0)} agents)\n\n"
+                f"**Feasible:** {proposal.feasible}"
+            )
+            if proposal.violations:
+                note += f"\n\n**Violations:** {'; '.join(proposal.violations[:5])}"
+            try:
+                agent.write_today("schedule_optimization.md", note)
+            except Exception:
+                logger.debug("Could not write schedule_optimization.md", exc_info=True)
+
+            await self.memory.store(
+                agent_id=agent.id,
+                content=(
+                    f"Ran rota optimiser: {proposal.summary} "
+                    f"(applied={applied.get('applied')})"
+                ),
+                tags=["schedule", "ar", "decision"],
+                importance=7.0,
+            )
+            self._emit(
+                "schedule.optimized", agent_id=agent.id,
+                feasible=proposal.feasible,
+                applied=applied.get("applied", False),
+                peak=proposal.impact.peak_concurrency,
+            )
+            logger.info(
+                "Agent %s ran rota optimiser — %s (applied=%s)",
+                agent.id, proposal.summary, applied.get("applied"),
+            )
+        except Exception:
+            logger.exception("Schedule optimisation failed for %s", agent.id)
+
     async def _process_reflection(
         self, agent: Agent, task: Task, suffix: ReflectionSuffix
     ) -> None:
@@ -1171,6 +1345,12 @@ class Fabric:
         # the new colleague live (see HiringManager).
         if suffix.hire:
             await self._run_hire(agent, suffix.hire)
+
+        # Optimise the workforce rota. Authority-gated to the AR Scheduler
+        # (and Head of AR / COO). The agent steers the optimiser via weights
+        # and constraints; the tool guarantees a feasible result or none.
+        if suffix.optimize_schedule is not None:
+            await self._run_schedule_optimization(agent, suffix.optimize_schedule)
 
         # Send inter-agent messages via channel adapter and persist to outbox
         if suffix.messages:
@@ -1982,6 +2162,31 @@ class Fabric:
         """Signal the fabric to stop (used by shutdown IPC command)."""
         self._running = False
 
+    def _load_persisted_schedules(self) -> None:
+        """Reload an optimiser-applied rota from ``.schedules.json``.
+
+        The AR Scheduler's applied rota persists here so a fabric restart
+        comes back on the optimised schedule rather than the deploy.yaml
+        defaults. Only registers agents that still exist.
+        """
+        import json
+
+        path = self.agents_dir / ".schedules.json"
+        if not path.exists():
+            return
+        try:
+            configs = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            logger.warning("Could not read persisted schedules at %s", path)
+            return
+        applied = 0
+        for agent_id, cfg in configs.items():
+            if agent_id in self.agents and isinstance(cfg, dict):
+                self.scheduler.register(agent_id, cfg)
+                applied += 1
+        if applied:
+            logger.info("Reloaded optimiser rota for %d agents", applied)
+
     def load_schedules(self, schedules: dict[str, dict[str, str]]) -> None:
         """Load agent schedules from config.
 
@@ -2022,6 +2227,7 @@ class Fabric:
 
         # Register local node
         self.discover_agents()
+        self._load_persisted_schedules()
         local_node = ClusterNode(
             node_id=node_id,
             host=self._cluster_config.get("host", "localhost"),
