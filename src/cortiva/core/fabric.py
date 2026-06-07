@@ -879,7 +879,21 @@ class Fabric:
         # either way a task that needs side effects never reaches the
         # executor. (This is exactly how the CPO's GitHub inventory
         # sweep died as 'Routine deferred task' on 2026-06-06.)
-        if self.terminal and self._is_terminal_task(task.description):
+        # The AR Scheduler's scheduling work is a THINKING action, not
+        # hands-on terminal work — it's emitted as an optimize_schedule
+        # reflection suffix on the consciousness path. Keep it off the
+        # terminal even when the description trips a keyword like "run"
+        # ("Run the optimiser..."), or the suffix is never parsed.
+        _is_sched_action = (
+            agent.id in self.scheduling_authorised
+            and any(k in task.description.lower()
+                    for k in ("optimis", "rota", "schedul"))
+        )
+        if (
+            self.terminal
+            and not _is_sched_action
+            and self._is_terminal_task(task.description)
+        ):
             terminal_result = await self._execute_via_terminal(agent, task)
             if terminal_result is not None:
                 return
@@ -1852,6 +1866,30 @@ class Fabric:
                 return {"ok": True, **self.capabilities.to_dict()}
             return {"ok": False, "error": "Discovery not yet run"}
 
+        async def _handle_schedule_optimize(
+            agent_id: str = "ar-scheduler", **spec: Any,
+        ) -> dict[str, Any]:
+            """Run the AR Scheduler's rota optimiser on demand.
+
+            The control surface for HQ/Canopy (and for operators) to have an
+            authorised scheduling agent run its tool now. Invokes the exact
+            same authority-gated handler the agent uses autonomously.
+            """
+            agent = self.agents.get(agent_id)
+            if agent is None:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+            if agent_id not in self.scheduling_authorised:
+                return {"ok": False, "error": f"{agent_id} lacks scheduling authority"}
+            await self._run_schedule_optimization(agent, dict(spec))
+            note_path = agent.directory / "today" / "schedule_optimization.md"
+            applied = (self.agents_dir / ".schedules.json").exists()
+            return {
+                "ok": True,
+                "agent_id": agent_id,
+                "applied": applied,
+                "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
+            }
+
         async def _handle_cluster_load(**_kw: Any) -> dict[str, Any]:
             nodes = self.cluster_metrics.snapshot(
                 self.capabilities, self.agents, self.budget_manager,
@@ -2153,6 +2191,7 @@ class Fabric:
         server.register("agent.move", _handle_agent_move)
         server.register("budget", _handle_budget)
         server.register("discover", _handle_discover)
+        server.register("schedule.optimize", _handle_schedule_optimize)
         server.register("cluster.load", _handle_cluster_load)
         server.register("cluster.status", _handle_cluster_status)
         server.register("cluster.nodes", _handle_cluster_nodes)
