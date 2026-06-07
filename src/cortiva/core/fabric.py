@@ -613,6 +613,130 @@ class Fabric:
         await self.plugin_manager.dispatch_wake(agent_id, agent)
         return agent
 
+    # ------------------------------------------------------------------
+    # Pre-sleep journal ritual + paced identity synthesis
+    # ------------------------------------------------------------------
+
+    _MOOD_DIMS = ("satisfaction", "frustration", "curiosity", "confidence", "caution")
+
+    def _read_emotion(self, agent: Agent) -> dict[str, float]:
+        """Read the agent's current felt state from today/emotions.json."""
+        import json
+
+        try:
+            raw = agent.read_today("emotions.json")
+            data = json.loads(raw) if raw else {}
+            return {k: float(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        except (ValueError, TypeError, OSError):
+            return {}
+
+    @staticmethod
+    def _mood_label(e: dict[str, float]) -> str:
+        if not e:
+            return "steady"
+        sat, fru = e.get("satisfaction", 0.0), e.get("frustration", 0.0)
+        cur, con = e.get("curiosity", 0.0), e.get("confidence", 0.0)
+        if fru > 0.5 and con < 0.4:
+            return "drained and unsettled"
+        if sat > 0.5 and con > 0.5:
+            return "accomplished and assured"
+        if cur > 0.5 and sat < 0.4:
+            return "curious but unsatisfied"
+        if fru > 0.5:
+            return "frustrated"
+        if con > 0.5:
+            return "confident"
+        if cur > 0.5:
+            return "engaged and curious"
+        if sat > 0.5:
+            return "satisfied"
+        return "steady"
+
+    def _render_mood(self, e: dict[str, float]) -> str:
+        if not e:
+            return "(no emotion reading)"
+        dims = " · ".join(
+            f"{k.capitalize()} {e[k]:.2f}" for k in self._MOOD_DIMS if k in e
+        )
+        return f"{self._mood_label(e)} — {dims}"
+
+    async def _session_reflection(
+        self, agent: Agent, day_summary: str, emotion: dict[str, float],
+    ) -> str:
+        """Short, first-person note for the pre-sleep ritual. Best-effort —
+        returns '' if it can't run (the journal still records felt state +
+        the stats summary)."""
+        try:
+            if self.budget_manager:
+                can = self.budget_manager.request_budget(agent.id, "normal").approved
+            else:
+                can = agent.spend_consciousness()
+            if not can:
+                return ""
+            context = _identity_to_context(agent.read_all_identity())
+            prompt = (
+                "Your work session has ended. In 2-4 short sentences, reflect "
+                "personally and honestly: what you did this session, how it "
+                "went, and how you feel about it. Your current felt state is: "
+                f"{self._render_mood(emotion)}. Write in the first person; "
+                "keep it brief."
+            )
+            resp = await self.consciousness.think(
+                agent_id=agent.id, context=context, prompt=prompt,
+                priority=Priority.NORMAL, max_tokens=300,
+                metadata={"call_type": "reflect"},
+            )
+            return (resp.content or "").strip()
+        except Exception:
+            logger.debug("session reflection failed for %s", agent.id, exc_info=True)
+            return ""
+
+    def _write_session_journal(
+        self, agent: Agent, day_summary: str, emotion: dict[str, float], note: str,
+    ) -> None:
+        """Append a timestamped pre-sleep entry to today's journal."""
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        section = (
+            f"\n\n## {now.strftime('%Y-%m-%d %H:%M')} — pre-sleep reflection\n\n"
+            f"**How I feel:** {self._render_mood(emotion)}\n\n"
+            f"{note or day_summary}\n"
+        )
+        path = agent.journal_path(now)
+        try:
+            existing = (
+                path.read_text(encoding="utf-8") if path.exists()
+                else f"# Journal — {now.strftime('%Y-%m-%d')}\n"
+            )
+            path.write_text(existing + section, encoding="utf-8")
+        except OSError:
+            logger.debug("could not write session journal for %s", agent.id)
+
+    def _identity_regen_due(self, agent: Agent) -> bool:
+        """True at most once per calendar day — so frequent sleeps don't
+        churn the Living Summary."""
+        from datetime import UTC, datetime
+
+        marker = agent.directory / ".last_identity_regen"
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        try:
+            if marker.exists() and marker.read_text(encoding="utf-8").strip() == today:
+                return False
+        except OSError:
+            pass
+        return True
+
+    def _mark_identity_regen(self, agent: Agent) -> None:
+        from datetime import UTC, datetime
+
+        try:
+            (agent.directory / ".last_identity_regen").write_text(
+                datetime.now(UTC).strftime("%Y-%m-%d"), encoding="utf-8",
+            )
+        except OSError:
+            pass
+
     async def sleep(self, agent_id: str) -> Agent:
         """Put an agent to sleep after reflection."""
         agent = self.get_agent(agent_id)
@@ -626,54 +750,46 @@ class Fabric:
             # Persist final plan state
             self._write_plan(agent)
 
-            # End-of-day reflection
-            identity = agent.read_all_identity()
             day_summary = ContextBuilder.build_day_summary(agent)
-            reflection_context = await self.context_builder.build_reflection_context(
-                agent, identity, day_summary,
+            emotion = self._read_emotion(agent)
+
+            # Ritual before EVERY sleep: a short, timestamped journal entry
+            # recording what the session held and HOW THE AGENT FELT. With
+            # shift/optimisation-driven sleeps an agent may clock off several
+            # times a day, so each clock-off leaves its own dated note — a
+            # felt timeline to reflect on later, not one fragile end-of-day
+            # entry that's lost if the cycle is interrupted.
+            session_note = await self._session_reflection(
+                agent, day_summary, emotion,
             )
+            self._write_session_journal(agent, day_summary, emotion, session_note)
 
-            can_reflect = False
-            approval = None
-            if self.budget_manager:
-                approval = self.budget_manager.request_budget(agent_id, "normal")
-                can_reflect = approval.approved
-            else:
-                can_reflect = agent.spend_consciousness()
-
-            day_report = None
-            if can_reflect:
-                # Regenerate Living Summary from accumulated experience.
-                # The same consciousness call also produces a first-person
-                # day report after ---DAY-REPORT--- (see living_summary).
-                raw = await self.living_summary.regenerate(
-                    agent, day_summary,
-                )
-
-                if self.budget_manager and approval and approval.backend:
-                    self.budget_manager.record_usage(
-                        agent_id, approval.backend, 0, 0,
+            # Heavier identity synthesis (Living Summary rewrite) is paced to
+            # ~once a day, so sleeping every few hours doesn't churn who the
+            # agent is. When due, it regenerates from accumulated experience,
+            # including the day's session notes.
+            if self._identity_regen_due(agent):
+                can_reflect = False
+                approval = None
+                if self.budget_manager:
+                    approval = self.budget_manager.request_budget(agent_id, "normal")
+                    can_reflect = approval.approved
+                else:
+                    can_reflect = agent.spend_consciousness()
+                if can_reflect:
+                    raw = await self.living_summary.regenerate(agent, day_summary)
+                    if self.budget_manager and approval and approval.backend:
+                        self.budget_manager.record_usage(
+                            agent_id, approval.backend, 0, 0,
+                        )
+                        agent.spend_consciousness()
+                    new_identity, _ = split_identity_and_day_report(raw or "")
+                    if new_identity:
+                        agent.write_identity("identity", new_identity)
+                    self._mark_identity_regen(agent)
+                    logger.info(
+                        f"Agent {agent_id} synthesised Living Summary (daily)"
                     )
-                    agent.spend_consciousness()
-
-                new_identity, day_report = split_identity_and_day_report(
-                    raw or "",
-                )
-
-                # Update Living Summary with regenerated content
-                if new_identity:
-                    agent.write_identity("identity", new_identity)
-                logger.info(f"Agent {agent_id} reflected and updated identity")
-
-            # Always write the journal — the agent's own day report when
-            # reflection produced one, the stats summary otherwise.
-            # Previously the journal got `new_identity or day_summary`
-            # (the regenerated identity overwrote the day record) and was
-            # skipped entirely when reflection didn't run.
-            journal_path = agent.journal_path()
-            journal_path.write_text(
-                day_report or day_summary, encoding="utf-8",
-            )
 
         # Final runtime state persistence before clearing
         agent.persist_runtime_state()

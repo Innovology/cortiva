@@ -683,3 +683,49 @@ class TestScheduleDebounce:
         await fabric._run_schedule_optimization(coo, {"capacity_ceiling": 150})
         note = (tmp_path / "agents" / "coo" / "today" / "schedule_optimization.md").read_text()
         assert "Applied:** True" in note
+
+
+class TestPreSleepJournalRitual:
+    async def _sleep_once(self, fabric, agent):
+        agent.task_queue = TaskQueue(tasks=[
+            Task(id="t", description="did work", status="done", outcome="ok"),
+        ])
+        agent.transition(AgentState.WAKING)
+        agent.transition(AgentState.PLANNING)
+        agent.transition(AgentState.EXECUTING)
+        await fabric.sleep(agent.id)
+
+    @pytest.mark.asyncio
+    async def test_sleep_writes_timestamped_entry_with_feelings(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("ritual-1", consciousness_budget=50)
+        agent.write_today("emotions.json",
+                          '{"satisfaction":0.6,"frustration":0.1,"curiosity":0.7,'
+                          '"confidence":0.6,"caution":0.1}')
+        await self._sleep_once(fabric, agent)
+
+        journal = (agent.journal_path()).read_text()
+        assert "pre-sleep reflection" in journal
+        assert "How I feel:" in journal
+        # mood label derived from the emotion reading
+        assert "accomplished" in journal or "satisf" in journal.lower()
+
+    @pytest.mark.asyncio
+    async def test_multiple_sleeps_append_not_overwrite(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("ritual-2", consciousness_budget=80)
+        agent.write_today("emotions.json", '{"curiosity":0.7}')
+        await self._sleep_once(fabric, agent)
+        await self._sleep_once(fabric, agent)
+        journal = (agent.journal_path()).read_text()
+        # Two timestamped sections, not one overwritten.
+        assert journal.count("pre-sleep reflection") == 2
+
+    @pytest.mark.asyncio
+    async def test_identity_regen_paced_once_per_day(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("ritual-3", consciousness_budget=80)
+        assert fabric._identity_regen_due(agent) is True
+        await self._sleep_once(fabric, agent)
+        # After one sleep today, identity regen is no longer due.
+        assert fabric._identity_regen_due(agent) is False
