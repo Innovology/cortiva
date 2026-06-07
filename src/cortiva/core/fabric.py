@@ -898,8 +898,13 @@ class Fabric:
             if terminal_result is not None:
                 return
 
-        if self.routine:
-            # Ask the routine layer whether this can be handled procedurally
+        if self.routine and not _is_sched_action:
+            # Ask the routine layer whether this can be handled procedurally.
+            # Scheduling actions skip this: the routine layer can only
+            # produce text, so it would defer/proceduralise the optimiser
+            # invocation and the optimize_schedule suffix would never be
+            # emitted on the consciousness path. (Same failure mode that
+            # deferred the CPO's GitHub sweep — see the terminal note above.)
             routine_assessment = await self.routine.assess(
                 agent_id=agent.id,
                 task_description=task.description,
