@@ -65,7 +65,11 @@ def _make_memory_without_shared() -> AsyncMock:
 
 class TestBuildMonthlyContextShared:
     @pytest.mark.asyncio
-    async def test_includes_shared_org_knowledge(self) -> None:
+    async def test_shared_org_knowledge_is_isolated_out(self) -> None:
+        """Isolation (founder directive 2026-06-07): monthly context must
+        NOT pull the org-shared memory tier. Agents plan from their own
+        identity + own memory only, so one agent's theme can't bleed into
+        everyone else's plans."""
         memory = _make_memory_with_shared()
 
         ctx = await build_monthly_context(
@@ -77,8 +81,10 @@ class TestBuildMonthlyContextShared:
         assert "Monthly Planning" in ctx
         assert "Ship v2.0" in ctx
         assert "90%" in ctx
-        assert "Org Knowledge" in ctx
-        assert "deploy only on Tuesdays" in ctx
+        # The shared tier is killed — its content never reaches the plan.
+        assert "Org Knowledge" not in ctx
+        assert "deploy only on Tuesdays" not in ctx
+        memory.recall_shared.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_includes_key_learnings(self) -> None:
@@ -105,14 +111,20 @@ class TestBuildMonthlyContextShared:
         assert "Shipped v1.5" in ctx
 
     @pytest.mark.asyncio
-    async def test_fallback_to_recall_org_shared(self) -> None:
-        """When recall_shared is absent, falls back to recall(__org_shared__)."""
+    async def test_org_shared_tier_is_never_recalled(self) -> None:
+        """The __org_shared__ fallback recall is gone — no call to the
+        shared tier is made for any agent (isolation)."""
         memory = _make_memory_without_shared()
 
-        # The fallback calls memory.recall("__org_shared__", ...)
         ctx = await build_monthly_context("agent-1", memory)
-        # Should not crash; recall is called for both agent and __org_shared__
         assert "Monthly Planning" in ctx
+        assert "Org Knowledge" not in ctx
+        # recall is only ever called for this agent's own memory, never
+        # for the shared tier.
+        for call in memory.recall.call_args_list:
+            args = call.args
+            if args:
+                assert args[0] != "__org_shared__"
 
     @pytest.mark.asyncio
     async def test_memory_error_is_swallowed(self) -> None:

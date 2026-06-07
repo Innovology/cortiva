@@ -187,19 +187,13 @@ async def build_monthly_context(
     except Exception:
         pass
 
-    # Shared org knowledge
-    try:
-        if hasattr(memory, "recall_shared"):
-            shared = await memory.recall_shared(limit=5, min_importance=6.0)
-        else:
-            shared = await memory.recall("__org_shared__", limit=5, min_importance=6.0)
-        if shared:
-            shared_lines = [f"- {m.content[:100]}" for m in shared]
-            sections.append(
-                "### Org Knowledge\n" + "\n".join(shared_lines) + "\n"
-            )
-    except Exception:
-        pass
+    # Shared org knowledge — INTENTIONALLY DISABLED (founder directive
+    # 2026-06-07: "kill the shared memory, keep them isolated"). Injecting
+    # the org-shared tier here was pulling one agent's theme into every
+    # other agent's monthly plan, collapsing distinct roles into a single
+    # monoculture. Agents now plan from their own identity + their own
+    # memory only. Reintroduce solely as company broadcasts/events if/when
+    # that tier is rebuilt — never anything that reshapes a personality.
 
     return "\n".join(sections)
 

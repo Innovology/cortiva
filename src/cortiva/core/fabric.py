@@ -1132,17 +1132,22 @@ class Fabric:
                     assignment_id=completed.id, outcome=completed.outcome,
                 )
 
-        # Process shared learning (org-wide knowledge)
+        # Process shared learning.
+        #
+        # ISOLATION (founder directive 2026-06-07): the org-shared memory
+        # tier is OFF. Cross-agent knowledge sharing was injecting a single
+        # theme into every agent's planning context and collapsing the org
+        # into a monoculture. Until shared memory is reintroduced strictly
+        # as company broadcasts/events (never anything that reshapes a
+        # personality), an agent's "shared_learning" is kept as that
+        # agent's OWN private memory — the learning isn't lost, but it never
+        # leaves the agent who learned it. No write to __org_shared__.
         if suffix.shared_learning:
             await self.memory.store(
-                agent_id="__org_shared__",
+                agent_id=agent.id,
                 content=suffix.shared_learning,
-                tags=["shared", "learning", f"author:{agent.id}"],
+                tags=["learning", f"author:{agent.id}"],
                 importance=7.0,
-            )
-            self._emit(
-                "shared_memory.stored", agent_id=agent.id,
-                content=suffix.shared_learning[:100],
             )
 
         # Process self-scheduling requests

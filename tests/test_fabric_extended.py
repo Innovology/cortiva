@@ -220,13 +220,23 @@ class TestProcessReflection:
         assert len(pending) >= 1
 
     @pytest.mark.asyncio
-    async def test_shared_learning_stored(self, tmp_path: Path) -> None:
+    async def test_shared_learning_stays_private(self, tmp_path: Path) -> None:
+        """Isolation (founder directive 2026-06-07): a 'shared_learning'
+        is kept as the agent's OWN private memory and never written to the
+        org-shared tier, so it cannot bleed into other agents' plans."""
         fabric, agent, task = self._setup(tmp_path)
         suffix = ReflectionSuffix(shared_learning="Always validate inputs")
         await fabric._process_reflection(agent, task, suffix)
 
-        shared = await fabric.memory.recall("__org_shared__", limit=5, min_importance=6.0)
-        assert any("validate inputs" in m.content for m in shared)
+        # Nothing in the shared tier.
+        shared = await fabric.memory.recall(
+            "__org_shared__", limit=5, min_importance=6.0,
+        )
+        assert not any("validate inputs" in m.content for m in shared)
+
+        # It's in the agent's own memory instead.
+        own = await fabric.memory.recall(agent.id, limit=5, min_importance=6.0)
+        assert any("validate inputs" in m.content for m in own)
 
     @pytest.mark.asyncio
     async def test_schedule_request(self, tmp_path: Path) -> None:
