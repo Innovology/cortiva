@@ -647,3 +647,39 @@ class TestToolCallExecutionPath:
             "tool_call did not apply the rota"
         note = tmp_path / "agents" / "coo" / "today" / "schedule_optimization.md"
         assert note.exists() and "Applied:** True" in note.read_text()
+
+
+class TestScheduleDebounce:
+    def _org(self, tmp_path):
+        fabric = _make_fabric(tmp_path)
+        ad = tmp_path / "agents"
+        _write_deploy(ad, "coo", name="M", department="ops", reports_to="ceo")
+        _write_deploy(ad, "ceo", name="Mn", department="exec", reports_to="human")
+        for i in range(4):
+            _write_deploy(ad, f"d{i}", name=f"D{i}", department="eng", reports_to="coo")
+        fabric.discover_agents()
+        return fabric
+
+    @pytest.mark.asyncio
+    async def test_second_identical_run_is_debounced(self, tmp_path: Path) -> None:
+        fabric = self._org(tmp_path)
+        coo = fabric.get_agent("coo")
+        await fabric._run_schedule_optimization(coo, {"capacity_ceiling": 200})
+        note1 = (tmp_path / "agents" / "coo" / "today" / "schedule_optimization.md").read_text()
+        assert "Applied:** True" in note1
+        assert (tmp_path / "agents" / ".schedule_state.json").exists()
+
+        # Identical inputs → debounced (no re-apply).
+        await fabric._run_schedule_optimization(coo, {"capacity_ceiling": 200})
+        note2 = (tmp_path / "agents" / "coo" / "today" / "schedule_optimization.md").read_text()
+        assert "debounced" in note2.lower() or "Applied:** False" in note2
+
+    @pytest.mark.asyncio
+    async def test_changed_weights_reapply(self, tmp_path: Path) -> None:
+        fabric = self._org(tmp_path)
+        coo = fabric.get_agent("coo")
+        await fabric._run_schedule_optimization(coo, {"capacity_ceiling": 200})
+        # Different ceiling = material change → applies again.
+        await fabric._run_schedule_optimization(coo, {"capacity_ceiling": 150})
+        note = (tmp_path / "agents" / "coo" / "today" / "schedule_optimization.md").read_text()
+        assert "Applied:** True" in note

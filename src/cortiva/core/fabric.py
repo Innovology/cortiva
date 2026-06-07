@@ -1227,6 +1227,40 @@ class Fabric:
             logger.debug("Could not gather timesheet signals", exc_info=True)
         return Signals(overtime_hours=overtime)
 
+    def _schedule_inputs_fingerprint(
+        self, specs: list[Any], signals: Any, constraints: Any, objectives: Any,
+    ) -> str:
+        """Stable hash of everything that determines the rota.
+
+        Two runs with the same fingerprint produce the same schedule, so a
+        re-apply would be a no-op churn — the debounce skips it.
+        """
+        import hashlib
+        import json
+
+        payload = {
+            "agents": sorted(
+                (s.agent_id, s.role_type.value, s.manager or "",
+                 tuple(sorted(s.reports)), s.budget_hours, s.preferred_start)
+                for s in specs
+            ),
+            "overtime": sorted(signals.overtime_hours.items()),
+            "blocked": sorted(signals.blocked_wait_hours.items()),
+            "saturation": sorted(signals.infra_saturation.items()),
+            "constraints": [
+                constraints.day_start_h, constraints.day_end_h,
+                constraints.capacity_ceiling, constraints.slot_minutes,
+                constraints.manager_windows, constraints.manager_window_len_h,
+                constraints.ic_block_len_h,
+            ],
+            "objectives": [
+                objectives.w_peak, objectives.w_blocked, objectives.w_overtime,
+                objectives.w_spread, objectives.w_preference,
+            ],
+        }
+        blob = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
     def apply_schedule_proposal(self, proposal: Any) -> dict[str, Any]:
         """Apply a feasible schedule proposal to the live scheduler + disk.
 
@@ -1303,7 +1337,43 @@ class Fabric:
             apply = bool(spec.get("apply", True))
             applied: dict[str, Any] = {"applied": False, "reason": "dry-run"}
             if apply:
-                applied = self.apply_schedule_proposal(proposal)
+                # Debounce: the optimiser is deterministic, so re-applying on
+                # unchanged inputs (same workforce + signals + weights) just
+                # re-installs the identical rota and churns. Only apply when
+                # something material has actually changed since the last run.
+                import json as _json
+
+                fingerprint = self._schedule_inputs_fingerprint(
+                    specs, signals, constraints, objectives,
+                )
+                state_path = self.agents_dir / ".schedule_state.json"
+                last_fp = None
+                try:
+                    if state_path.exists():
+                        last_fp = _json.loads(
+                            state_path.read_text(encoding="utf-8")
+                        ).get("fingerprint")
+                except (OSError, ValueError):
+                    pass
+
+                already_applied = (self.agents_dir / ".schedules.json").exists()
+                if fingerprint == last_fp and already_applied:
+                    applied = {"applied": False,
+                               "reason": "no material change — debounced"}
+                    logger.info(
+                        "Agent %s rota inputs unchanged since last run — "
+                        "skipping re-apply (debounce).", agent.id,
+                    )
+                else:
+                    applied = self.apply_schedule_proposal(proposal)
+                    if applied.get("applied"):
+                        try:
+                            state_path.write_text(
+                                _json.dumps({"fingerprint": fingerprint}),
+                                encoding="utf-8",
+                            )
+                        except OSError:
+                            pass
 
             # Record the run as a reviewable artifact + memory.
             note = (
