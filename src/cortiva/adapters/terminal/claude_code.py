@@ -42,6 +42,16 @@ class ClaudeCodeAdapter:
         if allowed_tools:
             for tool in allowed_tools:
                 cmd.extend(["--allowedTools", tool])
+        else:
+            # Policy semantics: allowed_tools=None means "no
+            # restrictions" (ToolPolicy.effective_allowed). Headless
+            # claude is the OPPOSITE — with no flags every tool call
+            # returns "This command requires approval" and the agent
+            # can't touch the world (this blocked the CPO's first
+            # GitHub audit, 2026-06-07). Translate faithfully: an
+            # unrestricted policy grants full permission inside the
+            # agent's own workspace.
+            cmd.append("--dangerously-skip-permissions")
         if max_turns is not None:
             cmd.extend(["--max-turns", str(max_turns)])
 

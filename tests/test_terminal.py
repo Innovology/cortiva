@@ -202,3 +202,57 @@ class TestAiderAdapter:
         assert adapter._timeout == 120.0
         assert adapter._model == "gpt-4o"
         assert adapter._auto_commits is True
+
+
+class TestPermissionTranslation:
+    """ToolPolicy 'None = unrestricted' must reach headless claude as
+    actual permission — with no flags, claude -p denies every tool
+    ('This command requires approval') and agents can't act."""
+
+    @pytest.mark.asyncio
+    async def test_unrestricted_policy_skips_permission_gate(
+        self, tmp_path: Path,
+    ) -> None:
+        adapter = ClaudeCodeAdapter()
+        captured: dict = {}
+
+        async def fake_exec(*cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+
+            class _P:
+                returncode = 0
+
+                async def communicate(self):
+                    return (b'{"result": "ok"}', b"")
+
+            return _P()
+
+        with patch("asyncio.create_subprocess_exec", fake_exec):
+            await adapter.invoke("do work", tmp_path, allowed_tools=None)
+        assert "--dangerously-skip-permissions" in captured["cmd"]
+        assert "--allowedTools" not in captured["cmd"]
+
+    @pytest.mark.asyncio
+    async def test_restricted_policy_uses_allowed_tools(
+        self, tmp_path: Path,
+    ) -> None:
+        adapter = ClaudeCodeAdapter()
+        captured: dict = {}
+
+        async def fake_exec(*cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+
+            class _P:
+                returncode = 0
+
+                async def communicate(self):
+                    return (b'{"result": "ok"}', b"")
+
+            return _P()
+
+        with patch("asyncio.create_subprocess_exec", fake_exec):
+            await adapter.invoke(
+                "do work", tmp_path, allowed_tools=["Read", "Grep"],
+            )
+        assert "--dangerously-skip-permissions" not in captured["cmd"]
+        assert captured["cmd"].count("--allowedTools") == 2
