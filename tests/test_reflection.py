@@ -248,3 +248,27 @@ class TestFabricReflectionIntegration:
         done_tasks = [t for t in agent.task_queue.tasks if t.status == "done"]
         assert len(done_tasks) == 1
         assert "[worker-01] Completed task successfully." in done_tasks[0].outcome
+
+
+def test_deep_think_field_parsed():
+    """The agent requests frontier reasoning / a second opinion via a
+    deep_think field in the reflection suffix."""
+    from cortiva.core.reflection import parse_reflection_suffix
+
+    text = (
+        "Done.\n---REFLECTION---\n"
+        '{"outcome": "drafted", '
+        '"deep_think": "Argue against retiring Navida. What am I missing?"}'
+    )
+    result = parse_reflection_suffix(text)
+    assert result.suffix is not None
+    assert result.suffix.deep_think.startswith("Argue against")
+
+
+def test_deep_think_absent_is_none():
+    from cortiva.core.reflection import parse_reflection_suffix
+
+    result = parse_reflection_suffix(
+        'x\n---REFLECTION---\n{"outcome": "ok"}'
+    )
+    assert result.suffix.deep_think is None

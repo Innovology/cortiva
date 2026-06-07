@@ -875,6 +875,60 @@ class Fabric:
             importance=5.0 + task.priority,
         )
 
+    async def _run_deep_think(
+        self, agent: Agent, task: Task, question: str,
+    ) -> None:
+        """Subshell to the claude CLI for frontier reasoning, store the
+        answer as a high-importance memory + today/deep_think.md.
+
+        Runs in a thread (the wrapper is blocking subprocess). Never
+        raises into the cycle — budget denial, missing binary, or
+        timeout all degrade to a logged no-op.
+        """
+        if self.budget_manager:
+            approval = self.budget_manager.request_budget(agent.id, "high")
+            if not approval.approved:
+                logger.info(
+                    "Agent %s deep_think denied — budget exhausted", agent.id,
+                )
+                return
+        try:
+            from cortiva.skills.claude_code_deep_think.wrapper import (
+                deep_think,
+            )
+
+            result = await asyncio.to_thread(deep_think, question)
+        except Exception as exc:
+            logger.warning(
+                "Agent %s deep_think failed: %s", agent.id, exc,
+            )
+            return
+
+        logger.info(
+            "Agent %s deep_think (%.1fs, ~£%.4f) on: %s",
+            agent.id, result.duration_s, result.estimated_cost_gbp,
+            question[:80],
+        )
+        # Fold the second opinion into memory so it shapes future
+        # cycles, and leave it in today/ for the current arc.
+        await self.memory.store(
+            agent_id=agent.id,
+            content=(
+                f"Deep-think second opinion on '{question[:120]}':\n"
+                f"{result.text}"
+            ),
+            tags=["deep_think", "second_opinion", "reflection"],
+            importance=8.5,
+        )
+        try:
+            note = (
+                f"## Deep-think — {task.description[:80]}\n\n"
+                f"**Question:** {question}\n\n{result.text}\n"
+            )
+            agent.write_today("deep_think.md", note)
+        except Exception:
+            logger.debug("Could not write deep_think.md", exc_info=True)
+
     async def _process_reflection(
         self, agent: Agent, task: Task, suffix: ReflectionSuffix
     ) -> None:
@@ -900,6 +954,15 @@ class Fabric:
             current = agent.read_identity("procedures")
             updated = current.rstrip() + "\n\n" + suffix.procedure_update + "\n"
             agent.write_identity("procedures", updated)
+
+        # Deep think — frontier-model help on a hard question or a
+        # second opinion on the agent's own conclusion. The local model
+        # decides it needs this and emits `deep_think` in its suffix; we
+        # subshell to the claude CLI and fold the answer back into
+        # memory so it shapes subsequent cycles. Budget-gated and never
+        # fatal — a failed deep-think must not break the task.
+        if suffix.deep_think:
+            await self._run_deep_think(agent, task, suffix.deep_think)
 
         # Send inter-agent messages via channel adapter and persist to outbox
         if suffix.messages:

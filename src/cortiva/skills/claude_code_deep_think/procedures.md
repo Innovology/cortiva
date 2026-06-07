@@ -28,12 +28,26 @@ reliable enough to handle alone.
 
 ### How to invoke
 
-Call the tool `claude_code_deep_think.think` with:
+Add a `deep_think` field to your `---REFLECTION---` suffix — the
+question or conclusion you want frontier help with, full context
+inline. The runtime subshells to the stronger model and folds the
+answer back into your memory, where it surfaces next cycle.
 
-- `prompt`: the full question or task, with all relevant context inline.
-  Long prompts are fine and often necessary.
-- `rationale`: one short sentence on why this requires the deeper model
-  instead of your local reasoning. Logged for cost-justification review.
+```
+---REFLECTION---
+{
+  "outcome": "...",
+  "deep_think": "I've concluded we should retire the Navida line.
+    Before I file that: argue the strongest case AGAINST retiring it,
+    given <inline context>. What am I missing?"
+}
+```
+
+Use it both ways: for reasoning the local model can't finish, and — as
+above — for a **second opinion that argues against your own
+conclusion** before you commit. The answer returns as a high-importance
+memory tagged `deep_think`; read it next cycle and decide. It is not an
+oracle — you remain the decision-maker.
 
 ### Budget discipline
 

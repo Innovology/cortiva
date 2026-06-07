@@ -38,6 +38,12 @@ class ReflectionSuffix:
     """Knowledge to write to the org-wide shared memory tier."""
     schedule: dict[str, Any] = field(default_factory=dict)
     """Self-scheduling requests: overtime, early sleep, alarms, reminders."""
+    deep_think: str | None = None
+    """A question the agent wants frontier-model help with — hard
+    reasoning it can't resolve on the local model, or a second opinion
+    on its own conclusion. The runtime subshells to the ``claude`` CLI
+    (claude_code_deep_think skill) and feeds the answer back into the
+    agent's memory. Budget-gated; this is the expensive path."""
 
 
 @dataclass
@@ -93,6 +99,7 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         complete_assignment=data.get("complete_assignment"),
         shared_learning=data.get("shared_learning"),
         schedule=data.get("schedule") or {},
+        deep_think=data.get("deep_think"),
     )
 
     return ReflectionResult(clean_content=clean_content, suffix=suffix)

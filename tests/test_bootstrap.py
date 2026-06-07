@@ -593,3 +593,78 @@ class TestTerminalBeforeRoutineGate:
         assert task.status == "exception"
         assert task.error == "Routine deferred task"
         terminal.invoke.assert_not_called()
+
+
+class TestDeepThinkWiring:
+    """When the agent emits deep_think in its reflection suffix, fabric
+    must actually subshell to the frontier model and fold the answer
+    into memory — the wrapper was orphaned (nothing called it) until
+    2026-06-07."""
+
+    @pytest.mark.asyncio
+    async def test_deep_think_suffix_runs_and_stores(self, tmp_path, monkeypatch):
+        from cortiva.adapters.memory.inmemory import InMemoryAdapter
+        from cortiva.core.fabric import Fabric
+        from cortiva.core.agent import Task
+        from cortiva.core.reflection import ReflectionSuffix
+
+        memory = InMemoryAdapter()
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=memory,
+            consciousness=AsyncMock(),
+        )
+        agent = fabric.register_agent("cpo")
+
+        called = {}
+
+        class _Result:
+            text = "The case against: switching cost, sunk lock-in."
+            raw_stdout = ""
+            estimated_cost_gbp = 0.4
+            duration_s = 12.0
+
+        def fake_deep_think(prompt, **kw):
+            called["prompt"] = prompt
+            return _Result()
+
+        import cortiva.skills.claude_code_deep_think.wrapper as w
+        monkeypatch.setattr(w, "deep_think", fake_deep_think)
+
+        suffix = ReflectionSuffix(
+            deep_think="Argue against retiring Navida. What am I missing?",
+        )
+        await fabric._process_reflection(
+            agent, Task(id="t1", description="Retirement review"), suffix,
+        )
+
+        assert "Argue against" in called["prompt"]
+        mems = await memory.recall("cpo")
+        assert any("second opinion" in getattr(m, "content", "").lower() for m in mems)
+        assert (agent.directory / "today" / "deep_think.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_deep_think_failure_never_breaks_cycle(self, tmp_path, monkeypatch):
+        from cortiva.adapters.memory.inmemory import InMemoryAdapter
+        from cortiva.core.fabric import Fabric
+        from cortiva.core.agent import Task
+        from cortiva.core.reflection import ReflectionSuffix
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=AsyncMock(),
+        )
+        agent = fabric.register_agent("cpo")
+
+        def boom(prompt, **kw):
+            raise RuntimeError("claude not found")
+
+        import cortiva.skills.claude_code_deep_think.wrapper as w
+        monkeypatch.setattr(w, "deep_think", boom)
+
+        # Must not raise
+        await fabric._process_reflection(
+            agent, Task(id="t1", description="x"),
+            ReflectionSuffix(deep_think="hard question"),
+        )
