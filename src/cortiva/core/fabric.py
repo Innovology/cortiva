@@ -968,6 +968,25 @@ class Fabric:
             f"Execute this task: {task.description}\n\n"
             "Describe what you did and the outcome."
         )
+        if _is_sched_action:
+            # The optimiser only runs if the agent emits the structured
+            # action. Local models tend to narrate instead, so make the
+            # contract explicit with the exact format right where the
+            # response is produced (the runtime guarantees feasibility and
+            # only applies it if this agent is authorised).
+            prompt += (
+                "\n\nThis is a scheduling action. The optimiser ONLY runs if "
+                "you end your response with a reflection suffix containing an "
+                "`optimize_schedule` object — narrating it does nothing. Emit "
+                "exactly:\n"
+                "---REFLECTION---\n"
+                '{"optimize_schedule": {"capacity_ceiling": 130, '
+                '"w_overtime": 1.5, "w_blocked": 2.0, "w_spread": 0.5, '
+                '"apply": true}}\n'
+                "Set the weights to fit the signals you reviewed (raise "
+                "w_blocked to protect oversight, w_overtime to relieve "
+                "overworked agents). Use \"apply\": false for a dry-run."
+            )
 
         response = await self.consciousness.think(
             agent_id=agent.id,
