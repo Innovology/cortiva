@@ -682,7 +682,12 @@ class Fabric:
             )
             resp = await self.consciousness.think(
                 agent_id=agent.id, context=context, prompt=prompt,
-                priority=Priority.NORMAL, max_tokens=300,
+                priority=Priority.NORMAL,
+                # Qwen3.6 is a reasoning model — a small budget is consumed
+                # entirely by hidden <think> and returns empty visible
+                # content (finish_reason=length). Give room to think AND
+                # write the short reflection.
+                max_tokens=1200,
                 metadata={"call_type": "reflect"},
             )
             agent.spend_consciousness()  # account for the call (non-blocking)
