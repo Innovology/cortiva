@@ -194,12 +194,6 @@ class Fabric:
         self.capacity_tracker = CapacityTracker()
         self.policy_manager = PolicyManager()
         self.hook_router = HookRouter()
-        # Email is checked on a regular cadence while an agent works (not
-        # just at wake), and never reacted to per-message — agents glance at
-        # the inbox like a person does and triage. Tracks last check per
-        # agent (monotonic seconds).
-        self._last_inbox_check: dict[str, float] = {}
-        self._inbox_check_interval_s: float = 1800.0  # ~30 min
         self.plugin_manager = PluginManager()
         self.reactive_engine = ReactiveEngine()
         self.encryption_vault: Any = None  # EncryptionVault or None
@@ -607,9 +601,6 @@ class Fabric:
         email_ctx = self._email_inbox_context(agent)
         if email_ctx:
             context = context + "\n\n---\n\n" + email_ctx
-        # Reset the in-session check clock — wake just read the inbox.
-        import time as _time
-        self._last_inbox_check[agent_id] = _time.monotonic()
 
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent_id, context)
@@ -1158,17 +1149,14 @@ class Fabric:
         if session_context:
             context = context + "\n\n---\n\n" + session_context
 
-        # Check email on a regular cadence while working — like a person
-        # glancing at their inbox a few times a day, not reacting to each
-        # message. Surfaces any new mail for triage; never wakes or forces.
-        import time as _time
-
-        now = _time.monotonic()
-        if now - self._last_inbox_check.get(agent.id, 0.0) >= self._inbox_check_interval_s:
-            self._last_inbox_check[agent.id] = now
-            inbox_ctx = self._email_inbox_context(agent)
-            if inbox_ctx:
-                context = context + "\n\n---\n\n" + inbox_ctx
+        # If new mail landed while she's working (and only while working —
+        # this runs in the cycle, i.e. when awake), surface it as a
+        # NOTIFICATION, once per message. She chooses what to do: read it
+        # fully, defer, or ignore. It never wakes her and never forces a
+        # reaction.
+        inbox_ctx = self._email_inbox_context(agent)
+        if inbox_ctx:
+            context = context + "\n\n---\n\n" + inbox_ctx
 
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent.id, context)
@@ -1967,17 +1955,17 @@ class Fabric:
         if not items:
             return ""
         lines = [
-            "## Email Inbox\n",
-            "New email addressed to you — factor it into your work. Route "
-            "anything you'd escalate through your manager first. (Replying "
-            "by email is being enabled; for now, act on the content and "
-            "raise anything needing a response with your manager.)\n",
+            "## 📧 New Mail — notification\n",
+            f"{len(items)} new email(s) have landed. This is a heads-up, not "
+            "a demand: read fully, defer to later, or ignore as you judge "
+            "best — you decide what (if anything) it's worth. Route anything "
+            "you'd escalate through your manager first.\n",
         ]
         for m in items[:10]:
+            snippet = (m.get("text") or "").strip().replace("\n", " ")[:200]
             lines.append(
-                f"- **From:** {m.get('from', '')}  \n"
-                f"  **Subject:** {m.get('subject', '')}  \n"
-                f"  {(m.get('text') or '').strip()[:800]}"
+                f"- **{m.get('from', '')}** — {m.get('subject', '')}  \n"
+                f"  {snippet}"
             )
         return "\n".join(lines)
 

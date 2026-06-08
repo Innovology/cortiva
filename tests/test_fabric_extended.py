@@ -820,7 +820,7 @@ class TestEmailInboxContext:
         }), encoding="utf-8")
 
         ctx = fabric._email_inbox_context(agent)
-        assert "Email Inbox" in ctx
+        assert "New Mail" in ctx or "notification" in ctx.lower()
         assert "Welcome to the team" in ctx
         assert "alexander.browne@innovology.io" in ctx
         # consumed: moved to read/, not re-surfaced next time
