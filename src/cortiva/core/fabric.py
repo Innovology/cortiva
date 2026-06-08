@@ -598,6 +598,9 @@ class Fabric:
         self.hook_router.pending_for(agent_id)
 
         # Inject the agent's email inbox (delivered by the node from HQ).
+        cap_ctx = self._email_capability_context(agent)
+        if cap_ctx:
+            context = context + "\n\n---\n\n" + cap_ctx
         email_ctx = self._email_inbox_context(agent)
         if email_ctx:
             context = context + "\n\n---\n\n" + email_ctx
@@ -1657,6 +1660,12 @@ class Fabric:
         if suffix.optimize_schedule is not None:
             await self._run_schedule_optimization(agent, suffix.optimize_schedule)
 
+        # Queue an outbound email — the node sends it via Resend as this
+        # agent's own address. Written to outbox/email/ as a durable record;
+        # the node picks it up, adds the from address, and sends.
+        if suffix.email and isinstance(suffix.email, dict):
+            self._queue_outbound_email(agent, suffix.email)
+
         # Send inter-agent messages via channel adapter and persist to outbox
         if suffix.messages:
             import json as _json
@@ -1968,6 +1977,94 @@ class Fabric:
                 f"  {snippet}"
             )
         return "\n".join(lines)
+
+    def _email_meta(self) -> dict:
+        """Node-delivered email config: domain + human contacts. Written by
+        the node from HQ's email.config; read here to tell agents their
+        address and who they can write to. Empty if email isn't configured."""
+        import json
+
+        path = self.agents_dir / ".email_meta.json"
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return {}
+
+    def _email_capability_context(self, agent: Agent) -> str:
+        """Standing email context injected each wake (if email is set up):
+        the agent's own address, how to send, the human contacts, and the
+        manager-first norm. Lets agents email proactively, not only reply."""
+        meta = self._email_meta()
+        domain = meta.get("domain")
+        if not domain:
+            return ""
+        first = self._agent_first_name(agent)
+        own = f"{first}@{domain}" if first else f"(your handle)@{domain}"
+        lines = [
+            "## Email\n",
+            f"Your email address is **{own}**. To send or reply, add an "
+            "`email` object to your reflection: "
+            '{"to": "<address>", "subject": "...", "body": "...", '
+            '"in_reply_to": "<message_id, optional>"}. You can email '
+            "colleagues at `<first-name>@" + domain + "` and external "
+            "addresses. Send only when it's genuinely useful.",
+        ]
+        contacts = meta.get("contacts") or []
+        if contacts:
+            cline = "; ".join(
+                f"{c.get('address')} ({c.get('scope', '')})" for c in contacts
+            )
+            lines.append(
+                f"\n**Reaching a human founder:** {cline}. Ask your manager "
+                "first — only go to a founder when it's genuinely warranted, "
+                "and match the contact to the matter (day-to-day vs board-level)."
+            )
+        return "\n".join(lines)
+
+    def _agent_first_name(self, agent: Agent) -> str:
+        """The agent's persona first name (lowercased) = their email handle."""
+        import yaml
+
+        deploy = agent.directory / "deploy.yaml"
+        if deploy.exists():
+            try:
+                spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
+                        or {}).get("agent", {}) or {}
+                name = (spec.get("name") or "").strip()
+                if name:
+                    return name.split()[0].lower()
+            except Exception:
+                pass
+        return ""
+
+    def _queue_outbound_email(self, agent: Agent, spec: dict) -> None:
+        """Queue an outbound email to the agent's outbox for the node to send."""
+        import json
+        import uuid
+        from datetime import UTC, datetime
+
+        to = spec.get("to")
+        body = spec.get("body") or spec.get("text") or ""
+        if not to or not body:
+            logger.info("Agent %s email had no recipient/body — ignored.", agent.id)
+            return
+        outbox = agent.directory / "outbox" / "email"
+        try:
+            outbox.mkdir(parents=True, exist_ok=True)
+            mid = uuid.uuid4().hex
+            (outbox / f"{mid}.json").write_text(json.dumps({
+                "to": to,
+                "subject": spec.get("subject", ""),
+                "body": body,
+                "in_reply_to": spec.get("in_reply_to"),
+                "queued_at": datetime.now(UTC).isoformat(),
+            }, ensure_ascii=False), encoding="utf-8")
+            logger.info("Agent %s queued email to %s: %s", agent.id, to, spec.get("subject"))
+            self._emit("email.queued", agent_id=agent.id, to=to)
+        except OSError:
+            logger.warning("Could not queue outbound email for %s", agent.id)
 
     def _goals_context(self, agent_id: str) -> str:
         """Build goals context for planning, if GoalManager is available."""

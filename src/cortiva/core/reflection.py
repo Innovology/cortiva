@@ -49,6 +49,12 @@ class ReflectionSuffix:
     "department": ..., "justification": ...}``. Only honoured for
     agents with hiring authority (the CEO commands, the COO provisions).
     The runtime generates the new colleague and boots them."""
+    email: dict[str, Any] | None = None
+    """A request to SEND an email: ``{"to": "<address>", "subject": "...",
+    "body": "...", "in_reply_to": "<message_id>"}``. The runtime queues it
+    to the agent's outbox; the node sends it via Resend as the agent's own
+    ``<first-name>@<workforce-domain>`` address. Used to reply to received
+    mail, email a colleague, or email a founder (manager first)."""
     optimize_schedule: dict[str, Any] | None = None
     """A request to run the workforce rota optimiser and apply the result.
     Only honoured for agents with scheduling authority (the AR Scheduler /
@@ -115,6 +121,7 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         schedule=data.get("schedule") or {},
         deep_think=data.get("deep_think"),
         hire=data.get("hire") if isinstance(data.get("hire"), dict) else None,
+        email=data.get("email") if isinstance(data.get("email"), dict) else None,
         optimize_schedule=(
             data.get("optimize_schedule")
             if isinstance(data.get("optimize_schedule"), dict)
