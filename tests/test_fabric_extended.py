@@ -804,3 +804,31 @@ class TestOrphanedSessionReconcile:
         assert all(e.sleep_time is not None for e in today.entries), "session left open"
         journal = agent.journal_path().read_text()
         assert "restart" in journal.lower() and "pre-sleep reflection" in journal.lower()
+
+
+class TestEmailInboxContext:
+    def test_inbox_injected_and_marked_read(self, tmp_path: Path) -> None:
+        import json
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("ceo", consciousness_budget=10)
+        inbox = agent.directory / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "m1.json").write_text(json.dumps({
+            "from": "alexander.browne@innovology.io",
+            "subject": "Welcome to the team",
+            "text": "Glad to have you, Maren.",
+        }), encoding="utf-8")
+
+        ctx = fabric._email_inbox_context(agent)
+        assert "Email Inbox" in ctx
+        assert "Welcome to the team" in ctx
+        assert "alexander.browne@innovology.io" in ctx
+        # consumed: moved to read/, not re-surfaced next time
+        assert not (inbox / "m1.json").exists()
+        assert (inbox / "read" / "m1.json").exists()
+        assert fabric._email_inbox_context(agent) == ""
+
+    def test_no_inbox_is_empty(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("x", consciousness_budget=10)
+        assert fabric._email_inbox_context(agent) == ""

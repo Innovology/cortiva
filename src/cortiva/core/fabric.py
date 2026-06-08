@@ -597,6 +597,11 @@ class Fabric:
         # Consume the hooks (they've been injected into the plan context)
         self.hook_router.pending_for(agent_id)
 
+        # Inject the agent's email inbox (delivered by the node from HQ).
+        email_ctx = self._email_inbox_context(agent)
+        if email_ctx:
+            context = context + "\n\n---\n\n" + email_ctx
+
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent_id, context)
 
@@ -1910,6 +1915,50 @@ class Fabric:
             on_success(response.content)
 
         return response.content
+
+    def _email_inbox_context(self, agent: Agent) -> str:
+        """Read the agent's delivered email inbox and render it for the wake
+        context, then move read mail aside so it surfaces only once.
+
+        The node drops inbound mail (from HQ/Resend) as JSON files in
+        ``<agent>/inbox/``. Replies go out via the email reflection action.
+        """
+        import json
+
+        inbox = agent.directory / "inbox"
+        if not inbox.is_dir():
+            return ""
+        files = sorted(p for p in inbox.glob("*.json") if p.is_file())
+        if not files:
+            return ""
+        read_dir = inbox / "read"
+        items: list[dict] = []
+        for p in files:
+            try:
+                items.append(json.loads(p.read_text(encoding="utf-8")))
+            except (ValueError, OSError):
+                continue
+            try:
+                read_dir.mkdir(exist_ok=True)
+                p.rename(read_dir / p.name)
+            except OSError:
+                pass
+        if not items:
+            return ""
+        lines = [
+            "## Email Inbox\n",
+            "New email addressed to you — factor it into your work. Route "
+            "anything you'd escalate through your manager first. (Replying "
+            "by email is being enabled; for now, act on the content and "
+            "raise anything needing a response with your manager.)\n",
+        ]
+        for m in items[:10]:
+            lines.append(
+                f"- **From:** {m.get('from', '')}  \n"
+                f"  **Subject:** {m.get('subject', '')}  \n"
+                f"  {(m.get('text') or '').strip()[:800]}"
+            )
+        return "\n".join(lines)
 
     def _goals_context(self, agent_id: str) -> str:
         """Build goals context for planning, if GoalManager is available."""
