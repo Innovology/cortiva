@@ -68,6 +68,52 @@ class OpenAICompatibleAdapter:
         self._per_agent_keys = per_agent_keys or {}
         self._clients: dict[str, Any] = {}
         self._default_client: Any = None
+        # Rolling throughput stats for the model behind this adapter — the
+        # "how fast is the local model" signal. EWMA tracks recent speed;
+        # totals give a lifetime average. Read via perf_snapshot().
+        self._perf_calls = 0
+        self._perf_tokens_out_total = 0
+        self._perf_tokens_in_total = 0
+        self._perf_gen_time_total = 0.0  # seconds, summed latency
+        self._perf_ewma_tps = 0.0
+        self._perf_last_tps = 0.0
+
+    def _record_perf(self, tokens_out: int, latency_ms: float) -> None:
+        """Update rolling throughput stats from one completed call."""
+        if latency_ms <= 0 or tokens_out <= 0:
+            return
+        tps = tokens_out / (latency_ms / 1000.0)
+        self._perf_calls += 1
+        self._perf_tokens_out_total += tokens_out
+        self._perf_gen_time_total += latency_ms / 1000.0
+        self._perf_last_tps = tps
+        # EWMA (alpha=0.3) so the figure tracks recent speed without jitter.
+        if self._perf_ewma_tps <= 0:
+            self._perf_ewma_tps = tps
+        else:
+            self._perf_ewma_tps = 0.3 * tps + 0.7 * self._perf_ewma_tps
+
+    def perf_snapshot(self) -> dict[str, Any]:
+        """Throughput stats for the model behind this adapter.
+
+        ``tokens_per_second`` is *effective* generation throughput
+        (completion tokens / total call latency, so it includes prompt
+        processing — an honest lower bound on raw decode speed).
+        """
+        avg_tps = (
+            self._perf_tokens_out_total / self._perf_gen_time_total
+            if self._perf_gen_time_total > 0
+            else 0.0
+        )
+        return {
+            "model": self.model,
+            "tokens_per_second": round(self._perf_ewma_tps, 1),
+            "tokens_per_second_avg": round(avg_tps, 1),
+            "tokens_per_second_last": round(self._perf_last_tps, 1),
+            "calls": self._perf_calls,
+            "tokens_out_total": self._perf_tokens_out_total,
+            "tokens_in_total": self._perf_tokens_in_total,
+        }
 
     def _get_client(self, agent_id: str = "") -> Any:
         """Return a client for the given agent.
@@ -145,11 +191,18 @@ class OpenAICompatibleAdapter:
             create_kwargs["tools"] = tools
             create_kwargs["tool_choice"] = "auto"
 
+        import time
+
+        _start = time.monotonic()
         response = client.chat.completions.create(**create_kwargs)
+        latency_ms = (time.monotonic() - _start) * 1000.0
 
         choice = response.choices[0]
         content = choice.message.content or ""
         usage = response.usage
+        if usage:
+            self._perf_tokens_in_total += usage.prompt_tokens or 0
+            self._record_perf(usage.completion_tokens or 0, latency_ms)
 
         tool_calls: list[dict[str, Any]] = []
         raw_calls = getattr(choice.message, "tool_calls", None) or []
@@ -168,6 +221,7 @@ class OpenAICompatibleAdapter:
             content=content,
             tokens_in=usage.prompt_tokens if usage else 0,
             tokens_out=usage.completion_tokens if usage else 0,
+            latency_ms=latency_ms,
             model=self.model,
             metadata={"agent_id": agent_id, "priority": priority.value},
             tool_calls=tool_calls,

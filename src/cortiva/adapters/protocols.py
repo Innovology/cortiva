@@ -59,6 +59,9 @@ class ConsciousResponse:
     reflection: str | None = None
     tokens_in: int = 0
     tokens_out: int = 0
+    latency_ms: float = 0.0
+    """Wall-clock time for the model call. With tokens_out this yields
+    effective generation throughput (tokens_out / latency)."""
     model: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)

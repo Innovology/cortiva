@@ -604,6 +604,11 @@ class Fabric:
         email_ctx = self._email_inbox_context(agent)
         if email_ctx:
             context = context + "\n\n---\n\n" + email_ctx
+        # Inject the company directory (GAL) so the agent knows who exists
+        # and how to reach them.
+        dir_ctx = self._directory_context(agent)
+        if dir_ctx:
+            context = context + "\n\n---\n\n" + dir_ctx
 
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent_id, context)
@@ -2039,6 +2044,112 @@ class Fabric:
                 pass
         return ""
 
+    # ------------------------------------------------------------------
+    # Global Address List (GAL) — colleague directory for the agent
+    # ------------------------------------------------------------------
+
+    _DIRECTORY_FULL_CAP = 40
+
+    def _load_directory_cards(self) -> list[dict]:
+        """Build a contact card per agent from on-disk deploy.yaml.
+
+        Card: ``{id, name, first, role, department, reports_to, email}``.
+        Email is ``<first>@<domain>`` when the workforce domain is known.
+        This is the same-node directory (the agents this fabric manages);
+        cross-node colleagues are supplemented by HQ at scale.
+        """
+        import yaml
+
+        domain = (self._email_meta().get("domain") or "").strip()
+        cards: list[dict] = []
+        if not self.agents_dir.is_dir():
+            return cards
+        for d in sorted(self.agents_dir.iterdir()):
+            deploy = d / "deploy.yaml"
+            if not deploy.is_file():
+                continue
+            try:
+                spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
+                        or {}).get("agent", {}) or {}
+            except Exception:
+                continue
+            name = (spec.get("name") or "").strip()
+            if not name:
+                continue
+            first = name.split()[0].lower()
+            cards.append({
+                "id": d.name,
+                "name": name,
+                "first": first,
+                "role": (spec.get("role") or "").strip(),
+                "department": (spec.get("department") or "").strip(),
+                "reports_to": (spec.get("reports_to") or "").strip(),
+                "email": f"{first}@{domain}" if domain else "",
+            })
+        return cards
+
+    def _directory_context(self, agent: Agent) -> str:
+        """Render the company directory (GAL) for the agent's context.
+
+        Small orgs get the full directory grouped by department. Large
+        orgs (> cap) get the agent's own department plus their management
+        chain, with a pointer to the searchable portal directory — so the
+        digest stays bounded as the workforce grows to thousands.
+        """
+        cards = self._load_directory_cards()
+        if len(cards) <= 1:
+            return ""
+
+        def _fmt(c: dict) -> str:
+            bits = [c["name"]]
+            meta = ", ".join(x for x in (c.get("role"), c.get("department")) if x)
+            if meta:
+                bits.append(f"({meta})")
+            line = " ".join(bits)
+            return f"- {line}" + (f" — {c['email']}" if c.get("email") else "")
+
+        lines = ["## Company directory (who to reach)\n"]
+
+        if len(cards) <= self._DIRECTORY_FULL_CAP:
+            by_dept: dict[str, list[dict]] = {}
+            for c in cards:
+                by_dept.setdefault(c.get("department") or "Other", []).append(c)
+            for dept in sorted(by_dept):
+                lines.append(f"\n**{dept}**")
+                lines.extend(_fmt(c) for c in by_dept[dept])
+            lines.append(
+                "\nEmail a colleague at their address; route anything you'd "
+                "escalate through your manager first."
+            )
+            return "\n".join(lines)
+
+        # Large org: bounded view — own department + management chain.
+        mine = next((c for c in cards if c["id"] == agent.id), None)
+        my_dept = (mine or {}).get("department") or ""
+        dept_members = [c for c in cards if c.get("department") == my_dept and my_dept]
+        chain_ids = set()
+        cur = agent.id
+        for _ in range(6):  # walk up the reporting line
+            mgr = self.org.manager_of(cur) if self.org else None
+            if not mgr or mgr in chain_ids:
+                break
+            chain_ids.add(mgr)
+            cur = mgr
+        chain = [c for c in cards if c["id"] in chain_ids]
+
+        if dept_members:
+            lines.append(f"\n**Your department — {my_dept}**")
+            lines.extend(_fmt(c) for c in dept_members if c["id"] != agent.id)
+        if chain:
+            lines.append("\n**Your management chain**")
+            lines.extend(_fmt(c) for c in chain)
+        lines.append(
+            f"\n{len(cards)} colleagues total. Search the full directory in the "
+            "portal to find anyone by name, role, or department; route "
+            "escalations through your manager first."
+        )
+        return "\n".join(lines)
+
     def _queue_outbound_email(self, agent: Agent, spec: dict) -> None:
         """Queue an outbound email to the agent's outbox for the node to send."""
         import json
@@ -2309,6 +2420,20 @@ class Fabric:
                 }
                 for aid, s in self.budget_manager.all_status().items()
             }}
+
+        async def _handle_model_perf(**_kw: Any) -> dict[str, Any]:
+            """Throughput of the local consciousness model (tokens/sec).
+
+            The node polls this to surface real generation speed in
+            Canopy. Empty when the adapter doesn't track perf.
+            """
+            snap_fn = getattr(self.consciousness, "perf_snapshot", None)
+            if not callable(snap_fn):
+                return {"ok": True, "perf": {}}
+            try:
+                return {"ok": True, "perf": snap_fn()}
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
 
         async def _handle_shutdown(**_kw: Any) -> dict[str, Any]:
             asyncio.get_event_loop().call_soon(self._request_stop)
@@ -2643,6 +2768,7 @@ class Fabric:
         server.register("agent.cycle", _handle_agent_cycle)
         server.register("agent.move", _handle_agent_move)
         server.register("budget", _handle_budget)
+        server.register("model.perf", _handle_model_perf)
         server.register("discover", _handle_discover)
         server.register("schedule.optimize", _handle_schedule_optimize)
         server.register("cluster.load", _handle_cluster_load)
