@@ -1349,6 +1349,10 @@ class Fabric:
                         "name": persona.name,
                         "role": persona.role,
                         "department": persona.department,
+                        # Persisted so the workforce directory + avatar can
+                        # reflect the persona (the hiring policy already
+                        # decided this; see core/hiring.py).
+                        "gender": persona.gender,
                         "reports_to": agent.id,
                         "hired_by": agent.id,
                     }
