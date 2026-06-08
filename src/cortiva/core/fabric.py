@@ -194,6 +194,12 @@ class Fabric:
         self.capacity_tracker = CapacityTracker()
         self.policy_manager = PolicyManager()
         self.hook_router = HookRouter()
+        # Email is checked on a regular cadence while an agent works (not
+        # just at wake), and never reacted to per-message — agents glance at
+        # the inbox like a person does and triage. Tracks last check per
+        # agent (monotonic seconds).
+        self._last_inbox_check: dict[str, float] = {}
+        self._inbox_check_interval_s: float = 1800.0  # ~30 min
         self.plugin_manager = PluginManager()
         self.reactive_engine = ReactiveEngine()
         self.encryption_vault: Any = None  # EncryptionVault or None
@@ -601,6 +607,9 @@ class Fabric:
         email_ctx = self._email_inbox_context(agent)
         if email_ctx:
             context = context + "\n\n---\n\n" + email_ctx
+        # Reset the in-session check clock — wake just read the inbox.
+        import time as _time
+        self._last_inbox_check[agent_id] = _time.monotonic()
 
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent_id, context)
@@ -1148,6 +1157,18 @@ class Fabric:
         session_context = self.session_manager.render(agent.id)
         if session_context:
             context = context + "\n\n---\n\n" + session_context
+
+        # Check email on a regular cadence while working — like a person
+        # glancing at their inbox a few times a day, not reacting to each
+        # message. Surfaces any new mail for triage; never wakes or forces.
+        import time as _time
+
+        now = _time.monotonic()
+        if now - self._last_inbox_check.get(agent.id, 0.0) >= self._inbox_check_interval_s:
+            self._last_inbox_check[agent.id] = now
+            inbox_ctx = self._email_inbox_context(agent)
+            if inbox_ctx:
+                context = context + "\n\n---\n\n" + inbox_ctx
 
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent.id, context)
