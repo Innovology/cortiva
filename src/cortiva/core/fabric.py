@@ -616,6 +616,12 @@ class Fabric:
         if dir_ctx:
             context = context + "\n\n---\n\n" + dir_ctx
 
+        # Inject the humans on the team (delivered by the node from HQ) so
+        # agents know which colleagues are people and work with them async.
+        people_ctx = self._people_context(agent)
+        if people_ctx:
+            context = context + "\n\n---\n\n" + people_ctx
+
         # Inject the document store: how to save docs + the docs shared
         # with this agent (delivered by the node from HQ's store).
         doc_cap = self._documents_capability_context(agent)
@@ -2685,6 +2691,61 @@ class Fabric:
             "portal to find anyone by name, role, or department; route "
             "escalations through your manager first."
         )
+        return "\n".join(lines)
+
+    def _load_people(self) -> list[dict]:
+        """Human colleagues the node delivered (.people.json), if any."""
+        import json
+
+        path = self.agents_dir / ".people.json"
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+        except (ValueError, OSError):
+            return []
+
+    def _people_context(self, agent: Agent) -> str:
+        """Tell the agent which colleagues are HUMAN — who they are, where
+        they sit, and how to work with them (limited hours, async, reach by
+        email, route through their manager). Surfaced each wake so agents
+        treat humans appropriately rather than expecting agent-speed replies.
+        """
+        people = self._load_people()
+        if not people:
+            return ""
+        lines = [
+            "## Humans on the team\n",
+            "Some colleagues are people, not agents. They work limited hours "
+            "and reply asynchronously — never block on them, never expect an "
+            "instant answer, and route anything you'd escalate through their "
+            "manager. Reach them by email.\n",
+        ]
+        for p in people:
+            name = p.get("name") or "(unnamed)"
+            role = p.get("role") or ""
+            email = p.get("email") or ""
+            hrs = p.get("hours_per_week")
+            pattern = p.get("working_pattern") or ""
+            reports_to = p.get("reports_to") or ""
+            manages = p.get("manages") or []
+            bits = [f"**{name}**" + (f" — {role}" if role else "") + "  _(human)_"]
+            avail = []
+            if hrs:
+                avail.append(f"~{hrs} hrs/week")
+            if pattern:
+                avail.append(pattern)
+            if avail:
+                bits.append(f"  Availability: {', '.join(avail)} — async.")
+            if email:
+                bits.append(f"  Email: {email}")
+            if reports_to:
+                rel = "reports to you" if reports_to == agent.id else f"reports to {reports_to}"
+                bits.append(f"  {rel}.")
+            if agent.id in manages:
+                bits.append("  You manage this person — delegate async, give clear briefs, don't expect agent-speed turnaround.")
+            lines.append("- " + "\n".join(bits))
         return "\n".join(lines)
 
     def _queue_outbound_email(self, agent: Agent, spec: dict) -> None:
