@@ -1289,6 +1289,35 @@ class Fabric:
         except Exception:
             logger.debug("Could not write deep_think.md", exc_info=True)
 
+        # Count this frontier (Claude) escalation for cost attribution. All
+        # external-AI use — deep_think / second_opinion / code_this — funnels
+        # through here, so a per-day counter is the allocation base for the
+        # external-token (subscription) cost bucket. today/external_calls.json:
+        # {date, count, est_cost_gbp}; HQ reads it via the heartbeat.
+        try:
+            import json as _json
+            from datetime import date as _date
+
+            path = agent.directory / "today" / "external_calls.json"
+            today = _date.today().isoformat()
+            cur = {"date": today, "count": 0, "est_cost_gbp": 0.0}
+            if path.exists():
+                try:
+                    prev = _json.loads(path.read_text(encoding="utf-8"))
+                    if prev.get("date") == today:
+                        cur = prev
+                except (OSError, ValueError):
+                    pass
+            cur["count"] = int(cur.get("count", 0)) + 1
+            cur["est_cost_gbp"] = round(
+                float(cur.get("est_cost_gbp", 0.0))
+                + float(getattr(result, "estimated_cost_gbp", 0.0) or 0.0),
+                4,
+            )
+            path.write_text(_json.dumps(cur), encoding="utf-8")
+        except Exception:
+            logger.debug("Could not bump external_calls.json", exc_info=True)
+
     async def _run_hire(self, agent: Agent, spec: dict[str, Any]) -> None:
         """Provision a new team member commanded by an authorised agent.
 
