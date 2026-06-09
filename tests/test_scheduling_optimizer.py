@@ -234,3 +234,58 @@ class TestMultiLevelOrg:
         for r in ("mgr-a", "mgr-b"):
             assert any(mw.overlaps(rw) for mw in ceo for rw in p.schedules[r]), \
                 f"CEO has no oversight overlap with {r}"
+
+
+# --- 24/7 stagger: preferred starts spread teams across the clock ---------
+
+
+def test_tiling_shifts_give_seamless_24x7_coverage():
+    """Three 8h shifts staggered onto 0/8/16 must land exactly there and
+    tile the full 24h — round-the-clock coverage, not all piled onto hour 0
+    (the bug that put the whole workforce asleep through the UK day)."""
+    agents = [
+        AgentSpec(agent_id="a", role_type=RoleType.IC, preferred_start=8),
+        AgentSpec(agent_id="b", role_type=RoleType.IC, preferred_start=16),
+        AgentSpec(agent_id="c", role_type=RoleType.IC, preferred_start=0),
+    ]
+    prop = optimize_schedule(
+        agents,
+        constraints=Constraints(capacity_ceiling=50, ic_block_len_h=8),
+        objectives=Objectives(),
+    )
+    starts = {aid: w[0].start_h for aid, w in prop.schedules.items()}
+    assert starts == {"a": 8, "b": 16, "c": 0}
+    covered = set()
+    for w in prop.schedules.values():
+        covered.update(range(int(w[0].start_h), int(w[0].end_h)))
+    assert covered == set(range(24))  # every hour covered
+    assert prop.feasible
+
+
+def test_no_preference_still_clusters_at_day_start():
+    """Absent any preference, unanchored ICs still cluster early for
+    collaboration (the fallback behaviour is preserved)."""
+    agents = [
+        AgentSpec(agent_id="x", role_type=RoleType.IC),
+        AgentSpec(agent_id="y", role_type=RoleType.IC),
+    ]
+    prop = optimize_schedule(
+        agents, constraints=Constraints(capacity_ceiling=50), objectives=Objectives()
+    )
+    assert all(w[0].start_h == 0.0 for w in prop.schedules.values())
+
+
+def test_a_team_sharing_a_preferred_start_overlaps():
+    """Members sharing a department shift (same preferred start) overlap —
+    24/7 spread BETWEEN teams, collaboration overlap WITHIN one."""
+    agents = [
+        AgentSpec(agent_id="fin1", role_type=RoleType.IC, preferred_start=8),
+        AgentSpec(agent_id="fin2", role_type=RoleType.IC, preferred_start=8),
+        AgentSpec(agent_id="eng1", role_type=RoleType.IC, preferred_start=16),
+    ]
+    prop = optimize_schedule(
+        agents, constraints=Constraints(capacity_ceiling=50), objectives=Objectives()
+    )
+    s = {aid: w[0] for aid, w in prop.schedules.items()}
+    assert s["fin1"].overlaps(s["fin2"])          # same shift → overlap
+    assert not s["fin1"].overlaps(s["eng1"])      # different shift → spread

@@ -334,18 +334,22 @@ def _best_block_start(
                 breach += new_load - ceil_t
             elif ceil_t > 0:
                 headroom_pressure += new_load / ceil_t  # 0..1 per slot
-        # Cost: ceiling breaches dominate (hard cap). Then CLUSTERING —
-        # prefer earlier starts so people overlap for collaboration; we
-        # only spread when the ceiling forces it. w_peak softly prefers
-        # leaving headroom under the ceiling. Then preference, then
-        # overtime relief (an overloaded agent biases to quieter slots).
-        cost = (
-            breach * 1000.0
-            + obj.w_spread * s
-            + obj.w_peak * headroom_pressure * 0.1
-        )
+        # Cost: ceiling breaches dominate (hard cap). w_peak softly prefers
+        # leaving headroom under the ceiling. Then placement:
+        #   * with a preferred start (e.g. a team's staggered shift) the
+        #     preference drives — this is what spreads teams across 24/7 for
+        #     round-the-clock coverage while a team's members still overlap
+        #     (they share a preferred start).
+        #   * without one, fall back to clustering toward the day start so
+        #     unanchored agents still overlap for collaboration.
+        # The old code ALWAYS added ``w_spread * s``, which pinned everyone to
+        # hour 0 regardless of preference — the cause of the whole workforce
+        # sleeping through the UK day.
+        cost = breach * 1000.0 + obj.w_peak * headroom_pressure * 0.1
         if pref_slot is not None:
             cost += obj.w_preference * abs(s - pref_slot)
+        else:
+            cost += obj.w_spread * s
         if overloaded:
             cost += obj.w_overtime * sum(load[s:s + block]) * 0.01
         if cost < best_cost:
@@ -504,24 +508,30 @@ def _impact(
 
 def windows_to_schedule_config(
     windows: list[WorkWindow], *, replan_per_window: bool = True,
+    days: str = "mon-fri",
 ) -> dict[str, str]:
     """Convert windows to the framework Scheduler's config format.
 
     Each window becomes a wake time (start) and a sleep time (end).
     Multiple windows → comma-separated times. Hours are taken mod 24 so a
-    window crossing midnight is expressed correctly.
+    window crossing midnight is expressed correctly. ``days`` qualifies the
+    working week (the Scheduler parses ``"08:00 mon-fri"``): the default
+    5-day week makes a daily ~7.5h block land at ~37.5h/week, with weekends
+    off. Pass ``"daily"`` for round-the-clock 7-day roles.
     """
     def fmt(h: float) -> str:
         total_min = int(round(h * 60)) % (24 * 60)
         return f"{total_min // 60:02d}:{total_min % 60:02d}"
 
-    wake = ",".join(fmt(w.start_h) for w in sorted(windows, key=lambda w: w.start_h))
-    sleep = ",".join(fmt(w.end_h) for w in sorted(windows, key=lambda w: w.start_h))
-    cfg = {"wake": wake, "sleep": sleep}
+    suffix = f" {days}" if days and days != "daily" else ""
+    wins = sorted(windows, key=lambda w: w.start_h)
+    wake = ",".join(fmt(w.start_h) for w in wins)
+    sleep = ",".join(fmt(w.end_h) for w in wins)
+    cfg = {"wake": f"{wake}{suffix}", "sleep": f"{sleep}{suffix}"}
     if replan_per_window and len(windows) > 1:
         # A mid-window replan keeps multi-window agents responsive.
-        cfg["replan"] = ",".join(
-            fmt((w.start_h + w.end_h) / 2) for w in sorted(windows, key=lambda w: w.start_h)
+        cfg["replan"] = (
+            ",".join(fmt((w.start_h + w.end_h) / 2) for w in wins) + suffix
         )
     return cfg
 

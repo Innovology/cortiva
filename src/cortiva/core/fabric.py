@@ -1417,37 +1417,70 @@ class Fabric:
     # Workforce scheduling — the AR Scheduler's tool
     # ------------------------------------------------------------------
 
+    # Anchor for the default working day: 08:00 UTC == 09:00 BST. A role
+    # with no explicit preference starts here; departments stagger away from
+    # it so the optimiser spreads teams across 24/7 for round-the-clock
+    # coverage (a department's members share a start → they overlap; the
+    # whole org doesn't pile onto one shift).
+    _DEFAULT_START_UTC = 8
+
     def _build_workforce_specs(self) -> list[Any]:
         """Build the optimiser's view of the workforce from the org model.
 
-        An agent is a MANAGER if anyone reports to it, else an IC. Budgets
-        and preferred starts come from deploy.yaml where present.
+        An agent is a MANAGER if anyone reports to it, else an IC. Budget,
+        department and any explicit preferred start come from deploy.yaml.
+        When a role gives no preferred start, it inherits its **department's
+        staggered shift** — departments are spread evenly across the 24h
+        clock from the 09:00-BST anchor, which is what turns "everyone awake
+        00:00–08:00" into genuine 24/7 coverage.
         """
         import yaml
 
         from cortiva.scheduling import AgentSpec, RoleType
 
-        specs: list[Any] = []
+        # First pass: read each agent's role config.
+        raw: dict[str, dict] = {}
         for aid in sorted(self.agents):
-            manager = self.org.manager_of(aid) if self.org else None
-            reports = self.org.subordinates_of(aid) if self.org else []
-            role_type = RoleType.MANAGER if reports else RoleType.IC
-            budget = 8.0
-            preferred_start = None
+            # Weekly 37.5h ≈ 7.5h/day over a 5-day week (overtime is agent-
+            # requested on top, via the schedule reflection suffix).
+            dept, budget, pref = "", 7.5, None
             deploy = self.agents_dir / aid / "deploy.yaml"
             if deploy.exists():
                 try:
                     spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
                             or {}).get("agent", {}) or {}
-                    budget = float(spec.get("daily_hours", spec.get("budget_hours", 8.0)))
+                    dept = (spec.get("department") or "").strip()
+                    budget = float(spec.get("daily_hours", spec.get("budget_hours", 7.5)))
                     if spec.get("preferred_start") is not None:
-                        preferred_start = int(spec["preferred_start"])
+                        pref = int(spec["preferred_start"])
                 except Exception:
                     pass
+            raw[aid] = {"dept": dept, "budget": budget, "pref": pref}
+
+        # Department stagger across three 8h tiling shifts that seamlessly
+        # cover the 24h clock, anchored so the first shift is 09:00 BST:
+        #   shift 0 → 08:00 UTC (09:00 BST), 1 → 16:00, 2 → 00:00.
+        # Departments round-robin onto the shifts, so teams spread across
+        # the day for round-the-clock coverage while same-shift departments
+        # still overlap. One department → everyone on the 09:00-BST anchor.
+        _SHIFTS = [self._DEFAULT_START_UTC, (self._DEFAULT_START_UTC + 8) % 24,
+                   (self._DEFAULT_START_UTC + 16) % 24]
+        depts = sorted({r["dept"] for r in raw.values() if r["dept"]})
+        dept_start = {d: _SHIFTS[i % len(_SHIFTS)] for i, d in enumerate(depts)}
+
+        specs: list[Any] = []
+        for aid in sorted(self.agents):
+            r = raw[aid]
+            manager = self.org.manager_of(aid) if self.org else None
+            reports = self.org.subordinates_of(aid) if self.org else []
+            role_type = RoleType.MANAGER if reports else RoleType.IC
+            pref = r["pref"]
+            if pref is None:
+                pref = dept_start.get(r["dept"], self._DEFAULT_START_UTC)
             specs.append(AgentSpec(
                 agent_id=aid, role_type=role_type, manager=manager,
-                reports=list(reports), budget_hours=budget,
-                preferred_start=preferred_start,
+                reports=list(reports), budget_hours=r["budget"],
+                preferred_start=pref,
             ))
         return specs
 
