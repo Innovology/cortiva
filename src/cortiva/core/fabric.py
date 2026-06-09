@@ -1848,6 +1848,91 @@ class Fabric:
         except Exception:
             logger.exception("Node rebalance planning failed for %s", agent.id)
 
+    def _current_schedule_windows(self) -> dict[str, list[Any]]:
+        """The live rota as work windows, parsed from the persisted config.
+
+        Reads ``.schedules.json`` (what the optimiser last applied) and turns
+        each agent's wake/sleep config back into windows so the AR Scheduler
+        can measure the *current* schedule's health.
+        """
+        import json
+
+        from cortiva.scheduling import schedule_config_to_windows
+
+        path = self.agents_dir / ".schedules.json"
+        if not path.exists():
+            return {}
+        try:
+            cfgs = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        out: dict[str, list[Any]] = {}
+        for aid, cfg in (cfgs or {}).items():
+            if isinstance(cfg, dict):
+                out[aid] = schedule_config_to_windows(cfg)
+        return out
+
+    async def _run_schedule_health(self, agent: Agent, spec: dict[str, Any]) -> None:
+        """Measure the current rota's responsiveness and record a readout.
+
+        Authority-gated to the scheduling set. Measures only — the AR
+        Scheduler reads the ranked hotspots, then optimises one role. Never
+        fatal to the cycle.
+        """
+        if agent.id not in self.scheduling_authorised:
+            logger.info(
+                "Agent %s emitted schedule_health but lacks scheduling "
+                "authority — ignored.", agent.id,
+            )
+            return
+        try:
+            from cortiva.scheduling import assess_schedule_health
+
+            specs = self._build_workforce_specs()
+            windows = self._current_schedule_windows()
+            if not windows:
+                try:
+                    agent.write_today(
+                        "schedule_health.md",
+                        f"## Schedule health — {agent.id}\n\nNo rota applied yet "
+                        "(`.schedules.json` absent) — run the optimiser first.",
+                    )
+                except Exception:
+                    logger.debug("Could not write schedule_health.md", exc_info=True)
+                return
+
+            signals = self._gather_schedule_signals()
+            health = assess_schedule_health(specs, windows, signals=signals)
+
+            lines = [f"## Schedule health — {agent.id}\n", f"**{health.summary}**\n"]
+            if health.hotspots:
+                lines.append("### Hotspots (act on the top one)")
+                for h in health.hotspots[:8]:
+                    who = f" [{h.agent_id}]" if h.agent_id else ""
+                    lines.append(f"- _{h.kind}_{who}: {h.detail}")
+            try:
+                agent.write_today("schedule_health.md", "\n".join(lines))
+            except Exception:
+                logger.debug("Could not write schedule_health.md", exc_info=True)
+
+            await self.memory.store(
+                agent_id=agent.id,
+                content=f"Measured schedule health: {health.summary}",
+                tags=["schedule", "health", "ar", "measurement"],
+                importance=6.5,
+            )
+            self._emit(
+                "schedule.health_measured", agent_id=agent.id,
+                score=health.responsiveness_score,
+                uncovered_hours=health.uncovered_hours,
+                oversight_gaps=len(health.oversight_gaps),
+            )
+            logger.info(
+                "Agent %s measured schedule health — %s", agent.id, health.summary,
+            )
+        except Exception:
+            logger.exception("Schedule-health measurement failed for %s", agent.id)
+
     async def _process_reflection(
         self, agent: Agent, task: Task, suffix: ReflectionSuffix
     ) -> None:
@@ -1900,6 +1985,11 @@ class Fabric:
         # the infra team's metrics; moves nothing.
         if suffix.rebalance_nodes is not None:
             await self._run_node_rebalance(agent, suffix.rebalance_nodes)
+
+        # Measure rota responsiveness. Authority-gated to the scheduling set.
+        # Measures only — the AR Scheduler reads the readout, then optimises.
+        if suffix.schedule_health is not None:
+            await self._run_schedule_health(agent, suffix.schedule_health)
 
         # Queue an outbound email — the node sends it via Resend as this
         # agent's own address. Written to outbox/email/ as a durable record;
@@ -2726,6 +2816,25 @@ class Fabric:
                 "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
             }
 
+        async def _handle_schedule_health(
+            agent_id: str = "ar-scheduler", **_kw: Any,
+        ) -> dict[str, Any]:
+            """Measure rota responsiveness on demand (read-only). Control
+            surface for HQ/Canopy + the AR Scheduler; runs the same
+            authority-gated handler."""
+            agent = self.agents.get(agent_id)
+            if agent is None:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+            if agent_id not in self.scheduling_authorised:
+                return {"ok": False, "error": f"{agent_id} lacks scheduling authority"}
+            await self._run_schedule_health(agent, {})
+            note_path = agent.directory / "today" / "schedule_health.md"
+            return {
+                "ok": True,
+                "agent_id": agent_id,
+                "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
+            }
+
         async def _handle_cluster_load(**_kw: Any) -> dict[str, Any]:
             nodes = self.cluster_metrics.snapshot(
                 self.capabilities, self.agents, self.budget_manager,
@@ -3029,6 +3138,7 @@ class Fabric:
         server.register("model.perf", _handle_model_perf)
         server.register("discover", _handle_discover)
         server.register("schedule.optimize", _handle_schedule_optimize)
+        server.register("schedule.health", _handle_schedule_health)
         server.register("cluster.rebalance", _handle_cluster_rebalance)
         server.register("cluster.load", _handle_cluster_load)
         server.register("cluster.status", _handle_cluster_status)
