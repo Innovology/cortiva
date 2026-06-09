@@ -39,6 +39,7 @@ class MockConsciousness:
         priority: Priority = Priority.NORMAL,
         max_tokens: int = 4096,
         metadata: dict[str, Any] | None = None,
+        **kwargs: Any,  # tolerate evolving kwargs (e.g. tools=)
     ) -> ConsciousResponse:
         self.calls.append({
             "method": "think",
