@@ -616,6 +616,15 @@ class Fabric:
         if dir_ctx:
             context = context + "\n\n---\n\n" + dir_ctx
 
+        # Inject the document store: how to save docs + the docs shared
+        # with this agent (delivered by the node from HQ's store).
+        doc_cap = self._documents_capability_context(agent)
+        if doc_cap:
+            context = context + "\n\n---\n\n" + doc_cap
+        doc_ctx = self._documents_context(agent)
+        if doc_ctx:
+            context = context + "\n\n---\n\n" + doc_ctx
+
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent_id, context)
 
@@ -2194,6 +2203,11 @@ class Fabric:
         if suffix.email and isinstance(suffix.email, dict):
             self._queue_outbound_email(agent, suffix.email)
 
+        # Save a document to the company store — queued to the agent's
+        # outbox; the node hands it to HQ (MinIO + metadata).
+        if suffix.document and isinstance(suffix.document, dict):
+            self._queue_outbound_document(agent, suffix.document)
+
         # Send inter-agent messages via channel adapter and persist to outbox
         if suffix.messages:
             import json as _json
@@ -2699,6 +2713,110 @@ class Fabric:
             self._emit("email.queued", agent_id=agent.id, to=to)
         except OSError:
             logger.warning("Could not queue outbound email for %s", agent.id)
+
+    # ------------------------------------------------------------------
+    # Document store — read (delivered by node from HQ) + write (outbox)
+    # ------------------------------------------------------------------
+
+    _DOC_VISIBILITIES = ("private", "department", "org")
+    _DOC_CONTEXT_CAP = 8  # docs surfaced per wake
+    _DOC_SNIPPET_CHARS = 1800  # per-doc content budget in context
+
+    def _queue_outbound_document(self, agent: Agent, spec: dict) -> None:
+        """Queue a document to the agent's outbox for the node to store at HQ."""
+        import json
+        import uuid
+        from datetime import UTC, datetime
+
+        title = (spec.get("title") or "").strip()
+        content = spec.get("content")
+        if content is None:
+            content = spec.get("body") or spec.get("text") or ""
+        if not title or not content:
+            logger.info("Agent %s document had no title/content — ignored.", agent.id)
+            return
+        vis = (spec.get("visibility") or "private").strip().lower()
+        if vis not in self._DOC_VISIBILITIES:
+            vis = "private"
+        outbox = agent.directory / "outbox" / "documents"
+        try:
+            outbox.mkdir(parents=True, exist_ok=True)
+            did = uuid.uuid4().hex
+            (outbox / f"{did}.json").write_text(json.dumps({
+                "title": title,
+                "content": content,
+                "visibility": vis,
+                "department": (spec.get("department") or "").strip(),
+                "filename": (spec.get("filename") or "").strip(),
+                "tags": spec.get("tags") or [],
+                "description": (spec.get("description") or "").strip(),
+                "queued_at": datetime.now(UTC).isoformat(),
+            }, ensure_ascii=False), encoding="utf-8")
+            logger.info("Agent %s queued document '%s' (vis=%s)", agent.id, title, vis)
+            self._emit("document.queued", agent_id=agent.id, title=title, visibility=vis)
+        except OSError:
+            logger.warning("Could not queue outbound document for %s", agent.id)
+
+    def _documents_context(self, agent: Agent) -> str:
+        """Render the documents the node has delivered to this agent.
+
+        The node writes docs the agent may read (per the store's ACL) as
+        ``<agent>/documents/<doc_id>.json`` ({title, description, content,
+        visibility, owner, updated_at}). Surfaced standing each wake so the
+        agent can use shared knowledge (handbook, finance references, …)."""
+        import json
+
+        ddir = agent.directory / "documents"
+        if not ddir.is_dir():
+            return ""
+        files = sorted(p for p in ddir.glob("*.json") if p.is_file())
+        if not files:
+            return ""
+        items: list[dict] = []
+        for p in files:
+            try:
+                items.append(json.loads(p.read_text(encoding="utf-8")))
+            except (ValueError, OSError):
+                continue
+        if not items:
+            return ""
+        items.sort(key=lambda d: str(d.get("updated_at", "")), reverse=True)
+        lines = [
+            "## Documents (shared with you)\n",
+            "Reference material in the company document store you can read. "
+            "Use it where relevant; don't act on it unless it's pertinent.\n",
+        ]
+        for d in items[: self._DOC_CONTEXT_CAP]:
+            title = d.get("title", "untitled")
+            owner = d.get("owner_display") or d.get("owner") or ""
+            vis = d.get("visibility", "")
+            meta = ", ".join(x for x in (vis, f"by {owner}" if owner else "") if x)
+            body = (d.get("content") or "").strip()
+            if len(body) > self._DOC_SNIPPET_CHARS:
+                body = body[: self._DOC_SNIPPET_CHARS] + "\n…(truncated)"
+            lines.append(f"\n### {title}" + (f"  _({meta})_" if meta else ""))
+            if d.get("description"):
+                lines.append(f"_{d['description']}_")
+            lines.append(body)
+        extra = len(items) - self._DOC_CONTEXT_CAP
+        if extra > 0:
+            lines.append(f"\n_…and {extra} more document(s) available._")
+        return "\n".join(lines)
+
+    def _documents_capability_context(self, agent: Agent) -> str:
+        """Standing how-to so any agent can publish a document each wake."""
+        return (
+            "## Document store\n\n"
+            "You can save documents to the company store for yourself or "
+            "colleagues to read later. Add a `document` object to your "
+            "reflection: "
+            '{"title": "...", "content": "<markdown>", "visibility": '
+            '"private|department|org", "description": "..."}. '
+            "Use **private** for your own working notes, **department** to "
+            "share with your team, **org** for company-wide references. "
+            "Save a document when the output is worth keeping or others will "
+            "need it — a report, a record, a reference — not for routine chatter."
+        )
 
     def _goals_context(self, agent_id: str) -> str:
         """Build goals context for planning, if GoalManager is available."""

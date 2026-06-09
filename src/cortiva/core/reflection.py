@@ -55,6 +55,14 @@ class ReflectionSuffix:
     to the agent's outbox; the node sends it via Resend as the agent's own
     ``<first-name>@<workforce-domain>`` address. Used to reply to received
     mail, email a colleague, or email a founder (manager first)."""
+    document: dict[str, Any] | None = None
+    """A request to SAVE a document to the company document store:
+    ``{"title": "...", "content": "...", "visibility": "private|department|
+    org", "department": "<dept, optional>", "filename": "<optional>",
+    "tags": [..], "description": "..."}``. The runtime queues it to the
+    agent's outbox; the node hands it to HQ, which stores the bytes in the
+    org's object store (MinIO) with the agent as owner. Use it to publish a
+    report, a record, or anything a colleague may need to read later."""
     optimize_schedule: dict[str, Any] | None = None
     """A request to run the workforce rota optimiser and apply the result.
     Only honoured for agents with scheduling authority (the AR Scheduler /
@@ -149,6 +157,7 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         deep_think=data.get("deep_think"),
         hire=data.get("hire") if isinstance(data.get("hire"), dict) else None,
         email=data.get("email") if isinstance(data.get("email"), dict) else None,
+        document=data.get("document") if isinstance(data.get("document"), dict) else None,
         optimize_schedule=(
             data.get("optimize_schedule")
             if isinstance(data.get("optimize_schedule"), dict)
