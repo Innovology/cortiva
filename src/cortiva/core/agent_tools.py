@@ -138,21 +138,47 @@ RECOMMEND_SCHEDULE_TOOL: dict[str, Any] = {
     },
 }
 
+CULTURE_HEALTH_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "culture_health",
+        "description": (
+            "Measure how HEALTHY the company culture currently is — your eyes "
+            "on how the workforce actually feels. Reads each agent's rolling "
+            "emotional state and the diversity of voice across the org, and "
+            "returns a 0-100 culture-health score plus ranked hotspots: who is "
+            "distressed or at burnout risk, who's operating in fear, who's "
+            "disengaged, whose voice goes unheard, and whether the org is "
+            "drifting toward a monoculture. Read this, find who's struggling, "
+            "then decide the intervention yourself — it measures only and "
+            "changes nothing."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
 # Tool name -> the ReflectionSuffix field it populates.
 _TOOL_TO_SUFFIX_FIELD = {
     "optimize_schedule": "optimize_schedule",
     "rebalance_nodes": "rebalance_nodes",
     "schedule_health": "schedule_health",
     "recommend_schedule": "recommend_schedule",
+    "culture_health": "culture_health",
 }
 
 
-def tools_for_agent(agent_id: str, *, scheduling_authorised: set[str]) -> list[dict[str, Any]]:
+def tools_for_agent(
+    agent_id: str,
+    *,
+    scheduling_authorised: set[str],
+    culture_authorised: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return the tool schemas an agent is allowed to call.
 
     Authority-scoped: only scheduling-authorised agents are offered the rota
     optimiser, the node rebalancer, the schedule-health readout, and the
-    single-role recommendation — so the model isn't tempted to call a tool it
+    single-role recommendation; only culture-authorised agents are offered the
+    culture-health readout — so the model isn't tempted to call a tool it
     can't use.
     """
     tools: list[dict[str, Any]] = []
@@ -161,6 +187,8 @@ def tools_for_agent(agent_id: str, *, scheduling_authorised: set[str]) -> list[d
         tools.append(REBALANCE_NODES_TOOL)
         tools.append(SCHEDULE_HEALTH_TOOL)
         tools.append(RECOMMEND_SCHEDULE_TOOL)
+    if culture_authorised and agent_id in culture_authorised:
+        tools.append(CULTURE_HEALTH_TOOL)
     return tools
 
 

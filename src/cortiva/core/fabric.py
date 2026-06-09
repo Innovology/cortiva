@@ -215,6 +215,12 @@ class Fabric:
         self.scheduling_authorised: set[str] = {
             "ar-scheduler", "head-of-ar", "coo",
         }
+        # Agents permitted to run the culture-health readout. The People &
+        # Culture Lead owns it; Head of AR and COO can also invoke it.
+        # Others emitting `culture_health` are ignored.
+        self.culture_authorised: set[str] = {
+            "people-culture-lead", "head-of-ar", "coo",
+        }
         self.resource_guard = ResourceGuard(self.agents_dir)
         if self.terminal is not None:
             # The cycle guard must outlast a terminal run, or long
@@ -1185,6 +1191,7 @@ class Fabric:
 
         agent_tools = tools_for_agent(
             agent.id, scheduling_authorised=self.scheduling_authorised,
+            culture_authorised=self.culture_authorised,
         )
 
         response = await self.consciousness.think(
@@ -1933,6 +1940,93 @@ class Fabric:
         except Exception:
             logger.exception("Schedule-health measurement failed for %s", agent.id)
 
+    def _build_culture_members(self) -> list[Any]:
+        """Build the culture readout's view of the workforce (id/name/dept/mgr)."""
+        import yaml
+
+        from cortiva.culture import CultureMember
+
+        members: list[Any] = []
+        for aid in sorted(self.agents):
+            name, dept = "", ""
+            deploy = self.agents_dir / aid / "deploy.yaml"
+            if deploy.exists():
+                try:
+                    spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
+                            or {}).get("agent", {}) or {}
+                    name = str(spec.get("name") or "").strip()
+                    dept = str(spec.get("department") or "").strip()
+                except Exception:
+                    pass
+            manager = self.org.manager_of(aid) if self.org else None
+            members.append(
+                CultureMember(agent_id=aid, name=name, department=dept, manager=manager)
+            )
+        return members
+
+    async def _run_culture_health(self, agent: Agent, spec: dict[str, Any]) -> None:
+        """Measure company culture health and record a readout.
+
+        Authority-gated to the culture set. Reads the whole workforce's felt
+        state (emotions) + diversity of voice (comms tracker), scores culture
+        0-100, and writes a ranked-hotspot readout. Measures only — the People
+        & Culture Lead reads it, then decides the intervention. Never fatal to
+        the cycle.
+        """
+        if agent.id not in self.culture_authorised:
+            logger.info(
+                "Agent %s emitted culture_health but lacks culture authority "
+                "— ignored.", agent.id,
+            )
+            return
+        try:
+            from cortiva.culture import assess_culture_health
+
+            members = self._build_culture_members()
+            emotions = {
+                m.agent_id: self._read_emotion(a)
+                for m in members
+                if (a := self.agents.get(m.agent_id)) is not None
+            }
+            try:
+                comms = self.communication_tracker.pair_counts()
+            except Exception:
+                comms = {}
+
+            health = assess_culture_health(members, emotions, comms=comms or None)
+
+            lines = [f"## Culture health — measured by {agent.id}\n", f"**{health.summary}**\n"]
+            if health.hotspots:
+                lines.append("### Hotspots (start with the top one)")
+                for h in health.hotspots[:10]:
+                    who = f" [{h.agent_id}]" if h.agent_id else ""
+                    lines.append(f"- _{h.kind}_{who}: {h.detail}")
+            else:
+                lines.append("_No culture concerns surfaced this read._")
+            try:
+                agent.write_today("culture_health.md", "\n".join(lines))
+            except Exception:
+                logger.debug("Could not write culture_health.md", exc_info=True)
+
+            await self.memory.store(
+                agent_id=agent.id,
+                content=f"Measured culture health: {health.summary}",
+                tags=["culture", "health", "people", "measurement"],
+                importance=6.5,
+            )
+            self._emit(
+                "culture.health_measured", agent_id=agent.id,
+                score=health.culture_score,
+                distressed=len(health.distressed),
+                burnout_risk=len(health.burnout_risk),
+                monoculture=health.monoculture,
+            )
+            logger.info(
+                "Agent %s measured culture health — %s", agent.id, health.summary,
+            )
+        except Exception:
+            logger.exception("Culture-health measurement failed for %s", agent.id)
+
     async def _run_schedule_recommendation(
         self, agent: Agent, spec: dict[str, Any],
     ) -> None:
@@ -2083,6 +2177,11 @@ class Fabric:
         # Measures only — the AR Scheduler reads the readout, then optimises.
         if suffix.schedule_health is not None:
             await self._run_schedule_health(agent, suffix.schedule_health)
+
+        # Measure company culture health. Authority-gated to the culture set.
+        # Measures only — the People & Culture Lead reads it, then intervenes.
+        if suffix.culture_health is not None:
+            await self._run_culture_health(agent, suffix.culture_health)
 
         # Optimise one role's schedule for responsiveness (the steady-state
         # tweak). Authority-gated; applies only the single targeted role.
@@ -2933,6 +3032,25 @@ class Fabric:
                 "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
             }
 
+        async def _handle_culture_health(
+            agent_id: str = "people-culture-lead", **_kw: Any,
+        ) -> dict[str, Any]:
+            """Measure culture health on demand (read-only). Control surface
+            for HQ/Canopy + the People & Culture Lead; runs the same
+            authority-gated handler."""
+            agent = self.agents.get(agent_id)
+            if agent is None:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+            if agent_id not in self.culture_authorised:
+                return {"ok": False, "error": f"{agent_id} lacks culture authority"}
+            await self._run_culture_health(agent, {})
+            note_path = agent.directory / "today" / "culture_health.md"
+            return {
+                "ok": True,
+                "agent_id": agent_id,
+                "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
+            }
+
         async def _handle_schedule_recommend(
             agent_id: str = "ar-scheduler", **spec: Any,
         ) -> dict[str, Any]:
@@ -3255,6 +3373,7 @@ class Fabric:
         server.register("schedule.optimize", _handle_schedule_optimize)
         server.register("schedule.health", _handle_schedule_health)
         server.register("schedule.recommend", _handle_schedule_recommend)
+        server.register("culture.health", _handle_culture_health)
         server.register("cluster.rebalance", _handle_cluster_rebalance)
         server.register("cluster.load", _handle_cluster_load)
         server.register("cluster.status", _handle_cluster_status)
