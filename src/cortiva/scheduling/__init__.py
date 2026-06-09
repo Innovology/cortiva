@@ -7,6 +7,12 @@ schedule that violates the hard invariants, so the agent steers without
 being able to break the workforce.
 """
 
+from cortiva.scheduling.health import (
+    CoverageGap,
+    Hotspot,
+    ScheduleHealth,
+    assess_schedule_health,
+)
 from cortiva.scheduling.optimizer import (
     AgentSpec,
     Constraints,
@@ -17,18 +23,24 @@ from cortiva.scheduling.optimizer import (
     Signals,
     WorkWindow,
     optimize_schedule,
+    schedule_config_to_windows,
     windows_to_schedule_config,
 )
 
 __all__ = [
     "AgentSpec",
     "Constraints",
+    "CoverageGap",
+    "Hotspot",
     "ImpactPreview",
     "Objectives",
     "RoleType",
+    "ScheduleHealth",
     "ScheduleProposal",
     "Signals",
     "WorkWindow",
+    "assess_schedule_health",
     "optimize_schedule",
+    "schedule_config_to_windows",
     "windows_to_schedule_config",
 ]

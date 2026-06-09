@@ -64,6 +64,11 @@ class ReflectionSuffix:
     ``w_overtime``/``w_spread``/``w_preference``, plus ``apply`` (default
     true; false = dry-run preview only). The tool guarantees feasibility;
     the runtime refuses to apply an infeasible proposal."""
+    schedule_health: dict[str, Any] | None = None
+    """A request to MEASURE the current rota's responsiveness (coverage gaps,
+    oversight/peer overlap, overtime) and record a ranked-hotspot readout.
+    Only honoured for agents with scheduling authority. Measures only — the
+    AR Scheduler reads it, then optimises one role. Payload is ignored."""
     rebalance_nodes: dict[str, Any] | None = None
     """A request to plan a reshuffle of agents between compute nodes from
     the infra team's metrics: ``{"ram_headroom_gb": ..., "max_moves": ...,
@@ -139,6 +144,11 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         rebalance_nodes=(
             data.get("rebalance_nodes")
             if isinstance(data.get("rebalance_nodes"), dict)
+            else None
+        ),
+        schedule_health=(
+            data.get("schedule_health")
+            if isinstance(data.get("schedule_health"), dict)
             else None
         ),
     )

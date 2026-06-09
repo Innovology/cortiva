@@ -536,6 +536,38 @@ def windows_to_schedule_config(
     return cfg
 
 
+def schedule_config_to_windows(cfg: dict[str, str]) -> list[WorkWindow]:
+    """Inverse of ``windows_to_schedule_config`` — parse a live Scheduler
+    config back into work windows so the *current* rota can be measured.
+
+    Pairs the i-th wake with the i-th sleep; a sleep earlier than its wake
+    wraps past midnight (end += 24). Any ``" mon-fri"``-style day suffix is
+    ignored here (health is measured on the daily shape).
+    """
+    def _times(spec: str) -> list[float]:
+        spec = (spec or "").split(maxsplit=1)[0]  # drop any day suffix
+        out: list[float] = []
+        for part in spec.split(","):
+            part = part.strip()
+            if ":" in part:
+                h, m = part.split(":", 1)
+                if h.isdigit() and m.isdigit():
+                    out.append(int(h) + int(m) / 60.0)
+        return out
+
+    wakes = _times(cfg.get("wake", ""))
+    sleeps = _times(cfg.get("sleep", ""))
+    windows: list[WorkWindow] = []
+    for i, start in enumerate(wakes):
+        if i >= len(sleeps):
+            break
+        end = sleeps[i]
+        if end <= start:
+            end += 24.0
+        windows.append(WorkWindow(start, end))
+    return windows
+
+
 def _ic_rationale(a: AgentSpec, w: WorkWindow, sig: Signals) -> str:
     bits = [f"IC focus block {w.start_h:04.1f}-{w.end_h:04.1f}"]
     if sig.overtime_hours.get(a.agent_id, 0.0) > 0:

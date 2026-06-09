@@ -91,24 +91,43 @@ REBALANCE_NODES_TOOL: dict[str, Any] = {
     },
 }
 
+SCHEDULE_HEALTH_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "schedule_health",
+        "description": (
+            "Measure how RESPONSIVE the current workforce rota is — your eyes "
+            "before you tune it. Returns a 0-100 responsiveness score plus "
+            "ranked hotspots: hours with nobody awake (coverage gaps), reports "
+            "who never overlap their manager (blocked waiting), peers who never "
+            "overlap (handoffs serialise), and chronic overtime. Read this, "
+            "pick the worst hotspot, then optimise that ONE role's schedule. "
+            "Measures only — it changes nothing."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
 # Tool name -> the ReflectionSuffix field it populates.
 _TOOL_TO_SUFFIX_FIELD = {
     "optimize_schedule": "optimize_schedule",
     "rebalance_nodes": "rebalance_nodes",
+    "schedule_health": "schedule_health",
 }
 
 
 def tools_for_agent(agent_id: str, *, scheduling_authorised: set[str]) -> list[dict[str, Any]]:
     """Return the tool schemas an agent is allowed to call.
 
-    Authority-scoped: only scheduling-authorised agents are offered the
-    rota optimiser and node rebalancer, so the model isn't tempted to call
-    a tool it can't use.
+    Authority-scoped: only scheduling-authorised agents are offered the rota
+    optimiser, the node rebalancer, and the schedule-health readout, so the
+    model isn't tempted to call a tool it can't use.
     """
     tools: list[dict[str, Any]] = []
     if agent_id in scheduling_authorised:
         tools.append(OPTIMIZE_SCHEDULE_TOOL)
         tools.append(REBALANCE_NODES_TOOL)
+        tools.append(SCHEDULE_HEALTH_TOOL)
     return tools
 
 
