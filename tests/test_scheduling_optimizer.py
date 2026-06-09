@@ -24,9 +24,9 @@ def _synthetic_org(n_ics: int, n_managers: int = 10) -> list[AgentSpec]:
     ics = [f"ic-{i:03d}" for i in range(n_ics)]
     per = max(1, n_ics // n_managers)
     for m in range(n_managers):
-        reports = ics[m * per:(m + 1) * per]
+        reports = ics[m * per : (m + 1) * per]
         if m == n_managers - 1:
-            reports = ics[m * per:]  # last manager mops up the remainder
+            reports = ics[m * per :]  # last manager mops up the remainder
         agents.append(
             AgentSpec(
                 agent_id=f"mgr-{m:02d}",
@@ -97,7 +97,8 @@ class TestInvariants:
         # 50 agents needing 8h in a 24h window can't fit under a ceiling of 5.
         agents = _synthetic_org(n_ics=48, n_managers=2)
         p = optimize_schedule(
-            agents, constraints=Constraints(capacity_ceiling=5),
+            agents,
+            constraints=Constraints(capacity_ceiling=5),
         )
         assert not p.feasible
         assert any("ceiling" in v for v in p.violations)
@@ -115,8 +116,9 @@ class TestDeterminism:
         b = optimize_schedule(agents)
         assert a.summary == b.summary
         for aid in a.schedules:
-            assert [(w.start_h, w.end_h) for w in a.schedules[aid]] == \
-                   [(w.start_h, w.end_h) for w in b.schedules[aid]]
+            assert [(w.start_h, w.end_h) for w in a.schedules[aid]] == [
+                (w.start_h, w.end_h) for w in b.schedules[aid]
+            ]
 
 
 # ---------------------------------------------------------------------------
@@ -143,16 +145,14 @@ class TestRespondsToSignals:
 
         baseline = optimize_schedule(agents, constraints=c)
         saturated = optimize_schedule(
-            agents, constraints=c,
+            agents,
+            constraints=c,
             signals=Signals(infra_saturation={9: 0.9, 10: 0.9}),
         )
 
         def load_at(proposal, hour):
             return sum(
-                1
-                for ws in proposal.schedules.values()
-                for w in ws
-                if w.start_h <= hour < w.end_h
+                1 for ws in proposal.schedules.values() for w in ws if w.start_h <= hour < w.end_h
             )
 
         assert saturated.feasible
@@ -175,10 +175,14 @@ class TestRespondsToSignals:
         agents = _synthetic_org(n_ics=120, n_managers=10)
         c = Constraints(capacity_ceiling=80)
         spread_averse = optimize_schedule(
-            agents, constraints=c, objectives=Objectives(w_spread=5.0),
+            agents,
+            constraints=c,
+            objectives=Objectives(w_spread=5.0),
         )
         spread_ok = optimize_schedule(
-            agents, constraints=c, objectives=Objectives(w_spread=0.0),
+            agents,
+            constraints=c,
+            objectives=Objectives(w_spread=0.0),
         )
         assert spread_averse.feasible and spread_ok.feasible
         # Caring about spread should not produce a *wider* rota than not caring.
@@ -215,12 +219,9 @@ class TestMultiLevelOrg:
         themselves managers, so they must be placed before the CEO or the
         CEO is left with an oversight gap. Deepest-first placement fixes it."""
         agents = [
-            AgentSpec("ceo", RoleType.MANAGER, manager=None,
-                      reports=["mgr-a", "mgr-b"]),
-            AgentSpec("mgr-a", RoleType.MANAGER, manager="ceo",
-                      reports=["ic-0", "ic-1"]),
-            AgentSpec("mgr-b", RoleType.MANAGER, manager="ceo",
-                      reports=["ic-2", "ic-3"]),
+            AgentSpec("ceo", RoleType.MANAGER, manager=None, reports=["mgr-a", "mgr-b"]),
+            AgentSpec("mgr-a", RoleType.MANAGER, manager="ceo", reports=["ic-0", "ic-1"]),
+            AgentSpec("mgr-b", RoleType.MANAGER, manager="ceo", reports=["ic-2", "ic-3"]),
             AgentSpec("ic-0", RoleType.IC, manager="mgr-a"),
             AgentSpec("ic-1", RoleType.IC, manager="mgr-a"),
             AgentSpec("ic-2", RoleType.IC, manager="mgr-b"),
@@ -232,8 +233,9 @@ class TestMultiLevelOrg:
         # CEO actually overlaps its manager-reports.
         ceo = p.schedules["ceo"]
         for r in ("mgr-a", "mgr-b"):
-            assert any(mw.overlaps(rw) for mw in ceo for rw in p.schedules[r]), \
+            assert any(mw.overlaps(rw) for mw in ceo for rw in p.schedules[r]), (
                 f"CEO has no oversight overlap with {r}"
+            )
 
 
 # --- 24/7 stagger: preferred starts spread teams across the clock ---------
@@ -287,5 +289,18 @@ def test_a_team_sharing_a_preferred_start_overlaps():
         agents, constraints=Constraints(capacity_ceiling=50), objectives=Objectives()
     )
     s = {aid: w[0] for aid, w in prop.schedules.items()}
-    assert s["fin1"].overlaps(s["fin2"])          # same shift → overlap
-    assert not s["fin1"].overlaps(s["eng1"])      # different shift → spread
+    assert s["fin1"].overlaps(s["fin2"])  # same shift → overlap
+    assert not s["fin1"].overlaps(s["eng1"])  # different shift → spread
+
+
+def test_manager_never_scheduled_over_budget_with_indivisible_hours():
+    """A 7.5h manager budget with 2h windows must FLOOR to 3 windows (6h),
+    not round to 4 (8h > budget) — the infeasibility found in the live sim."""
+    agents = [
+        AgentSpec(agent_id="m", role_type=RoleType.MANAGER, reports=["r"], budget_hours=7.5),
+        AgentSpec(agent_id="r", role_type=RoleType.IC, manager="m", budget_hours=7.5),
+    ]
+    p = optimize_schedule(agents, constraints=Constraints(capacity_ceiling=50))
+    assert p.feasible, p.violations
+    mins = sum(w.length_h for w in p.schedules["m"])
+    assert mins <= 7.5 + 1e-6, f"manager over budget: {mins}h"

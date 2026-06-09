@@ -11,7 +11,9 @@ from cortiva.scheduling.health import (
     CoverageGap,
     Hotspot,
     ScheduleHealth,
+    ScheduleRecommendation,
     assess_schedule_health,
+    recommend_schedule_change,
 )
 from cortiva.scheduling.optimizer import (
     AgentSpec,
@@ -37,10 +39,12 @@ __all__ = [
     "RoleType",
     "ScheduleHealth",
     "ScheduleProposal",
+    "ScheduleRecommendation",
     "Signals",
     "WorkWindow",
     "assess_schedule_health",
     "optimize_schedule",
+    "recommend_schedule_change",
     "schedule_config_to_windows",
     "windows_to_schedule_config",
 ]

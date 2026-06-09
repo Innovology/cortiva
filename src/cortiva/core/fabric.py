@@ -1933,6 +1933,99 @@ class Fabric:
         except Exception:
             logger.exception("Schedule-health measurement failed for %s", agent.id)
 
+    async def _run_schedule_recommendation(
+        self, agent: Agent, spec: dict[str, Any],
+    ) -> None:
+        """Recommend (and optionally apply) a single-role re-timing that most
+        improves company responsiveness. Authority-gated. The steady-state
+        tweak: tune one role, holding everyone else fixed. Never fatal.
+        """
+        if agent.id not in self.scheduling_authorised:
+            logger.info(
+                "Agent %s emitted recommend_schedule but lacks scheduling "
+                "authority — ignored.", agent.id,
+            )
+            return
+        try:
+            from cortiva.scheduling import (
+                recommend_schedule_change,
+                windows_to_schedule_config,
+            )
+
+            specs = self._build_workforce_specs()
+            windows = self._current_schedule_windows()
+            if not windows:
+                try:
+                    agent.write_today(
+                        "schedule_recommendation.md",
+                        f"## Schedule recommendation — {agent.id}\n\nNo rota applied "
+                        "yet — run the optimiser first.",
+                    )
+                except Exception:
+                    logger.debug("Could not write schedule_recommendation.md", exc_info=True)
+                return
+
+            signals = self._gather_schedule_signals()
+            target = spec.get("target") or None
+            rec = recommend_schedule_change(specs, windows, target=target, signals=signals)
+
+            applied = False
+            do_apply = bool(spec.get("apply", False))
+            if (
+                do_apply
+                and rec.delta > 0
+                and rec.target
+                and rec.recommended_windows
+                and rec.recommended_windows != rec.current_windows
+            ):
+                # Enact JUST this one role — register live + persist its entry.
+                cfg = windows_to_schedule_config(rec.recommended_windows)
+                self.scheduler.register(rec.target, cfg)
+                import json
+
+                path = self.agents_dir / ".schedules.json"
+                try:
+                    cur = (
+                        json.loads(path.read_text(encoding="utf-8"))
+                        if path.exists() else {}
+                    )
+                    cur[rec.target] = cfg
+                    path.write_text(json.dumps(cur, indent=2), encoding="utf-8")
+                    applied = True
+                except OSError:
+                    logger.debug("Could not persist single-role schedule", exc_info=True)
+
+            note = (
+                f"## Schedule recommendation — {agent.id}\n\n"
+                f"**Target:** {rec.target or '(none)'}\n\n"
+                f"{rec.rationale}\n\n"
+                f"**Responsiveness:** {rec.score_before:.0f} → {rec.score_after:.0f} "
+                f"(+{rec.delta})\n\n"
+                f"**Applied:** {applied}"
+            )
+            try:
+                agent.write_today("schedule_recommendation.md", note)
+            except Exception:
+                logger.debug("Could not write schedule_recommendation.md", exc_info=True)
+
+            await self.memory.store(
+                agent_id=agent.id,
+                content=f"Schedule recommendation for {rec.target}: {rec.rationale} "
+                        f"(applied={applied})",
+                tags=["schedule", "recommendation", "ar", "decision"],
+                importance=7.0,
+            )
+            self._emit(
+                "schedule.recommended", agent_id=agent.id,
+                target=rec.target, delta=rec.delta, applied=applied,
+            )
+            logger.info(
+                "Agent %s schedule recommendation for %s (+%s, applied=%s)",
+                agent.id, rec.target, rec.delta, applied,
+            )
+        except Exception:
+            logger.exception("Schedule recommendation failed for %s", agent.id)
+
     async def _process_reflection(
         self, agent: Agent, task: Task, suffix: ReflectionSuffix
     ) -> None:
@@ -1990,6 +2083,11 @@ class Fabric:
         # Measures only — the AR Scheduler reads the readout, then optimises.
         if suffix.schedule_health is not None:
             await self._run_schedule_health(agent, suffix.schedule_health)
+
+        # Optimise one role's schedule for responsiveness (the steady-state
+        # tweak). Authority-gated; applies only the single targeted role.
+        if suffix.recommend_schedule is not None:
+            await self._run_schedule_recommendation(agent, suffix.recommend_schedule)
 
         # Queue an outbound email — the node sends it via Resend as this
         # agent's own address. Written to outbox/email/ as a durable record;
@@ -2835,6 +2933,23 @@ class Fabric:
                 "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
             }
 
+        async def _handle_schedule_recommend(
+            agent_id: str = "ar-scheduler", **spec: Any,
+        ) -> dict[str, Any]:
+            """Recommend/apply a single-role re-timing on demand."""
+            agent = self.agents.get(agent_id)
+            if agent is None:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+            if agent_id not in self.scheduling_authorised:
+                return {"ok": False, "error": f"{agent_id} lacks scheduling authority"}
+            await self._run_schedule_recommendation(agent, dict(spec))
+            note_path = agent.directory / "today" / "schedule_recommendation.md"
+            return {
+                "ok": True,
+                "agent_id": agent_id,
+                "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
+            }
+
         async def _handle_cluster_load(**_kw: Any) -> dict[str, Any]:
             nodes = self.cluster_metrics.snapshot(
                 self.capabilities, self.agents, self.budget_manager,
@@ -3139,6 +3254,7 @@ class Fabric:
         server.register("discover", _handle_discover)
         server.register("schedule.optimize", _handle_schedule_optimize)
         server.register("schedule.health", _handle_schedule_health)
+        server.register("schedule.recommend", _handle_schedule_recommend)
         server.register("cluster.rebalance", _handle_cluster_rebalance)
         server.register("cluster.load", _handle_cluster_load)
         server.register("cluster.status", _handle_cluster_status)

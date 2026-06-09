@@ -377,8 +377,12 @@ def _place_manager_windows(
         for r in manager.reports
         for w in schedules.get(r, [])
     ]
-    n = max(1, int(round(min(manager.budget_hours, c.manager_windows
-                             * c.manager_window_len_h) / c.manager_window_len_h)))
+    # FLOOR, not round: a manager must never be scheduled over budget. With a
+    # 7.5h budget and 2h windows, rounding gave 4 windows (8.0h > 7.5h budget)
+    # → infeasible. Flooring gives 3 windows (6.0h) and stays within budget.
+    n = max(1, min(c.manager_windows,
+                   int(min(manager.budget_hours, c.manager_windows
+                           * c.manager_window_len_h) / c.manager_window_len_h)))
     wlen = c.manager_window_len_h
 
     if not report_windows:

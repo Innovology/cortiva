@@ -230,3 +230,120 @@ def assess_schedule_health(
         f"{len(health.chronic_overtime)} in overtime. Top: {top}"
     )
     return health
+
+
+# ---------------------------------------------------------------------------
+# Single-role recommendation — the steady-state tweak
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ScheduleRecommendation:
+    """A proposed re-timing of ONE role to raise overall responsiveness."""
+
+    target: str = ""
+    current_windows: list[WorkWindow] = field(default_factory=list)
+    recommended_windows: list[WorkWindow] = field(default_factory=list)
+    score_before: float = 0.0
+    score_after: float = 0.0
+    rationale: str = ""
+
+    @property
+    def delta(self) -> float:
+        return round(self.score_after - self.score_before, 1)
+
+    def to_dict(self) -> dict[str, Any]:
+        def wins(ws: list[WorkWindow]) -> list[dict[str, float]]:
+            return [{"start_h": w.start_h % 24, "end_h": w.end_h} for w in ws]
+
+        return {
+            "target": self.target,
+            "current_windows": wins(self.current_windows),
+            "recommended_windows": wins(self.recommended_windows),
+            "score_before": round(self.score_before, 1),
+            "score_after": round(self.score_after, 1),
+            "delta": self.delta,
+            "rationale": self.rationale,
+        }
+
+
+def _shift(windows: list[WorkWindow], offset_h: float) -> list[WorkWindow]:
+    """Shift a role's windows by ``offset_h`` (preserving each length)."""
+    return [
+        WorkWindow((w.start_h + offset_h) % 24, (w.start_h + offset_h) % 24 + w.length_h)
+        for w in windows
+    ]
+
+
+def recommend_schedule_change(
+    agents: list[AgentSpec],
+    schedules: dict[str, list[WorkWindow]],
+    *,
+    target: str | None = None,
+    signals: Signals | None = None,
+    slot_minutes: int = 30,
+) -> ScheduleRecommendation:
+    """Recommend a re-timing of ONE role that most improves responsiveness.
+
+    The AR Scheduler's steady-state move: hold everyone else's schedule
+    fixed, pick the role to tune (the worst hotspot's role by default, or an
+    explicit ``target``), and search re-timings of just that role — shifting
+    its window(s) around the clock — for the one that maximises the overall
+    responsiveness score (the same metric :func:`assess_schedule_health`
+    computes). Returns the proposed windows + the score delta + a rationale.
+    Pure + deterministic; it recommends, it doesn't apply.
+    """
+    base = assess_schedule_health(agents, schedules, signals=signals, slot_minutes=slot_minutes)
+    if target is None:
+        target = next((h.agent_id for h in base.hotspots if h.agent_id), None)
+
+    rec = ScheduleRecommendation(
+        target=target or "",
+        current_windows=list(schedules.get(target, [])) if target else [],
+        recommended_windows=list(schedules.get(target, [])) if target else [],
+        score_before=base.responsiveness_score,
+        score_after=base.responsiveness_score,
+    )
+    if not target or target not in schedules or not schedules[target]:
+        rec.rationale = "No single-role tweak available (no rota / no hotspot owner)."
+        return rec
+
+    cur = schedules[target]
+    step_h = slot_minutes / 60.0
+    best_score = base.responsiveness_score
+    best_windows = cur
+    # Try shifting this role's whole shift around the clock, slot by slot.
+    n_steps = int(round(24 / step_h))
+    for k in range(n_steps):
+        offset = k * step_h
+        if offset == 0:
+            continue
+        trial_windows = _shift(cur, offset)
+        trial = dict(schedules)
+        trial[target] = trial_windows
+        score = assess_schedule_health(
+            agents, trial, signals=signals, slot_minutes=slot_minutes
+        ).responsiveness_score
+        # Strictly better only (ties keep the current schedule → no churn).
+        if score > best_score + 1e-9:
+            best_score = score
+            best_windows = trial_windows
+
+    rec.recommended_windows = best_windows
+    rec.score_after = best_score
+    if best_windows is cur or rec.delta <= 0:
+        rec.recommended_windows = cur
+        rec.score_after = base.responsiveness_score
+        rec.rationale = (
+            f"{target}'s schedule is already near-optimal for responsiveness "
+            f"({base.responsiveness_score:.0f}/100); no re-timing improves it."
+        )
+    else:
+        old = ",".join(f"{w.start_h % 24:04.1f}-{w.end_h % 24:04.1f}" for w in cur)
+        new = ",".join(f"{w.start_h % 24:04.1f}-{w.end_h % 24:04.1f}" for w in best_windows)
+        rec.rationale = (
+            f"Re-time {target} from [{old}] to [{new}] → responsiveness "
+            f"{base.responsiveness_score:.0f}→{best_score:.0f} (+{rec.delta}). "
+            f"Closes the worst gap while holding every other role fixed."
+        )
+    return rec

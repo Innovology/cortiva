@@ -92,3 +92,50 @@ def test_hotspots_ranked_worst_first_so_vera_picks_one_role():
     # severities are non-increasing
     sev = [hs.severity for hs in h.hotspots]
     assert sev == sorted(sev, reverse=True)
+
+
+# --- Single-role recommendation -------------------------------------------
+
+from cortiva.scheduling import recommend_schedule_change  # noqa: E402
+
+
+def test_recommends_retiming_the_role_that_closes_the_worst_gap():
+    # rep is on a shift that never overlaps its manager → oversight gap.
+    # Re-timing rep onto the manager's shift should fix it and raise the score.
+    agents = [
+        AgentSpec("mgr", RoleType.MANAGER, reports=["rep"]),
+        AgentSpec("rep", RoleType.IC, manager="mgr"),
+        AgentSpec("other", RoleType.IC),
+    ]
+    schedules = {
+        "mgr": [_w(0, 8)],
+        "rep": [_w(16, 24)],  # never overlaps mgr
+        "other": [_w(8, 16)],  # holds coverage
+    }
+    before = assess_schedule_health(agents, schedules).responsiveness_score
+    rec = recommend_schedule_change(agents, schedules)
+    assert rec.target == "mgr" or rec.target == "rep"  # owner of the worst hotspot
+    assert rec.score_after > before
+    assert rec.delta > 0
+    assert rec.recommended_windows != rec.current_windows
+
+
+def test_recommendation_is_a_noop_when_already_optimal():
+    # Two ICs already tiling the day with no gaps/oversight issues.
+    agents = [AgentSpec("a", RoleType.IC), AgentSpec("b", RoleType.IC)]
+    schedules = {"a": [_w(0, 12)], "b": [_w(12, 24)]}
+    rec = recommend_schedule_change(agents, schedules, target="a")
+    assert rec.delta <= 0
+    assert rec.recommended_windows == rec.current_windows
+    assert "near-optimal" in rec.rationale or "no re-timing" in rec.rationale
+
+
+def test_recommendation_targets_an_explicit_role():
+    agents = [
+        AgentSpec("mgr", RoleType.MANAGER, reports=["rep"]),
+        AgentSpec("rep", RoleType.IC, manager="mgr"),
+        AgentSpec("filler", RoleType.IC),
+    ]
+    schedules = {"mgr": [_w(0, 8)], "rep": [_w(12, 20)], "filler": [_w(8, 16)]}
+    rec = recommend_schedule_change(agents, schedules, target="rep")
+    assert rec.target == "rep"
