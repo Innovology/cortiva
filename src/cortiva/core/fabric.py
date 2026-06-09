@@ -1417,37 +1417,70 @@ class Fabric:
     # Workforce scheduling — the AR Scheduler's tool
     # ------------------------------------------------------------------
 
+    # Anchor for the default working day: 08:00 UTC == 09:00 BST. A role
+    # with no explicit preference starts here; departments stagger away from
+    # it so the optimiser spreads teams across 24/7 for round-the-clock
+    # coverage (a department's members share a start → they overlap; the
+    # whole org doesn't pile onto one shift).
+    _DEFAULT_START_UTC = 8
+
     def _build_workforce_specs(self) -> list[Any]:
         """Build the optimiser's view of the workforce from the org model.
 
-        An agent is a MANAGER if anyone reports to it, else an IC. Budgets
-        and preferred starts come from deploy.yaml where present.
+        An agent is a MANAGER if anyone reports to it, else an IC. Budget,
+        department and any explicit preferred start come from deploy.yaml.
+        When a role gives no preferred start, it inherits its **department's
+        staggered shift** — departments are spread evenly across the 24h
+        clock from the 09:00-BST anchor, which is what turns "everyone awake
+        00:00–08:00" into genuine 24/7 coverage.
         """
         import yaml
 
         from cortiva.scheduling import AgentSpec, RoleType
 
-        specs: list[Any] = []
+        # First pass: read each agent's role config.
+        raw: dict[str, dict] = {}
         for aid in sorted(self.agents):
-            manager = self.org.manager_of(aid) if self.org else None
-            reports = self.org.subordinates_of(aid) if self.org else []
-            role_type = RoleType.MANAGER if reports else RoleType.IC
-            budget = 8.0
-            preferred_start = None
+            # Weekly 37.5h ≈ 7.5h/day over a 5-day week (overtime is agent-
+            # requested on top, via the schedule reflection suffix).
+            dept, budget, pref = "", 7.5, None
             deploy = self.agents_dir / aid / "deploy.yaml"
             if deploy.exists():
                 try:
                     spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
                             or {}).get("agent", {}) or {}
-                    budget = float(spec.get("daily_hours", spec.get("budget_hours", 8.0)))
+                    dept = (spec.get("department") or "").strip()
+                    budget = float(spec.get("daily_hours", spec.get("budget_hours", 7.5)))
                     if spec.get("preferred_start") is not None:
-                        preferred_start = int(spec["preferred_start"])
+                        pref = int(spec["preferred_start"])
                 except Exception:
                     pass
+            raw[aid] = {"dept": dept, "budget": budget, "pref": pref}
+
+        # Department stagger across three 8h tiling shifts that seamlessly
+        # cover the 24h clock, anchored so the first shift is 09:00 BST:
+        #   shift 0 → 08:00 UTC (09:00 BST), 1 → 16:00, 2 → 00:00.
+        # Departments round-robin onto the shifts, so teams spread across
+        # the day for round-the-clock coverage while same-shift departments
+        # still overlap. One department → everyone on the 09:00-BST anchor.
+        _SHIFTS = [self._DEFAULT_START_UTC, (self._DEFAULT_START_UTC + 8) % 24,
+                   (self._DEFAULT_START_UTC + 16) % 24]
+        depts = sorted({r["dept"] for r in raw.values() if r["dept"]})
+        dept_start = {d: _SHIFTS[i % len(_SHIFTS)] for i, d in enumerate(depts)}
+
+        specs: list[Any] = []
+        for aid in sorted(self.agents):
+            r = raw[aid]
+            manager = self.org.manager_of(aid) if self.org else None
+            reports = self.org.subordinates_of(aid) if self.org else []
+            role_type = RoleType.MANAGER if reports else RoleType.IC
+            pref = r["pref"]
+            if pref is None:
+                pref = dept_start.get(r["dept"], self._DEFAULT_START_UTC)
             specs.append(AgentSpec(
                 agent_id=aid, role_type=role_type, manager=manager,
-                reports=list(reports), budget_hours=budget,
-                preferred_start=preferred_start,
+                reports=list(reports), budget_hours=r["budget"],
+                preferred_start=pref,
             ))
         return specs
 
@@ -1815,6 +1848,184 @@ class Fabric:
         except Exception:
             logger.exception("Node rebalance planning failed for %s", agent.id)
 
+    def _current_schedule_windows(self) -> dict[str, list[Any]]:
+        """The live rota as work windows, parsed from the persisted config.
+
+        Reads ``.schedules.json`` (what the optimiser last applied) and turns
+        each agent's wake/sleep config back into windows so the AR Scheduler
+        can measure the *current* schedule's health.
+        """
+        import json
+
+        from cortiva.scheduling import schedule_config_to_windows
+
+        path = self.agents_dir / ".schedules.json"
+        if not path.exists():
+            return {}
+        try:
+            cfgs = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        out: dict[str, list[Any]] = {}
+        for aid, cfg in (cfgs or {}).items():
+            if isinstance(cfg, dict):
+                out[aid] = schedule_config_to_windows(cfg)
+        return out
+
+    async def _run_schedule_health(self, agent: Agent, spec: dict[str, Any]) -> None:
+        """Measure the current rota's responsiveness and record a readout.
+
+        Authority-gated to the scheduling set. Measures only — the AR
+        Scheduler reads the ranked hotspots, then optimises one role. Never
+        fatal to the cycle.
+        """
+        if agent.id not in self.scheduling_authorised:
+            logger.info(
+                "Agent %s emitted schedule_health but lacks scheduling "
+                "authority — ignored.", agent.id,
+            )
+            return
+        try:
+            from cortiva.scheduling import assess_schedule_health
+
+            specs = self._build_workforce_specs()
+            windows = self._current_schedule_windows()
+            if not windows:
+                try:
+                    agent.write_today(
+                        "schedule_health.md",
+                        f"## Schedule health — {agent.id}\n\nNo rota applied yet "
+                        "(`.schedules.json` absent) — run the optimiser first.",
+                    )
+                except Exception:
+                    logger.debug("Could not write schedule_health.md", exc_info=True)
+                return
+
+            signals = self._gather_schedule_signals()
+            health = assess_schedule_health(specs, windows, signals=signals)
+
+            lines = [f"## Schedule health — {agent.id}\n", f"**{health.summary}**\n"]
+            if health.hotspots:
+                lines.append("### Hotspots (act on the top one)")
+                for h in health.hotspots[:8]:
+                    who = f" [{h.agent_id}]" if h.agent_id else ""
+                    lines.append(f"- _{h.kind}_{who}: {h.detail}")
+            try:
+                agent.write_today("schedule_health.md", "\n".join(lines))
+            except Exception:
+                logger.debug("Could not write schedule_health.md", exc_info=True)
+
+            await self.memory.store(
+                agent_id=agent.id,
+                content=f"Measured schedule health: {health.summary}",
+                tags=["schedule", "health", "ar", "measurement"],
+                importance=6.5,
+            )
+            self._emit(
+                "schedule.health_measured", agent_id=agent.id,
+                score=health.responsiveness_score,
+                uncovered_hours=health.uncovered_hours,
+                oversight_gaps=len(health.oversight_gaps),
+            )
+            logger.info(
+                "Agent %s measured schedule health — %s", agent.id, health.summary,
+            )
+        except Exception:
+            logger.exception("Schedule-health measurement failed for %s", agent.id)
+
+    async def _run_schedule_recommendation(
+        self, agent: Agent, spec: dict[str, Any],
+    ) -> None:
+        """Recommend (and optionally apply) a single-role re-timing that most
+        improves company responsiveness. Authority-gated. The steady-state
+        tweak: tune one role, holding everyone else fixed. Never fatal.
+        """
+        if agent.id not in self.scheduling_authorised:
+            logger.info(
+                "Agent %s emitted recommend_schedule but lacks scheduling "
+                "authority — ignored.", agent.id,
+            )
+            return
+        try:
+            from cortiva.scheduling import (
+                recommend_schedule_change,
+                windows_to_schedule_config,
+            )
+
+            specs = self._build_workforce_specs()
+            windows = self._current_schedule_windows()
+            if not windows:
+                try:
+                    agent.write_today(
+                        "schedule_recommendation.md",
+                        f"## Schedule recommendation — {agent.id}\n\nNo rota applied "
+                        "yet — run the optimiser first.",
+                    )
+                except Exception:
+                    logger.debug("Could not write schedule_recommendation.md", exc_info=True)
+                return
+
+            signals = self._gather_schedule_signals()
+            target = spec.get("target") or None
+            rec = recommend_schedule_change(specs, windows, target=target, signals=signals)
+
+            applied = False
+            do_apply = bool(spec.get("apply", False))
+            if (
+                do_apply
+                and rec.delta > 0
+                and rec.target
+                and rec.recommended_windows
+                and rec.recommended_windows != rec.current_windows
+            ):
+                # Enact JUST this one role — register live + persist its entry.
+                cfg = windows_to_schedule_config(rec.recommended_windows)
+                self.scheduler.register(rec.target, cfg)
+                import json
+
+                path = self.agents_dir / ".schedules.json"
+                try:
+                    cur = (
+                        json.loads(path.read_text(encoding="utf-8"))
+                        if path.exists() else {}
+                    )
+                    cur[rec.target] = cfg
+                    path.write_text(json.dumps(cur, indent=2), encoding="utf-8")
+                    applied = True
+                except OSError:
+                    logger.debug("Could not persist single-role schedule", exc_info=True)
+
+            note = (
+                f"## Schedule recommendation — {agent.id}\n\n"
+                f"**Target:** {rec.target or '(none)'}\n\n"
+                f"{rec.rationale}\n\n"
+                f"**Responsiveness:** {rec.score_before:.0f} → {rec.score_after:.0f} "
+                f"(+{rec.delta})\n\n"
+                f"**Applied:** {applied}"
+            )
+            try:
+                agent.write_today("schedule_recommendation.md", note)
+            except Exception:
+                logger.debug("Could not write schedule_recommendation.md", exc_info=True)
+
+            await self.memory.store(
+                agent_id=agent.id,
+                content=f"Schedule recommendation for {rec.target}: {rec.rationale} "
+                        f"(applied={applied})",
+                tags=["schedule", "recommendation", "ar", "decision"],
+                importance=7.0,
+            )
+            self._emit(
+                "schedule.recommended", agent_id=agent.id,
+                target=rec.target, delta=rec.delta, applied=applied,
+            )
+            logger.info(
+                "Agent %s schedule recommendation for %s (+%s, applied=%s)",
+                agent.id, rec.target, rec.delta, applied,
+            )
+        except Exception:
+            logger.exception("Schedule recommendation failed for %s", agent.id)
+
     async def _process_reflection(
         self, agent: Agent, task: Task, suffix: ReflectionSuffix
     ) -> None:
@@ -1867,6 +2078,16 @@ class Fabric:
         # the infra team's metrics; moves nothing.
         if suffix.rebalance_nodes is not None:
             await self._run_node_rebalance(agent, suffix.rebalance_nodes)
+
+        # Measure rota responsiveness. Authority-gated to the scheduling set.
+        # Measures only — the AR Scheduler reads the readout, then optimises.
+        if suffix.schedule_health is not None:
+            await self._run_schedule_health(agent, suffix.schedule_health)
+
+        # Optimise one role's schedule for responsiveness (the steady-state
+        # tweak). Authority-gated; applies only the single targeted role.
+        if suffix.recommend_schedule is not None:
+            await self._run_schedule_recommendation(agent, suffix.recommend_schedule)
 
         # Queue an outbound email — the node sends it via Resend as this
         # agent's own address. Written to outbox/email/ as a durable record;
@@ -2693,6 +2914,42 @@ class Fabric:
                 "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
             }
 
+        async def _handle_schedule_health(
+            agent_id: str = "ar-scheduler", **_kw: Any,
+        ) -> dict[str, Any]:
+            """Measure rota responsiveness on demand (read-only). Control
+            surface for HQ/Canopy + the AR Scheduler; runs the same
+            authority-gated handler."""
+            agent = self.agents.get(agent_id)
+            if agent is None:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+            if agent_id not in self.scheduling_authorised:
+                return {"ok": False, "error": f"{agent_id} lacks scheduling authority"}
+            await self._run_schedule_health(agent, {})
+            note_path = agent.directory / "today" / "schedule_health.md"
+            return {
+                "ok": True,
+                "agent_id": agent_id,
+                "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
+            }
+
+        async def _handle_schedule_recommend(
+            agent_id: str = "ar-scheduler", **spec: Any,
+        ) -> dict[str, Any]:
+            """Recommend/apply a single-role re-timing on demand."""
+            agent = self.agents.get(agent_id)
+            if agent is None:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+            if agent_id not in self.scheduling_authorised:
+                return {"ok": False, "error": f"{agent_id} lacks scheduling authority"}
+            await self._run_schedule_recommendation(agent, dict(spec))
+            note_path = agent.directory / "today" / "schedule_recommendation.md"
+            return {
+                "ok": True,
+                "agent_id": agent_id,
+                "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
+            }
+
         async def _handle_cluster_load(**_kw: Any) -> dict[str, Any]:
             nodes = self.cluster_metrics.snapshot(
                 self.capabilities, self.agents, self.budget_manager,
@@ -2996,6 +3253,8 @@ class Fabric:
         server.register("model.perf", _handle_model_perf)
         server.register("discover", _handle_discover)
         server.register("schedule.optimize", _handle_schedule_optimize)
+        server.register("schedule.health", _handle_schedule_health)
+        server.register("schedule.recommend", _handle_schedule_recommend)
         server.register("cluster.rebalance", _handle_cluster_rebalance)
         server.register("cluster.load", _handle_cluster_load)
         server.register("cluster.status", _handle_cluster_status)

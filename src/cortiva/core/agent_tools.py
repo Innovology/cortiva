@@ -91,24 +91,76 @@ REBALANCE_NODES_TOOL: dict[str, Any] = {
     },
 }
 
+SCHEDULE_HEALTH_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "schedule_health",
+        "description": (
+            "Measure how RESPONSIVE the current workforce rota is — your eyes "
+            "before you tune it. Returns a 0-100 responsiveness score plus "
+            "ranked hotspots: hours with nobody awake (coverage gaps), reports "
+            "who never overlap their manager (blocked waiting), peers who never "
+            "overlap (handoffs serialise), and chronic overtime. Read this, "
+            "pick the worst hotspot, then optimise that ONE role's schedule. "
+            "Measures only — it changes nothing."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+RECOMMEND_SCHEDULE_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "recommend_schedule",
+        "description": (
+            "Optimise ONE role's schedule for overall company responsiveness — "
+            "the steady-state tweak. Holding everyone else fixed, it finds the "
+            "re-timing of the target role (or, by default, the role behind the "
+            "worst schedule-health hotspot) that most raises the responsiveness "
+            "score, and reports the change + the gain. Set apply=true to enact "
+            "just that one role's new schedule. Tune the company one role at a "
+            "time, repeatedly — don't re-rota everyone."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Agent id to re-time. Omit to auto-pick the worst hotspot's role.",
+                },
+                "apply": {
+                    "type": "boolean",
+                    "description": "true to enact the recommended single-role change, false (default) to preview.",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
 # Tool name -> the ReflectionSuffix field it populates.
 _TOOL_TO_SUFFIX_FIELD = {
     "optimize_schedule": "optimize_schedule",
     "rebalance_nodes": "rebalance_nodes",
+    "schedule_health": "schedule_health",
+    "recommend_schedule": "recommend_schedule",
 }
 
 
 def tools_for_agent(agent_id: str, *, scheduling_authorised: set[str]) -> list[dict[str, Any]]:
     """Return the tool schemas an agent is allowed to call.
 
-    Authority-scoped: only scheduling-authorised agents are offered the
-    rota optimiser and node rebalancer, so the model isn't tempted to call
-    a tool it can't use.
+    Authority-scoped: only scheduling-authorised agents are offered the rota
+    optimiser, the node rebalancer, the schedule-health readout, and the
+    single-role recommendation — so the model isn't tempted to call a tool it
+    can't use.
     """
     tools: list[dict[str, Any]] = []
     if agent_id in scheduling_authorised:
         tools.append(OPTIMIZE_SCHEDULE_TOOL)
         tools.append(REBALANCE_NODES_TOOL)
+        tools.append(SCHEDULE_HEALTH_TOOL)
+        tools.append(RECOMMEND_SCHEDULE_TOOL)
     return tools
 
 
