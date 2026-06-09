@@ -1622,6 +1622,170 @@ class Fabric:
         except Exception:
             logger.exception("Schedule optimisation failed for %s", agent.id)
 
+    def _load_cluster_metrics(self) -> dict[str, Any] | None:
+        """Read the latest cluster-metrics snapshot pushed in from HQ.
+
+        The open-source fabric has no knowledge of HQ, so the HQ-aware
+        node client relays an infra snapshot down and writes it to
+        ``.cluster_metrics.json`` in the agents dir. This is the only
+        source of cross-node truth (other nodes' RAM, other nodes'
+        agents' sleep state, deployment grades) — a single fabric can't
+        see beyond itself. Returns ``None`` when no snapshot is present.
+        """
+        import json
+
+        path = self.agents_dir / ".cluster_metrics.json"
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.debug("Could not read .cluster_metrics.json", exc_info=True)
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _build_rebalance_inputs(
+        self, snapshot: dict[str, Any],
+    ) -> tuple[list[Any], list[Any]]:
+        """Map an HQ cluster-metrics snapshot onto rebalance dataclasses.
+
+        Snapshot shape (assembled by HQ from all nodes' heartbeats)::
+
+            {"nodes": [{"node_id", "grade", "ram_free_gb", "ram_total_gb",
+                        "agents_deployed", "agent_slots", "name",
+                        "pressure"}, ...],
+             "agents": [{"agent_id", "grade", "current_node", "asleep",
+                         "name", "last_moved_hours_ago"}, ...]}
+        """
+        from cortiva.scheduling.rebalance import AgentState, NodeState
+
+        nodes: list[Any] = []
+        for n in snapshot.get("nodes", []) or []:
+            if not isinstance(n, dict) or not n.get("node_id"):
+                continue
+            nodes.append(NodeState(
+                node_id=str(n["node_id"]),
+                grade=int(n.get("grade", 0)),
+                ram_free_gb=float(n.get("ram_free_gb", 0.0)),
+                ram_total_gb=float(n.get("ram_total_gb", 0.0)),
+                agents_deployed=int(n.get("agents_deployed", 0)),
+                agent_slots=int(n.get("agent_slots", 0)),
+                name=str(n.get("name", "")),
+                pressure=float(n.get("pressure", 0.0)),
+            ))
+        agents: list[Any] = []
+        for a in snapshot.get("agents", []) or []:
+            if not isinstance(a, dict) or not a.get("agent_id"):
+                continue
+            agents.append(AgentState(
+                agent_id=str(a["agent_id"]),
+                grade=int(a.get("grade", 0)),
+                current_node=str(a.get("current_node", "")),
+                asleep=bool(a.get("asleep", False)),
+                name=str(a.get("name", "")),
+                last_moved_hours_ago=float(a.get("last_moved_hours_ago", 1e9)),
+            ))
+        return nodes, agents
+
+    async def _run_node_rebalance(
+        self, agent: Agent, spec: dict[str, Any],
+    ) -> None:
+        """Plan a reshuffle of agents between nodes. Authority-gated, advisory.
+
+        Phase 1: produce a feasible plan from the infra team's node metrics
+        and record it as a reviewable artifact + memory + event. It moves
+        nothing — only sleeping agents are ever proposed, never below an
+        agent's deployment grade, never past a target's slots/RAM headroom.
+        The executor (Phase 2) consumes a plan and performs the moves.
+        Never fatal to the cycle.
+        """
+        if agent.id not in self.scheduling_authorised:
+            logger.info(
+                "Agent %s emitted rebalance_nodes but lacks scheduling "
+                "authority — ignored.", agent.id,
+            )
+            return
+        try:
+            from cortiva.scheduling.rebalance import plan_rebalance
+
+            snapshot = self._load_cluster_metrics()
+            if not snapshot:
+                note = (
+                    f"## Node rebalance — {agent.id}\n\n"
+                    "No infrastructure metrics available yet "
+                    "(`.cluster_metrics.json` not present). The infra team's "
+                    "snapshot hasn't reached this node — cannot plan a "
+                    "rebalance without cross-node truth."
+                )
+                try:
+                    agent.write_today("node_rebalance.md", note)
+                except Exception:
+                    logger.debug("Could not write node_rebalance.md", exc_info=True)
+                logger.info(
+                    "Agent %s requested rebalance but no cluster metrics present.",
+                    agent.id,
+                )
+                return
+
+            nodes, agents = self._build_rebalance_inputs(snapshot)
+            kwargs: dict[str, Any] = {}
+            if spec.get("ram_headroom_gb") is not None:
+                kwargs["ram_headroom_gb"] = float(spec["ram_headroom_gb"])
+            if spec.get("max_moves") is not None:
+                kwargs["max_moves"] = int(spec["max_moves"])
+            if spec.get("pressure_threshold") is not None:
+                kwargs["pressure_threshold"] = float(spec["pressure_threshold"])
+
+            plan = plan_rebalance(nodes, agents, **kwargs)
+
+            # Phase 1 is advisory regardless of the agent's `apply` flag.
+            requested_apply = bool(spec.get("apply", False))
+            apply_note = ""
+            if requested_apply:
+                apply_note = (
+                    "\n\n_Execution requested (`apply=true`) but the executor "
+                    "is not enabled yet (Phase 2) — plan recorded only._"
+                )
+
+            lines = [f"## Node rebalance — {agent.id}\n", f"**{plan.summary}**\n"]
+            if plan.moves:
+                lines.append("### Proposed moves")
+                for m in plan.moves:
+                    lines.append(
+                        f"- **{m.agent_id}**: {m.from_node} → {m.to_node} — {m.reason}"
+                    )
+                lines.append("")
+            if plan.skipped:
+                lines.append("### Skipped")
+                for s in plan.skipped:
+                    lines.append(f"- {s.get('agent_id', '?')}: {s.get('reason', '')}")
+            note = "\n".join(lines) + apply_note
+            try:
+                agent.write_today("node_rebalance.md", note)
+            except Exception:
+                logger.debug("Could not write node_rebalance.md", exc_info=True)
+
+            await self.memory.store(
+                agent_id=agent.id,
+                content=(
+                    f"Planned node rebalance: {plan.summary} "
+                    f"({len(plan.moves)} move(s) proposed, advisory)"
+                ),
+                tags=["rebalance", "infra", "ar", "decision"],
+                importance=7.0,
+            )
+            self._emit(
+                "cluster.rebalance_planned", agent_id=agent.id,
+                moves=len(plan.moves), skipped=len(plan.skipped),
+                applied=False,
+            )
+            logger.info(
+                "Agent %s planned node rebalance — %s (advisory, %d moves)",
+                agent.id, plan.summary, len(plan.moves),
+            )
+        except Exception:
+            logger.exception("Node rebalance planning failed for %s", agent.id)
+
     async def _process_reflection(
         self, agent: Agent, task: Task, suffix: ReflectionSuffix
     ) -> None:
@@ -1668,6 +1832,12 @@ class Fabric:
         # and constraints; the tool guarantees a feasible result or none.
         if suffix.optimize_schedule is not None:
             await self._run_schedule_optimization(agent, suffix.optimize_schedule)
+
+        # Plan a node rebalance. Authority-gated to the same scheduling
+        # set. Advisory in Phase 1 — produces a feasible move plan from
+        # the infra team's metrics; moves nothing.
+        if suffix.rebalance_nodes is not None:
+            await self._run_node_rebalance(agent, suffix.rebalance_nodes)
 
         # Queue an outbound email — the node sends it via Resend as this
         # agent's own address. Written to outbox/email/ as a durable record;
@@ -2472,6 +2642,28 @@ class Fabric:
                 "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
             }
 
+        async def _handle_cluster_rebalance(
+            agent_id: str = "ar-scheduler", **spec: Any,
+        ) -> dict[str, Any]:
+            """Plan a node rebalance on demand (advisory, Phase 1).
+
+            The control surface for HQ/Canopy (and operators) to have an
+            authorised scheduling agent run its rebalancer now. Invokes the
+            exact same authority-gated handler the agent uses autonomously.
+            """
+            agent = self.agents.get(agent_id)
+            if agent is None:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+            if agent_id not in self.scheduling_authorised:
+                return {"ok": False, "error": f"{agent_id} lacks scheduling authority"}
+            await self._run_node_rebalance(agent, dict(spec))
+            note_path = agent.directory / "today" / "node_rebalance.md"
+            return {
+                "ok": True,
+                "agent_id": agent_id,
+                "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
+            }
+
         async def _handle_cluster_load(**_kw: Any) -> dict[str, Any]:
             nodes = self.cluster_metrics.snapshot(
                 self.capabilities, self.agents, self.budget_manager,
@@ -2775,6 +2967,7 @@ class Fabric:
         server.register("model.perf", _handle_model_perf)
         server.register("discover", _handle_discover)
         server.register("schedule.optimize", _handle_schedule_optimize)
+        server.register("cluster.rebalance", _handle_cluster_rebalance)
         server.register("cluster.load", _handle_cluster_load)
         server.register("cluster.status", _handle_cluster_status)
         server.register("cluster.nodes", _handle_cluster_nodes)

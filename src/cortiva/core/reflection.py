@@ -64,6 +64,15 @@ class ReflectionSuffix:
     ``w_overtime``/``w_spread``/``w_preference``, plus ``apply`` (default
     true; false = dry-run preview only). The tool guarantees feasibility;
     the runtime refuses to apply an infeasible proposal."""
+    rebalance_nodes: dict[str, Any] | None = None
+    """A request to plan a reshuffle of agents between compute nodes from
+    the infra team's metrics: ``{"ram_headroom_gb": ..., "max_moves": ...,
+    "pressure_threshold": ..., "apply": <bool>}``. Only honoured for agents
+    with scheduling authority. The planner is feasible by construction — it
+    only moves *sleeping* agents, never below an agent's deployment grade,
+    never past a target's slots/RAM headroom, respects a move cooldown, and
+    caps moves per cycle. Phase 1 is advisory (``apply`` ignored until the
+    executor is enabled)."""
 
 
 @dataclass
@@ -125,6 +134,11 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         optimize_schedule=(
             data.get("optimize_schedule")
             if isinstance(data.get("optimize_schedule"), dict)
+            else None
+        ),
+        rebalance_nodes=(
+            data.get("rebalance_nodes")
+            if isinstance(data.get("rebalance_nodes"), dict)
             else None
         ),
     )

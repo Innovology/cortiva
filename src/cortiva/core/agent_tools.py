@@ -51,9 +51,50 @@ OPTIMIZE_SCHEDULE_TOOL: dict[str, Any] = {
     },
 }
 
+REBALANCE_NODES_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "rebalance_nodes",
+        "description": (
+            "Produce a plan to reshuffle agents between compute nodes "
+            "(e.g. relieve a pressured Mini-2 by moving eligible agents to "
+            "Mini-1) using the infrastructure team's node metrics. The plan "
+            "is feasible by construction — it only ever moves a *sleeping* "
+            "agent, never places an agent on a node below its deployment "
+            "grade, never breaches a target's slot capacity or RAM headroom, "
+            "respects a per-agent move cooldown, and caps moves per cycle. "
+            "By default this is advisory (returns the plan); set apply=true "
+            "to request execution once the executor is enabled."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ram_headroom_gb": {
+                    "type": "number",
+                    "description": "GB of RAM a target node must retain after a move (default 4).",
+                },
+                "max_moves": {
+                    "type": "integer",
+                    "description": "Maximum agents to relocate in one cycle (default 3).",
+                },
+                "pressure_threshold": {
+                    "type": "number",
+                    "description": "SRE pressure (0..1) at/above which a node is treated as pressured (default 0.85).",
+                },
+                "apply": {
+                    "type": "boolean",
+                    "description": "true to request execution of the plan, false (default) for an advisory plan only.",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
 # Tool name -> the ReflectionSuffix field it populates.
 _TOOL_TO_SUFFIX_FIELD = {
     "optimize_schedule": "optimize_schedule",
+    "rebalance_nodes": "rebalance_nodes",
 }
 
 
@@ -61,11 +102,13 @@ def tools_for_agent(agent_id: str, *, scheduling_authorised: set[str]) -> list[d
     """Return the tool schemas an agent is allowed to call.
 
     Authority-scoped: only scheduling-authorised agents are offered the
-    rota optimiser, so the model isn't tempted to call a tool it can't use.
+    rota optimiser and node rebalancer, so the model isn't tempted to call
+    a tool it can't use.
     """
     tools: list[dict[str, Any]] = []
     if agent_id in scheduling_authorised:
         tools.append(OPTIMIZE_SCHEDULE_TOOL)
+        tools.append(REBALANCE_NODES_TOOL)
     return tools
 
 
