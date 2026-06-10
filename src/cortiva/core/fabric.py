@@ -2511,19 +2511,60 @@ class Fabric:
                 pass
         if not items:
             return ""
-        lines = [
-            "## 📧 New Mail — notification\n",
-            f"{len(items)} new email(s) have landed. This is a heads-up, not "
-            "a demand: read fully, defer to later, or ignore as you judge "
-            "best — you decide what (if anything) it's worth. Route anything "
-            "you'd escalate through your manager first.\n",
-        ]
-        for m in items[:10]:
-            snippet = (m.get("text") or "").strip().replace("\n", " ")[:200]
+
+        # Mail from a founder or a human colleague carries authority — it is
+        # NOT optional. (A founder's "update please" was being deprioritised
+        # under the blanket "ignore as you judge" framing.) Build the set of
+        # authority addresses from the org's human contacts + people registry.
+        import re
+
+        def _addr(s: str) -> str:
+            m = re.search(r"[\w.+-]+@[\w.-]+", s or "")
+            return m.group(0).lower() if m else (s or "").strip().lower()
+
+        authority: dict[str, str] = {}  # address -> label
+        for c in (self._email_meta().get("contacts") or []):
+            a = _addr(str(c.get("address", "")))
+            if a:
+                authority[a] = "the founder"
+        for p in self._load_people():
+            a = _addr(str(p.get("email", "")))
+            if a:
+                authority[a] = f"{p.get('name') or 'a colleague'} (a human colleague)"
+
+        priority = [m for m in items if _addr(m.get("from", "")) in authority]
+        normal = [m for m in items if _addr(m.get("from", "")) not in authority]
+
+        lines: list[str] = []
+        if priority:
+            lines.append("## 📨 Mail that needs you — respond this session\n")
             lines.append(
-                f"- **{m.get('from', '')}** — {m.get('subject', '')}  \n"
-                f"  {snippet}"
+                f"{len(priority)} message(s) from people whose mail carries "
+                "weight (the founder / a human colleague). Treat these as "
+                "**action-expected, not optional**: read them properly and "
+                "**reply this session** unless there's a genuine reason not to "
+                "— a founder waiting on an answer is a priority. To reply, emit "
+                "an `email` reflection field.\n"
             )
+            for m in priority[:10]:
+                who = authority.get(_addr(m.get("from", "")), "")
+                snippet = (m.get("text") or "").strip().replace("\n", " ")[:240]
+                lines.append(
+                    f"- **{m.get('from', '')}**"
+                    + (f" — _{who}_" if who else "")
+                    + f" — {m.get('subject', '')}  \n  {snippet}"
+                )
+            lines.append("")
+        if normal:
+            lines.append("## 📧 New Mail — notification\n")
+            lines.append(
+                f"{len(normal)} other new email(s). A heads-up, not a demand: "
+                "read, defer, or ignore as you judge best. Route anything you'd "
+                "escalate through your manager first.\n"
+            )
+            for m in normal[:10]:
+                snippet = (m.get("text") or "").strip().replace("\n", " ")[:200]
+                lines.append(f"- **{m.get('from', '')}** — {m.get('subject', '')}  \n  {snippet}")
         return "\n".join(lines)
 
     def _email_meta(self) -> dict:
