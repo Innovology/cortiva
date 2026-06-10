@@ -2512,10 +2512,12 @@ class Fabric:
         if not items:
             return ""
 
-        # Mail from a founder or a human colleague carries authority — it is
-        # NOT optional. (A founder's "update please" was being deprioritised
-        # under the blanket "ignore as you judge" framing.) Build the set of
-        # authority addresses from the org's human contacts + people registry.
+        # Mail from someone with authority over you is NOT optional. Policy:
+        # treat mail from (a) a founder, (b) a human colleague, and (c) anyone
+        # in your management chain (your manager, on up to the top) as
+        # action-expected. (A founder's "update please" — and, by the same
+        # logic, your manager's — was being deprioritised under the blanket
+        # "ignore as you judge" framing.)
         import re
 
         def _addr(s: str) -> str:
@@ -2532,6 +2534,22 @@ class Fabric:
             if a:
                 authority[a] = f"{p.get('name') or 'a colleague'} (a human colleague)"
 
+        # Your superiors: walk the reporting line up and add each manager's
+        # address (their email is <first-name>@<workforce-domain>).
+        if self.org is not None:
+            cards = {c["id"]: c for c in self._load_directory_cards()}
+            cur, seen = agent.id, set()
+            for _ in range(8):  # bounded climb to the top
+                mgr = self.org.manager_of(cur)
+                if not mgr or mgr in seen:
+                    break
+                seen.add(mgr)
+                card = cards.get(mgr)
+                if card and card.get("email"):
+                    rel = "your manager" if mgr == self.org.manager_of(agent.id) else "in your management chain"
+                    authority.setdefault(_addr(card["email"]), f"{card.get('name') or mgr} ({rel})")
+                cur = mgr
+
         priority = [m for m in items if _addr(m.get("from", "")) in authority]
         normal = [m for m in items if _addr(m.get("from", "")) not in authority]
 
@@ -2540,11 +2558,13 @@ class Fabric:
             lines.append("## 📨 Mail that needs you — respond this session\n")
             lines.append(
                 f"{len(priority)} message(s) from people whose mail carries "
-                "weight (the founder / a human colleague). Treat these as "
+                "weight — a founder, your manager or someone above you in the "
+                "reporting line, or a human colleague. Treat these as "
                 "**action-expected, not optional**: read them properly and "
-                "**reply this session** unless there's a genuine reason not to "
-                "— a founder waiting on an answer is a priority. To reply, emit "
-                "an `email` reflection field.\n"
+                "**reply this session** unless there's a genuine reason not to. "
+                "A superior waiting on an answer is a priority — acknowledging "
+                "and replying is part of the job, even when you can also action "
+                "the content. To reply, emit an `email` reflection field.\n"
             )
             for m in priority[:10]:
                 who = authority.get(_addr(m.get("from", "")), "")
