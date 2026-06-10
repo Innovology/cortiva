@@ -1547,6 +1547,18 @@ class Fabric:
             ))
         return specs
 
+    def _model_concurrency(self) -> int | None:
+        """How many agents the node's local model serves at once before they
+        queue — measured by HQ from contention history and pushed down in the
+        cluster-metrics snapshot. Feeds the AR Scheduler's overlap-vs-contention
+        trade-off. None when unmeasured (contention scoring then skipped)."""
+        snap = self._load_cluster_metrics() or {}
+        v = snap.get("model_concurrency")
+        try:
+            return int(v) if v else None
+        except (TypeError, ValueError):
+            return None
+
     def _gather_schedule_signals(self) -> Any:
         """Collect current-state signals for the optimiser."""
         from cortiva.scheduling import Signals
@@ -1965,7 +1977,10 @@ class Fabric:
                 return
 
             signals = self._gather_schedule_signals()
-            health = assess_schedule_health(specs, windows, signals=signals)
+            health = assess_schedule_health(
+                specs, windows, signals=signals,
+                model_concurrency=self._model_concurrency(),
+            )
 
             lines = [f"## Schedule health — {agent.id}\n", f"**{health.summary}**\n"]
             if health.hotspots:
@@ -2117,7 +2132,10 @@ class Fabric:
 
             signals = self._gather_schedule_signals()
             target = spec.get("target") or None
-            rec = recommend_schedule_change(specs, windows, target=target, signals=signals)
+            rec = recommend_schedule_change(
+                specs, windows, target=target, signals=signals,
+                model_concurrency=self._model_concurrency(),
+            )
 
             applied = False
             do_apply = bool(spec.get("apply", False))

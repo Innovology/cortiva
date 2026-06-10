@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from cortiva.scheduling.optimizer import AgentSpec, Signals, WorkWindow
+from cortiva.scheduling.optimizer import AgentSpec, RoleType, Signals, WorkWindow
 
 
 @dataclass
@@ -63,6 +63,13 @@ class ScheduleHealth:
     oversight_gaps: list[dict[str, str]] = field(default_factory=list)  # report→manager
     isolated_agents: list[str] = field(default_factory=list)
     chronic_overtime: list[str] = field(default_factory=list)
+    # Model contention: how many agents are awake at the busiest moment vs how
+    # many the node's local model can serve at once. Overlap helps
+    # responsiveness; too much overlap queues everyone on one model. This is
+    # the tension the AR Scheduler trades.
+    peak_concurrency: int = 0  # most agents awake in any one slot
+    model_concurrency: int | None = None  # comfortable concurrent serve count (None = unmeasured)
+    contended_hours: float = 0.0  # hours where awake-count exceeds model capacity
     hotspots: list[Hotspot] = field(default_factory=list)
     summary: str = ""
 
@@ -74,6 +81,9 @@ class ScheduleHealth:
             "oversight_gaps": self.oversight_gaps,
             "isolated_agents": self.isolated_agents,
             "chronic_overtime": self.chronic_overtime,
+            "peak_concurrency": self.peak_concurrency,
+            "model_concurrency": self.model_concurrency,
+            "contended_hours": round(self.contended_hours, 1),
             "hotspots": [h.to_dict() for h in self.hotspots],
             "summary": self.summary,
         }
@@ -87,6 +97,10 @@ _PEN_PER_OVERSIGHT_GAP = 8.0
 _PEN_PER_ISOLATED = 3.0
 _PEN_PER_OVERTIME = 2.0
 _CHRONIC_OVERTIME_H = 2.0
+# Per agent-hour of model contention (an agent awake in a slot whose awake-count
+# already exceeds what the local model serves at once → it queues). Lower than a
+# coverage gap: contention slows the company, a gap stops it answering at all.
+_PEN_PER_CONTENTION_AGENT_HOUR = 1.5
 
 
 def _occupancy(schedules: dict[str, list[WorkWindow]], slot_minutes: int) -> list[int]:
@@ -112,6 +126,7 @@ def assess_schedule_health(
     *,
     signals: Signals | None = None,
     slot_minutes: int = 30,
+    model_concurrency: int | None = None,
 ) -> ScheduleHealth:
     """Measure how responsive the *current* rota makes the company.
 
@@ -119,15 +134,23 @@ def assess_schedule_health(
     agent); ``agents`` carries the org (manager/reports). Returns a
     :class:`ScheduleHealth` with a responsiveness score + ranked hotspots
     telling the AR Scheduler which single role to optimise next.
+
+    ``model_concurrency`` (when known, from the node's measured contention
+    history) is how many agents the local model serves at once before they
+    queue. Awake-count beyond it is **contention** — penalised, so the AR
+    Scheduler trades the overlap that helps responsiveness against the
+    overlap that just makes everyone queue on one model.
     """
     sig = signals or Signals()
     by_id = {a.agent_id: a for a in agents}
     health = ScheduleHealth()
+    health.model_concurrency = model_concurrency
     hotspots: list[Hotspot] = []
 
     # --- Coverage: hours with nobody awake ---------------------------------
     occ = _occupancy(schedules, slot_minutes)
     slot_h = slot_minutes / 60.0
+    health.peak_concurrency = max(occ) if occ else 0
     gap_start: int | None = None
     for i in range(len(occ) + 1):
         empty = i < len(occ) and occ[i] == 0
@@ -211,6 +234,41 @@ def assess_schedule_health(
                 )
             )
 
+    # --- Model contention: overlap beyond what the model serves at once ----
+    contention_penalty = 0.0
+    if model_concurrency and model_concurrency > 0:
+        # Excess awake-agents per slot, converted to agent-hours of queueing.
+        excess_agent_hours = sum(max(0, c - model_concurrency) for c in occ) * slot_h
+        health.contended_hours = round(
+            sum(slot_h for c in occ if c > model_concurrency), 2
+        )
+        contention_penalty = excess_agent_hours * _PEN_PER_CONTENTION_AGENT_HOUR
+        if health.contended_hours > 0:
+            # Point the AR Scheduler at a role to stagger out of the busiest
+            # window — prefer an IC (managers are load-bearing for oversight).
+            peak_slot = max(range(len(occ)), key=lambda i: occ[i])
+            peak_h = round(peak_slot * slot_h, 2)
+            movable = ""
+            for a in agents:
+                if a.role_type != RoleType.MANAGER and any(
+                    w.start_h % 24 <= peak_h < w.start_h % 24 + w.length_h
+                    for w in schedules.get(a.agent_id, [])
+                ):
+                    movable = a.agent_id
+                    break
+            hotspots.append(
+                Hotspot(
+                    "contention",
+                    movable,
+                    contention_penalty,
+                    f"{health.peak_concurrency} agents awake at ~{peak_h:05.2f} but the "
+                    f"local model serves ~{model_concurrency} at once — the rest queue "
+                    f"({health.contended_hours:.1f}h contended)."
+                    + (f" Stagger {movable} out to ease it." if movable else
+                       " Stagger a non-manager role out, or add model capacity."),
+                )
+            )
+
     # --- Score + rank ------------------------------------------------------
     penalty = (
         health.uncovered_hours * _PEN_PER_UNCOVERED_HOUR
@@ -218,16 +276,23 @@ def assess_schedule_health(
         + len(health.isolated_agents) * _PEN_PER_ISOLATED
         + sum(min(sig.overtime_hours.get(a, 0.0), 8.0) for a in health.chronic_overtime)
         * _PEN_PER_OVERTIME
+        + contention_penalty
     )
     health.responsiveness_score = max(0.0, min(100.0, 100.0 - penalty))
     health.hotspots = sorted(hotspots, key=lambda h: -h.severity)
 
     top = health.hotspots[0].detail if health.hotspots else "no issues found"
+    cap_note = (
+        f", peak {health.peak_concurrency} awake vs ~{model_concurrency} served"
+        f" ({health.contended_hours:.1f}h contended)"
+        if model_concurrency
+        else f", peak {health.peak_concurrency} awake"
+    )
     health.summary = (
         f"Responsiveness {health.responsiveness_score:.0f}/100 — "
         f"{health.uncovered_hours:.1f}h uncovered, {len(health.oversight_gaps)} "
         f"oversight gap(s), {len(health.isolated_agents)} isolated, "
-        f"{len(health.chronic_overtime)} in overtime. Top: {top}"
+        f"{len(health.chronic_overtime)} in overtime{cap_note}. Top: {top}"
     )
     return health
 
@@ -282,6 +347,7 @@ def recommend_schedule_change(
     target: str | None = None,
     signals: Signals | None = None,
     slot_minutes: int = 30,
+    model_concurrency: int | None = None,
 ) -> ScheduleRecommendation:
     """Recommend a re-timing of ONE role that most improves responsiveness.
 
@@ -293,7 +359,10 @@ def recommend_schedule_change(
     computes). Returns the proposed windows + the score delta + a rationale.
     Pure + deterministic; it recommends, it doesn't apply.
     """
-    base = assess_schedule_health(agents, schedules, signals=signals, slot_minutes=slot_minutes)
+    base = assess_schedule_health(
+        agents, schedules, signals=signals, slot_minutes=slot_minutes,
+        model_concurrency=model_concurrency,
+    )
     if target is None:
         target = next((h.agent_id for h in base.hotspots if h.agent_id), None)
 
@@ -322,7 +391,8 @@ def recommend_schedule_change(
         trial = dict(schedules)
         trial[target] = trial_windows
         score = assess_schedule_health(
-            agents, trial, signals=signals, slot_minutes=slot_minutes
+            agents, trial, signals=signals, slot_minutes=slot_minutes,
+            model_concurrency=model_concurrency,
         ).responsiveness_score
         # Strictly better only (ties keep the current schedule → no churn).
         if score > best_score + 1e-9:
