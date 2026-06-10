@@ -12,7 +12,7 @@ import json
 import re
 import shutil
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -219,7 +219,7 @@ class Agent:
             return existing[-1]
         # Microsecond stamp: fixed width, so filename sort order IS
         # chronological order, and same-second rewrites can't collide.
-        stamp = datetime.utcnow().strftime("%Y-%m-%d-%H%M%S-%f")
+        stamp = datetime.now(UTC).strftime("%Y-%m-%d-%H%M%S-%f")
         path = history_dir / f"{file_key}-{stamp}.md"
         path.write_text(current, encoding="utf-8")
         return path

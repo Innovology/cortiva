@@ -194,7 +194,7 @@ class Fabric:
         self.capacity_tracker = CapacityTracker()
         self.policy_manager = PolicyManager()
         self.hook_router = HookRouter()
-        self.plugin_manager = PluginManager()
+        self.plugin_manager = PluginManager(fabric=self)
         self.reactive_engine = ReactiveEngine()
         self.encryption_vault: Any = None  # EncryptionVault or None
         self.credential_provider: Any = None  # CredentialProvider or None
@@ -631,6 +631,12 @@ class Fabric:
         if doc_ctx:
             context = context + "\n\n---\n\n" + doc_ctx
 
+        # Plugin-contributed context (e.g. Myelin cognitive state:
+        # internal state, expertise, conditioning, pending intentions).
+        plugin_ctx = self.plugin_manager.collect_context(agent_id)
+        if plugin_ctx:
+            context = context + "\n\n---\n\n" + plugin_ctx
+
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent_id, context)
 
@@ -929,6 +935,10 @@ class Fabric:
         # Re-activate any tasks that have been approved since last cycle
         self._check_approved_tasks(agent)
 
+        # Plugins observe the start of every cycle (cognitive pacing,
+        # time-passage drift, etc.).
+        await self.plugin_manager.dispatch_cycle(agent_id)
+
         result: dict[str, Any] = {
             "agent_id": agent_id,
             "action": "idle",
@@ -1044,6 +1054,22 @@ class Fabric:
             # deferral) feeds the emotion engine — this is what makes
             # the mood grid live state instead of soul.md constants.
             self._record_task_emotions(agent, task, familiarity)
+            # Then tell plugins how the task ended. Fires AFTER the
+            # emotion write so a plugin reading today/emotions.json
+            # sees the state that includes this task.
+            try:
+                if task.status == "done":
+                    await self.plugin_manager.dispatch_task_complete(
+                        agent.id, task, task.outcome or "",
+                    )
+                elif task.status == "exception":
+                    await self.plugin_manager.dispatch_task_fail(
+                        agent.id, task, task.error or "",
+                    )
+            except Exception:
+                logger.debug(
+                    "Plugin task dispatch failed for %s", agent.id, exc_info=True,
+                )
 
     def _record_task_emotions(
         self, agent: Agent, task: Task, familiarity: Any,
@@ -1190,6 +1216,15 @@ class Fabric:
         inbox_ctx = self._email_inbox_context(agent)
         if inbox_ctx:
             context = context + "\n\n---\n\n" + inbox_ctx
+
+        # Plugin-contributed per-task context (e.g. Myelin: inhibition
+        # checks, outcome forecasts, emotional conditioning, matched
+        # procedures for THIS task).
+        task_ctx = self.plugin_manager.collect_task_context(
+            agent.id, task.description,
+        )
+        if task_ctx:
+            context = context + "\n\n---\n\n" + task_ctx
 
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent.id, context)
@@ -3623,6 +3658,16 @@ class Fabric:
         server.register("cluster.status", _handle_cluster_status)
         server.register("cluster.nodes", _handle_cluster_nodes)
         server.register("shutdown", _handle_shutdown)
+
+        # Plugin-contributed IPC commands (e.g. Myelin cognition state).
+        # Registered last so a plugin cannot shadow a built-in command.
+        for cmd, handler in self.plugin_manager.collect_ipc_handlers().items():
+            if cmd in server._handlers:
+                logger.warning(
+                    "Plugin IPC command %r shadows a built-in; skipping", cmd,
+                )
+                continue
+            server.register(cmd, handler)
 
     def _request_stop(self) -> None:
         """Signal the fabric to stop (used by shutdown IPC command)."""

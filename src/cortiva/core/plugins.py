@@ -59,6 +59,16 @@ class FabricPlugin:
     name: str = ""
     """Unique plugin name.  Used for logging and deduplication."""
 
+    # ----- Binding -----
+
+    def bind(self, fabric: Any) -> None:
+        """Called once when the plugin is registered with a Fabric.
+
+        Gives the plugin access to fabric services (memory adapter,
+        agents, plan/session managers) without a side-channel. Plugins
+        that don't need the fabric can ignore this.
+        """
+
     # ----- Lifecycle hooks (async) -----
 
     async def on_wake(self, agent_id: str, agent: Any) -> None:
@@ -98,8 +108,17 @@ class FabricPlugin:
     def context_provider(self, agent_id: str) -> str:
         """Return additional context to inject into LLM prompts.
 
-        Called during planning and execution context assembly.
+        Called during planning context assembly (wake).
         Return empty string for no additional context.
+        """
+        return ""
+
+    def task_context_provider(self, agent_id: str, task_description: str) -> str:
+        """Return per-task context to inject into the execution prompt.
+
+        Called just before a task is executed, with the task description —
+        the hook for task-specific guidance (risk checks, known
+        procedures, relevant facts). Return empty string for none.
         """
         return ""
 
@@ -121,15 +140,21 @@ class PluginManager:
     methods at each extension point.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, fabric: Any | None = None) -> None:
         self._plugins: list[FabricPlugin] = []
+        self._fabric = fabric
 
     def register(self, plugin: FabricPlugin) -> None:
-        """Register a plugin instance."""
+        """Register a plugin instance and bind it to the fabric."""
         if any(p.name == plugin.name for p in self._plugins):
             logger.warning("Plugin %r already registered, skipping", plugin.name)
             return
         self._plugins.append(plugin)
+        if self._fabric is not None:
+            try:
+                plugin.bind(self._fabric)
+            except Exception as exc:
+                logger.error("Plugin %s bind error: %s", plugin.name, exc)
         logger.info("Plugin registered: %s", plugin.name)
 
     def unregister(self, name: str) -> bool:
@@ -228,6 +253,20 @@ class PluginManager:
                     parts.append(ctx)
             except Exception as exc:
                 logger.error("Plugin %s context_provider error: %s", p.name, exc)
+        return "\n\n---\n\n".join(parts) if parts else ""
+
+    def collect_task_context(self, agent_id: str, task_description: str) -> str:
+        """Collect per-task context from all plugins."""
+        parts: list[str] = []
+        for p in self._plugins:
+            try:
+                ctx = p.task_context_provider(agent_id, task_description)
+                if ctx:
+                    parts.append(ctx)
+            except Exception as exc:
+                logger.error(
+                    "Plugin %s task_context_provider error: %s", p.name, exc,
+                )
         return "\n\n---\n\n".join(parts) if parts else ""
 
     def collect_ipc_handlers(self) -> dict[str, Callable[..., Awaitable[dict[str, Any]]]]:

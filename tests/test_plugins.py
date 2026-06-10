@@ -149,3 +149,150 @@ class TestLoadPluginsFromConfig:
         ])
         assert len(plugins) == 1
         assert plugins[0].name == "sample"
+
+
+# ---------------------------------------------------------------------------
+# Completed plugin API — bind, task context, and live fabric dispatches
+# ---------------------------------------------------------------------------
+
+
+class RecordingPlugin(FabricPlugin):
+    """Records every hook invocation for fabric-integration assertions."""
+
+    name = "recording"
+
+    def __init__(self) -> None:
+        self.bound_fabric = None
+        self.cycle_calls: list[str] = []
+        self.completes: list[tuple[str, str]] = []
+        self.fails: list[tuple[str, str]] = []
+        self.task_context_calls: list[tuple[str, str]] = []
+
+    def bind(self, fabric):
+        self.bound_fabric = fabric
+
+    async def on_cycle(self, agent_id):
+        self.cycle_calls.append(agent_id)
+
+    async def on_task_complete(self, agent_id, task, outcome):
+        self.completes.append((agent_id, outcome))
+
+    async def on_task_fail(self, agent_id, task, error):
+        self.fails.append((agent_id, error))
+
+    def context_provider(self, agent_id):
+        return "## Cognitive Plan Context"
+
+    def task_context_provider(self, agent_id, task_description):
+        self.task_context_calls.append((agent_id, task_description))
+        return f"## Cognitive Task Context: {task_description[:30]}"
+
+
+class TestPluginBinding:
+    def test_register_binds_fabric(self) -> None:
+        fabric_stub = object()
+        mgr = PluginManager(fabric=fabric_stub)
+        plugin = RecordingPlugin()
+        mgr.register(plugin)
+        assert plugin.bound_fabric is fabric_stub
+
+    def test_register_without_fabric_does_not_bind(self) -> None:
+        mgr = PluginManager()
+        plugin = RecordingPlugin()
+        mgr.register(plugin)
+        assert plugin.bound_fabric is None
+
+    def test_bind_error_does_not_break_registration(self) -> None:
+        class ExplodingBind(FabricPlugin):
+            name = "exploder"
+
+            def bind(self, fabric):
+                raise RuntimeError("boom")
+
+        mgr = PluginManager(fabric=object())
+        mgr.register(ExplodingBind())
+        assert mgr.plugin_names == ["exploder"]
+
+
+class TestCollectTaskContext:
+    def test_collects_per_task_context(self) -> None:
+        mgr = PluginManager()
+        plugin = RecordingPlugin()
+        mgr.register(plugin)
+        ctx = mgr.collect_task_context("agent-1", "process the invoice batch")
+        assert "Cognitive Task Context" in ctx
+        assert plugin.task_context_calls == [("agent-1", "process the invoice batch")]
+
+    def test_empty_when_no_plugins_contribute(self) -> None:
+        mgr = PluginManager()
+        mgr.register(SamplePlugin())  # has no task_context_provider override
+        assert mgr.collect_task_context("agent-1", "task") == ""
+
+    def test_provider_error_is_isolated(self) -> None:
+        class Exploder(FabricPlugin):
+            name = "exploder2"
+
+            def task_context_provider(self, agent_id, task_description):
+                raise RuntimeError("boom")
+
+        mgr = PluginManager()
+        mgr.register(Exploder())
+        plugin = RecordingPlugin()
+        mgr.register(plugin)
+        ctx = mgr.collect_task_context("agent-1", "task")
+        assert "Cognitive Task Context" in ctx
+
+
+@pytest.mark.asyncio
+class TestFabricDispatchIntegration:
+    """The fabric must actually CALL the declared dispatch points —
+    pre-fix, on_task_complete/on_task_fail/on_cycle/context hooks were
+    declared in the plugin API but never invoked anywhere."""
+
+    def _make_fabric(self, tmp_path, think_content="Did the work."):
+        from cortiva.adapters.memory.inmemory import InMemoryAdapter
+        from cortiva.adapters.protocols import ConsciousResponse
+        from cortiva.core.fabric import Fabric
+
+        class StubConsciousness:
+            async def think(self, **kw):
+                return ConsciousResponse(content=think_content, model="stub")
+
+            async def reflect(self, **kw):
+                return ConsciousResponse(content="reflected", model="stub")
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=StubConsciousness(),
+        )
+        plugin = RecordingPlugin()
+        fabric.plugin_manager.register(plugin)
+        return fabric, plugin
+
+    def test_fabric_constructs_manager_with_self(self, tmp_path) -> None:
+        fabric, plugin = self._make_fabric(tmp_path)
+        assert plugin.bound_fabric is fabric
+
+    async def test_task_complete_dispatched(self, tmp_path) -> None:
+        from cortiva.core.agent import AgentState
+
+        fabric, plugin = self._make_fabric(tmp_path)
+        agent = fabric.register_agent("agent-01")
+        agent.state = AgentState.WAKING
+        agent.transition(AgentState.PLANNING)
+        agent.transition(AgentState.EXECUTING)
+
+        from cortiva.core.agent import Task, TaskQueue
+
+        agent.task_queue = TaskQueue(
+            tasks=[Task(id="t1", description="write the report", priority=1)],
+        )
+        await fabric.cycle("agent-01")
+
+        assert plugin.cycle_calls == ["agent-01"]
+        assert len(plugin.completes) == 1
+        assert plugin.completes[0][0] == "agent-01"
+        # Per-task plugin context was consulted during execution
+        assert plugin.task_context_calls
+        assert plugin.task_context_calls[0][1] == "write the report"
