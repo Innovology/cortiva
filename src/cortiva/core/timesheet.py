@@ -21,6 +21,12 @@ from typing import Any
 
 logger = logging.getLogger("cortiva.timesheet")
 
+# An orphaned (crash-left) open session has no real sleep time. We close it
+# with a BOUNDED duration so it can never read as ``now - wake_time`` — a
+# session left open across restarts otherwise accumulated 100h+ and tripped
+# the max-hours-per-day gate, blocking agents from working entirely.
+_MAX_ORPHAN_HOURS = 12.0
+
 
 @dataclass
 class WorkEntry:
@@ -121,14 +127,94 @@ class Timesheet:
         return self._agent_dir / "journal" / f"timesheet-{date}.json"
 
     def _load_today(self) -> None:
-        """Load today's entries from disk."""
+        """Load today's entries from disk, reconciling crashes + day rollover.
+
+        Two failure modes are healed here, both of which otherwise produced
+        phantom hours that blocked agents on the max-hours gate:
+
+        1. **Orphaned open sessions.** A crash/hard-restart leaves a session
+           with no ``sleep_time``; its ``hours`` would compute as
+           ``now - wake_time`` (days). We close every loaded open session with
+           a bounded duration so it can never blow up.
+        2. **Stale day.** Nothing rolled ``today/timesheet.json`` over at
+           midnight, so yesterday's entries kept counting toward today. If the
+           persisted file is from a previous day we archive it to history and
+           start today empty; any stray prior-day entries in a same-day file
+           are archived out too. Today's summary only ever counts today.
+        """
         path = self._today_path()
-        if path.exists():
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, KeyError, OSError):
+            self._today_entries = []
+            return
+
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        file_date = str(data.get("date") or "")
+        entries: list[WorkEntry] = []
+        for e in data.get("entries", []):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                self._today_entries = [WorkEntry.from_dict(e) for e in data.get("entries", [])]
-            except (json.JSONDecodeError, KeyError):
-                self._today_entries = []
+                entries.append(WorkEntry.from_dict(e))
+            except (KeyError, ValueError, TypeError):
+                continue
+
+        # 1. Close orphaned open sessions with a bounded duration (never now-wake).
+        now = datetime.now(UTC)
+        changed = False
+        for e in entries:
+            if e.sleep_time is None:
+                cap_h = max(0.0, min(self._scheduled_hours, _MAX_ORPHAN_HOURS))
+                e.sleep_time = min(now, e.wake_time + timedelta(hours=cap_h))
+                changed = True
+
+        # 2. Day rollover: a previous-day file is archived whole; same-day files
+        #    keep only today's entries (any stragglers archived to their day).
+        if file_date and file_date != today:
+            self._archive_entries(entries)
+            self._today_entries = []
+            self._current_entry = None
+            self._persist()
+            return
+
+        todays = [e for e in entries if e.wake_time.strftime("%Y-%m-%d") == today]
+        older = [e for e in entries if e.wake_time.strftime("%Y-%m-%d") != today]
+        if older:
+            self._archive_entries(older)
+        self._today_entries = todays
+        # All loaded sessions are now closed — a fresh wake clocks in anew.
+        self._current_entry = None
+        if changed or older:
+            self._persist()
+
+    def _archive_entries(self, entries: list[WorkEntry]) -> None:
+        """Merge closed entries into their day's history file (no overwrite)."""
+        from collections import defaultdict
+
+        by_date: dict[str, list[WorkEntry]] = defaultdict(list)
+        for e in entries:
+            by_date[e.wake_time.strftime("%Y-%m-%d")].append(e)
+        for date_str, day_entries in by_date.items():
+            path = self._history_path(date_str)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            existing: list[dict[str, Any]] = []
+            if path.exists():
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8")).get("entries", [])
+                except (json.JSONDecodeError, OSError):
+                    existing = []
+            path.write_text(
+                json.dumps(
+                    {
+                        "date": date_str,
+                        "scheduled_hours": self._scheduled_hours,
+                        "entries": existing + [e.to_dict() for e in day_entries],
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
 
     def _persist(self) -> None:
         """Write current entries to disk."""
