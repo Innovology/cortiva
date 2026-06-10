@@ -883,6 +883,10 @@ class Fabric:
                         agent.spend_consciousness()
                     new_identity, _ = split_identity_and_day_report(raw or "")
                     if new_identity:
+                        # Archive the outgoing identity first — the
+                        # rewrite is a lossy compression; without the
+                        # archive a bad regeneration is unrecoverable.
+                        agent.archive_identity("identity")
                         agent.write_identity("identity", new_identity)
                     self._mark_identity_regen(agent)
                     logger.info(

@@ -368,3 +368,190 @@ class TestFabricLivingSummaryIntegration:
         journal = agent.journal_path()
         assert journal.exists()
         assert "Tasks completed" in journal.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Identity versioning — the Living Summary compounds, it never churns
+# ---------------------------------------------------------------------------
+
+
+class TestIdentityArchiving:
+    """archive_identity snapshots the outgoing identity before a rewrite,
+    so a lossy/bad regeneration is always recoverable."""
+
+    def _make_agent(self, tmp_path):
+        from cortiva.core.fabric import Fabric
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=AsyncMock(),
+        )
+        return fabric.register_agent("agent-01")
+
+    def test_archive_snapshots_current_identity(self, tmp_path) -> None:
+        agent = self._make_agent(tmp_path)
+        agent.write_identity("identity", "# I am version one")
+
+        path = agent.archive_identity("identity")
+        assert path is not None
+        assert path.read_text(encoding="utf-8") == "# I am version one"
+        assert "identity/history" in str(path)
+
+    def test_archive_empty_identity_returns_none(self, tmp_path) -> None:
+        agent = self._make_agent(tmp_path)
+        agent.write_identity("identity", "   ")
+        assert agent.archive_identity("identity") is None
+
+    def test_archive_dedupes_identical_content(self, tmp_path) -> None:
+        agent = self._make_agent(tmp_path)
+        agent.write_identity("identity", "# Same content")
+        first = agent.archive_identity("identity")
+        second = agent.archive_identity("identity")
+        assert first == second
+        assert len(agent.identity_history("identity")) == 1
+
+    def test_identity_history_ordered_oldest_first(self, tmp_path) -> None:
+        agent = self._make_agent(tmp_path)
+        agent.write_identity("identity", "# v1")
+        agent.archive_identity("identity")
+        agent.write_identity("identity", "# v2")
+        agent.archive_identity("identity")
+
+        history = agent.identity_history("identity")
+        assert len(history) == 2
+        assert history[0].read_text(encoding="utf-8") == "# v1"
+        assert history[1].read_text(encoding="utf-8") == "# v2"
+
+    def test_identity_history_empty_when_no_archive(self, tmp_path) -> None:
+        agent = self._make_agent(tmp_path)
+        assert agent.identity_history("identity") == []
+
+
+class TestRegenerationAnchoring:
+    """The rewrite prompt anchors to soul + role and tells the agent the
+    document compounds — the guard against role contamination and
+    detail evaporation."""
+
+    def _prompt(self, **kwargs):
+        regen = LivingSummaryRegenerator(
+            memory=InMemoryAdapter(), consciousness=AsyncMock(),
+        )
+        return regen.build_regeneration_prompt(
+            MagicMock(),
+            current_identity="# Current me",
+            day_summary="summary",
+            experience={
+                "key_memories": [],
+                "learnings": [],
+                "themes": [],
+                "task_count": 1,
+                "terminal_task_count": 0,
+                "escalated_count": 0,
+            },
+            **kwargs,
+        )
+
+    def test_prompt_includes_soul_and_role_anchors(self) -> None:
+        prompt = self._prompt(
+            soul="Warm, precise, allergic to jargon",
+            responsibilities="Own the monthly close",
+        )
+        assert "Warm, precise, allergic to jargon" in prompt
+        assert "Own the monthly close" in prompt
+        assert "Your Soul" in prompt
+        assert "Role & Responsibilities" in prompt
+
+    def test_prompt_includes_revision_continuity(self) -> None:
+        prompt = self._prompt(revision_count=4)
+        assert "revision 5" in prompt
+        assert "identity/history/" in prompt
+
+    def test_prompt_hard_rules_always_present(self) -> None:
+        prompt = self._prompt()
+        assert "never adopt the role" in prompt
+        assert "do not start from scratch" in prompt
+
+    def test_prompt_omits_empty_anchor_sections(self) -> None:
+        prompt = self._prompt()
+        assert "Your Soul" not in prompt
+        assert "## Continuity" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_regenerate_passes_anchors_from_agent(self, tmp_path) -> None:
+        from cortiva.core.fabric import Fabric
+
+        memory = InMemoryAdapter()
+        await memory.store(
+            "agent-01", "Task: work. Outcome: ok",
+            tags=["task"], importance=7.0,
+        )
+
+        captured = {}
+
+        class CapturingConsciousness:
+            async def reflect(self, **kw):
+                captured["context"] = kw.get("context", "")
+                return ConsciousResponse(content="# New identity", model="stub")
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=memory,
+            consciousness=CapturingConsciousness(),
+        )
+        agent = fabric.register_agent("agent-01")
+        agent.write_identity("soul", "Curious and unhurried")
+        agent.write_identity("responsibilities", "Guard the audit trail")
+        agent.write_identity("identity", "# Original identity")
+        agent.archive_identity("identity")
+
+        regen = LivingSummaryRegenerator(
+            memory=memory, consciousness=CapturingConsciousness(),
+        )
+        result = await regen.regenerate(agent, "day summary")
+        assert result is not None
+
+        prompt = captured.get("context", "")
+        assert "Curious and unhurried" in prompt
+        assert "Guard the audit trail" in prompt
+        assert "revision 2" in prompt
+
+
+class TestFabricArchivesIdentityOnRegen:
+    @pytest.mark.asyncio
+    async def test_sleep_archives_previous_identity(self, tmp_path) -> None:
+        from cortiva.core.fabric import Fabric
+
+        class StubConsciousness:
+            async def think(self, **kw):
+                return ConsciousResponse(content="- [ ] Plan item", model="stub")
+
+            async def reflect(self, **kw):
+                return ConsciousResponse(
+                    content="# Rewritten identity", model="stub",
+                )
+
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=StubConsciousness(),
+        )
+        agent = fabric.register_agent("agent-01")
+        agent.write_identity("identity", "# The original me")
+
+        await fabric.memory.store(
+            "agent-01", "Task: work. Outcome: ok",
+            tags=["task"], importance=7.0,
+        )
+
+        from cortiva.core.agent import AgentState
+        agent.state = AgentState.WAKING
+        agent.transition(AgentState.PLANNING)
+        agent.transition(AgentState.EXECUTING)
+
+        await fabric.sleep("agent-01")
+
+        assert agent.read_identity("identity") == "# Rewritten identity"
+        history = agent.identity_history("identity")
+        assert len(history) == 1
+        assert history[0].read_text(encoding="utf-8") == "# The original me"

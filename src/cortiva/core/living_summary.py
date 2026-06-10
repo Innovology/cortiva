@@ -115,8 +115,21 @@ class LivingSummaryRegenerator:
         current_identity: str,
         day_summary: str,
         experience: dict[str, Any],
+        *,
+        soul: str = "",
+        responsibilities: str = "",
+        revision_count: int = 0,
     ) -> str:
-        """Build the prompt for identity.md regeneration."""
+        """Build the prompt for identity.md regeneration.
+
+        ``soul`` and ``responsibilities`` anchor the rewrite: identity
+        evolves from the agent's own experience but must never drift off
+        its role or persona (the role-contamination failure mode — an
+        agent absorbing colleagues' domains until the org converges on a
+        monoculture). ``revision_count`` tells the agent its identity is
+        a compounding document with an archived history, not a blank
+        page.
+        """
         key_memories = experience.get("key_memories", [])
         learnings = experience.get("learnings", [])
         themes = experience.get("themes", [])
@@ -129,6 +142,26 @@ class LivingSummaryRegenerator:
             "This document is your evolving self-description — it should "
             "reflect your accumulated experience, not just today's events.\n"
         )
+
+        if soul:
+            sections.append(
+                "## Your Soul (immutable persona — set at creation, never "
+                f"changes)\n\n{soul[:1500]}\n"
+            )
+
+        if responsibilities:
+            sections.append(
+                "## Your Role & Responsibilities (your anchor)\n\n"
+                f"{responsibilities[:1500]}\n"
+            )
+
+        if revision_count > 0:
+            sections.append(
+                f"## Continuity\n\nThis is revision {revision_count + 1} of "
+                "your identity. Previous versions are archived in "
+                "identity/history/ — this document compounds over time; "
+                "it is never a blank page.\n"
+            )
 
         sections.append(f"## Current Identity\n\n{current_identity}\n")
 
@@ -172,6 +205,15 @@ class LivingSummaryRegenerator:
             "- Areas where you've grown or changed\n\n"
             "Write in first person. Be specific about what you've learned. "
             "Don't just list facts — show how experience has shaped you.\n\n"
+            "Two hard rules:\n"
+            "1. Stay anchored to YOUR role and soul above. Evolve only from "
+            "your own experience — never adopt the role, domain, or "
+            "specialisations of colleagues whose work you have merely "
+            "observed or read about.\n"
+            "2. This document compounds. Carry forward the durable "
+            "specialisations and hard-won learnings already in your current "
+            "identity unless your experience now contradicts them — do not "
+            "start from scratch or let detail evaporate.\n\n"
             f"Then, on its own line, write exactly `{DAY_REPORT_DELIMITER}` "
             "followed by a short first-person day report — your standup for "
             "the humans you work with. Cover: what you worked on today, "
@@ -203,8 +245,28 @@ class LivingSummaryRegenerator:
         ):
             return None
 
+        # Anchors: soul (immutable persona) and responsibilities (role)
+        # keep the rewrite from drifting off who this agent IS; the
+        # revision count tells it the document compounds. Tolerant of
+        # mocks/older Agent objects that lack these surfaces.
+        soul = ""
+        responsibilities = ""
+        revision_count = 0
+        try:
+            soul = str(agent.read_identity("soul") or "")
+            responsibilities = str(agent.read_identity("responsibilities") or "")
+        except Exception:
+            pass
+        try:
+            revision_count = len(agent.identity_history("identity"))
+        except Exception:
+            revision_count = 0
+
         prompt = self.build_regeneration_prompt(
             agent, current_identity, day_summary, experience,
+            soul=soul,
+            responsibilities=responsibilities,
+            revision_count=revision_count,
         )
 
         response = await self.consciousness.reflect(

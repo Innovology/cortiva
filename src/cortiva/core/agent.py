@@ -194,6 +194,43 @@ class Agent:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
+    def archive_identity(self, file_key: str) -> Path | None:
+        """Archive the current identity file before a rewrite.
+
+        The Living Summary regeneration *overwrites* identity.md with a
+        lossy LLM compression — without an archive, anything the rewrite
+        drops is gone forever and a bad regeneration (the failure mode
+        behind the role-contamination incident) is unrecoverable.
+        Each rewrite snapshots the outgoing version to
+        ``identity/history/<file_key>-<timestamp>.md`` so identity
+        compounds instead of churning.
+
+        Returns the archive path, or None when there is nothing to
+        archive. Writing is skipped when the content is identical to the
+        most recent archive.
+        """
+        current = self.read_identity(file_key)
+        if not current.strip():
+            return None
+        history_dir = self.directory / "identity" / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(history_dir.glob(f"{file_key}-*.md"))
+        if existing and existing[-1].read_text(encoding="utf-8") == current:
+            return existing[-1]
+        # Microsecond stamp: fixed width, so filename sort order IS
+        # chronological order, and same-second rewrites can't collide.
+        stamp = datetime.utcnow().strftime("%Y-%m-%d-%H%M%S-%f")
+        path = history_dir / f"{file_key}-{stamp}.md"
+        path.write_text(current, encoding="utf-8")
+        return path
+
+    def identity_history(self, file_key: str) -> list[Path]:
+        """Archived versions of an identity file, oldest first."""
+        history_dir = self.directory / "identity" / "history"
+        if not history_dir.exists():
+            return []
+        return sorted(history_dir.glob(f"{file_key}-*.md"))
+
     def read_all_identity(self) -> dict[str, str]:
         """Read all identity files into a dict."""
         return {key: self.read_identity(key) for key in IDENTITY_FILES}
