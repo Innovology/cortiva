@@ -157,6 +157,23 @@ CULTURE_HEALTH_TOOL: dict[str, Any] = {
     },
 }
 
+EFFICIENCY_REVIEW_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "efficiency_review",
+        "description": (
+            "Measure how efficiently the workforce is performing over time — "
+            "your eyes as the Workforce Performance Analyst. Returns a per-agent "
+            "read (throughput, quality, cost-efficiency, sustainability), a "
+            "0-100 composite + its trend vs last review, and ranked hotspots: "
+            "who's declining, who's at risk (low quality or burning out), who's "
+            "a standout. Read it, then reason about WHY and act — the score is a "
+            "ranking aid, not the verdict. Measures only; changes nothing."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
 # Tool name -> the ReflectionSuffix field it populates.
 _TOOL_TO_SUFFIX_FIELD = {
     "optimize_schedule": "optimize_schedule",
@@ -164,6 +181,7 @@ _TOOL_TO_SUFFIX_FIELD = {
     "schedule_health": "schedule_health",
     "recommend_schedule": "recommend_schedule",
     "culture_health": "culture_health",
+    "efficiency_review": "efficiency_review",
 }
 
 
@@ -172,13 +190,15 @@ def tools_for_agent(
     *,
     scheduling_authorised: set[str],
     culture_authorised: set[str] | None = None,
+    performance_authorised: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return the tool schemas an agent is allowed to call.
 
     Authority-scoped: only scheduling-authorised agents are offered the rota
     optimiser, the node rebalancer, the schedule-health readout, and the
     single-role recommendation; only culture-authorised agents are offered the
-    culture-health readout — so the model isn't tempted to call a tool it
+    culture-health readout; only performance-authorised agents are offered the
+    workforce-efficiency review — so the model isn't tempted to call a tool it
     can't use.
     """
     tools: list[dict[str, Any]] = []
@@ -189,6 +209,8 @@ def tools_for_agent(
         tools.append(RECOMMEND_SCHEDULE_TOOL)
     if culture_authorised and agent_id in culture_authorised:
         tools.append(CULTURE_HEALTH_TOOL)
+    if performance_authorised and agent_id in performance_authorised:
+        tools.append(EFFICIENCY_REVIEW_TOOL)
     return tools
 
 

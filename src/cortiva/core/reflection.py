@@ -77,6 +77,12 @@ class ReflectionSuffix:
     oversight/peer overlap, overtime) and record a ranked-hotspot readout.
     Only honoured for agents with scheduling authority. Measures only — the
     AR Scheduler reads it, then optimises one role. Payload is ignored."""
+    efficiency_review: dict[str, Any] | None = None
+    """A request to MEASURE workforce efficiency over time (throughput,
+    quality, cost-efficiency, sustainability per agent + trend + ranked
+    hotspots). Only honoured for agents with performance authority (the
+    Workforce Performance Analyst / Head of AR / COO). Measures only — the
+    analyst reads it, reasons about why, then acts. Payload is ignored."""
     culture_health: dict[str, Any] | None = None
     """A request to MEASURE company culture health from the workforce's felt
     state (emotions) and diversity of voice, recording a 0-100 score + ranked
@@ -176,6 +182,11 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         culture_health=(
             data.get("culture_health")
             if isinstance(data.get("culture_health"), dict)
+            else None
+        ),
+        efficiency_review=(
+            data.get("efficiency_review")
+            if isinstance(data.get("efficiency_review"), dict)
             else None
         ),
         schedule_health=(

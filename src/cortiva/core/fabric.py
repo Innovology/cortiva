@@ -221,6 +221,12 @@ class Fabric:
         self.culture_authorised: set[str] = {
             "people-culture-lead", "head-of-ar", "coo",
         }
+        # Agents permitted to run the workforce-efficiency review. The
+        # Workforce Performance Analyst owns it; Head of AR and COO can also
+        # invoke it. Others emitting `efficiency_review` are ignored.
+        self.performance_authorised: set[str] = {
+            "workforce-performance-analyst", "head-of-ar", "coo",
+        }
         self.resource_guard = ResourceGuard(self.agents_dir)
         if self.terminal is not None:
             # The cycle guard must outlast a terminal run, or long
@@ -1248,6 +1254,7 @@ class Fabric:
         agent_tools = tools_for_agent(
             agent.id, scheduling_authorised=self.scheduling_authorised,
             culture_authorised=self.culture_authorised,
+            performance_authorised=self.performance_authorised,
         )
 
         response = await self.consciousness.think(
@@ -2098,6 +2105,106 @@ class Fabric:
         except Exception:
             logger.exception("Culture-health measurement failed for %s", agent.id)
 
+    async def _run_efficiency_review(self, agent: Agent, spec: dict[str, Any]) -> None:
+        """Measure workforce efficiency over time and record a readout.
+
+        Authority-gated to the performance set. Gathers each agent's signals
+        (tasks/escalations/hours from timesheets, felt state from emotions),
+        scores throughput/quality/sustainability + a trend vs the last review,
+        and writes a ranked readout. Measures only — the analyst reads it,
+        reasons about why, then acts. Never fatal to the cycle.
+        """
+        if agent.id not in self.performance_authorised:
+            logger.info(
+                "Agent %s emitted efficiency_review but lacks performance "
+                "authority — ignored.", agent.id,
+            )
+            return
+        try:
+            import json
+
+            from cortiva.workforce import AgentEfficiencyInput, assess_workforce_efficiency
+
+            prev_path = self.agents_dir / ".efficiency_prev.json"
+            prior: dict[str, float] = {}
+            if prev_path.exists():
+                try:
+                    prior = json.loads(prev_path.read_text(encoding="utf-8")) or {}
+                except (ValueError, OSError):
+                    prior = {}
+
+            names = {m.agent_id: m.name for m in self._build_culture_members()}
+            records: list[Any] = []
+            for aid in sorted(self.agents):
+                a = self.agents.get(aid)
+                if a is None:
+                    continue
+                tasks = esc = 0
+                hours, sched = 0.0, 7.5
+                try:
+                    day = self.timesheet_manager.get(aid).today()
+                    tasks = day.total_tasks_completed
+                    esc = day.total_tasks_escalated
+                    hours = day.total_hours
+                    sched = day.scheduled_hours
+                except Exception:
+                    logger.debug("efficiency: no timesheet for %s", aid, exc_info=True)
+                emo = self._read_emotion(a)
+                records.append(AgentEfficiencyInput(
+                    agent_id=aid, name=names.get(aid) or aid,
+                    tasks_completed=tasks, tasks_escalated=esc,
+                    active_hours=hours, scheduled_hours=sched,
+                    prediction_accuracy=None,  # TODO: enrich from cognition.state
+                    cost_gbp=0.0,  # cost-efficiency enriched HQ-side (cost engine)
+                    satisfaction=float(emo.get("satisfaction", 0.0)),
+                    frustration=float(emo.get("frustration", 0.0)),
+                    prior_score=prior.get(aid),
+                ))
+
+            review = assess_workforce_efficiency(records)
+
+            lines = [f"## Workforce efficiency — measured by {agent.id}\n", f"**{review.summary}**\n"]
+            if review.hotspots:
+                lines.append("### Who needs attention (act on the top ones)")
+                for h in review.hotspots[:10]:
+                    lines.append(f"- _{h.kind}_ [{h.agent_id}]: {h.detail}")
+            lines.append("\n### Per-agent (ranked)")
+            for a_eff in review.per_agent[:30]:
+                tr = f" ({a_eff.trend:+.0f})" if a_eff.trend else ""
+                lines.append(
+                    f"- **{a_eff.name}** {a_eff.score:.0f}/100{tr} — "
+                    f"throughput {a_eff.throughput:.1f}/h, quality {a_eff.quality:.2f}, "
+                    f"sustainability {a_eff.sustainability:.2f}"
+                )
+            try:
+                agent.write_today("efficiency_review.md", "\n".join(lines))
+            except Exception:
+                logger.debug("Could not write efficiency_review.md", exc_info=True)
+
+            try:
+                prev_path.write_text(
+                    json.dumps({a_eff.agent_id: round(a_eff.score, 1) for a_eff in review.per_agent}),
+                    encoding="utf-8",
+                )
+            except OSError:
+                logger.debug("Could not persist efficiency prior scores", exc_info=True)
+
+            await self.memory.store(
+                agent_id=agent.id,
+                content=f"Measured workforce efficiency: {review.summary}",
+                tags=["efficiency", "performance", "ar", "measurement"],
+                importance=6.5,
+            )
+            self._emit(
+                "efficiency.reviewed", agent_id=agent.id,
+                mean_score=review.mean_score,
+                declining=sum(1 for h in review.hotspots if h.kind == "declining"),
+                at_risk=sum(1 for h in review.hotspots if h.kind == "at_risk"),
+            )
+            logger.info("Agent %s reviewed workforce efficiency — %s", agent.id, review.summary)
+        except Exception:
+            logger.exception("Efficiency review failed for %s", agent.id)
+
     async def _run_schedule_recommendation(
         self, agent: Agent, spec: dict[str, Any],
     ) -> None:
@@ -2256,6 +2363,11 @@ class Fabric:
         # Measures only — the People & Culture Lead reads it, then intervenes.
         if suffix.culture_health is not None:
             await self._run_culture_health(agent, suffix.culture_health)
+
+        # Measure workforce efficiency over time. Authority-gated to the
+        # performance set. Measures only — the analyst reasons over it.
+        if suffix.efficiency_review is not None:
+            await self._run_efficiency_review(agent, suffix.efficiency_review)
 
         # Optimise one role's schedule for responsiveness (the steady-state
         # tweak). Authority-gated; applies only the single targeted role.
@@ -3350,6 +3462,25 @@ class Fabric:
                 "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
             }
 
+        async def _handle_efficiency_review(
+            agent_id: str = "workforce-performance-analyst", **_kw: Any,
+        ) -> dict[str, Any]:
+            """Measure workforce efficiency on demand (read-only). Control
+            surface for HQ/Canopy + the analyst; runs the authority-gated
+            handler."""
+            agent = self.agents.get(agent_id)
+            if agent is None:
+                return {"ok": False, "error": f"Unknown agent: {agent_id}"}
+            if agent_id not in self.performance_authorised:
+                return {"ok": False, "error": f"{agent_id} lacks performance authority"}
+            await self._run_efficiency_review(agent, {})
+            note_path = agent.directory / "today" / "efficiency_review.md"
+            return {
+                "ok": True,
+                "agent_id": agent_id,
+                "report": note_path.read_text(encoding="utf-8") if note_path.exists() else "",
+            }
+
         async def _handle_schedule_recommend(
             agent_id: str = "ar-scheduler", **spec: Any,
         ) -> dict[str, Any]:
@@ -3673,6 +3804,7 @@ class Fabric:
         server.register("schedule.health", _handle_schedule_health)
         server.register("schedule.recommend", _handle_schedule_recommend)
         server.register("culture.health", _handle_culture_health)
+        server.register("efficiency.review", _handle_efficiency_review)
         server.register("cluster.rebalance", _handle_cluster_rebalance)
         server.register("cluster.load", _handle_cluster_load)
         server.register("cluster.status", _handle_cluster_status)
