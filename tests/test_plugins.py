@@ -166,7 +166,7 @@ class RecordingPlugin(FabricPlugin):
         self.cycle_calls: list[str] = []
         self.completes: list[tuple[str, str]] = []
         self.fails: list[tuple[str, str]] = []
-        self.task_context_calls: list[tuple[str, str]] = []
+        self.task_context_calls: list[tuple[str, str, float]] = []
 
     def bind(self, fabric):
         self.bound_fabric = fabric
@@ -183,8 +183,8 @@ class RecordingPlugin(FabricPlugin):
     def context_provider(self, agent_id):
         return "## Cognitive Plan Context"
 
-    def task_context_provider(self, agent_id, task_description):
-        self.task_context_calls.append((agent_id, task_description))
+    def task_context_provider(self, agent_id, task_description, importance=5.0):
+        self.task_context_calls.append((agent_id, task_description, importance))
         return f"## Cognitive Task Context: {task_description[:30]}"
 
 
@@ -219,9 +219,13 @@ class TestCollectTaskContext:
         mgr = PluginManager()
         plugin = RecordingPlugin()
         mgr.register(plugin)
-        ctx = mgr.collect_task_context("agent-1", "process the invoice batch")
+        ctx = mgr.collect_task_context(
+            "agent-1", "process the invoice batch", importance=7.0,
+        )
         assert "Cognitive Task Context" in ctx
-        assert plugin.task_context_calls == [("agent-1", "process the invoice batch")]
+        assert plugin.task_context_calls == [
+            ("agent-1", "process the invoice batch", 7.0),
+        ]
 
     def test_empty_when_no_plugins_contribute(self) -> None:
         mgr = PluginManager()
@@ -232,7 +236,7 @@ class TestCollectTaskContext:
         class Exploder(FabricPlugin):
             name = "exploder2"
 
-            def task_context_provider(self, agent_id, task_description):
+            def task_context_provider(self, agent_id, task_description, importance=5.0):
                 raise RuntimeError("boom")
 
         mgr = PluginManager()
@@ -293,6 +297,8 @@ class TestFabricDispatchIntegration:
         assert plugin.cycle_calls == ["agent-01"]
         assert len(plugin.completes) == 1
         assert plugin.completes[0][0] == "agent-01"
-        # Per-task plugin context was consulted during execution
+        # Per-task plugin context was consulted during execution, with
+        # the task's real importance (5.0 baseline + priority 1).
         assert plugin.task_context_calls
         assert plugin.task_context_calls[0][1] == "write the report"
+        assert plugin.task_context_calls[0][2] == 6.0

@@ -1219,9 +1219,11 @@ class Fabric:
 
         # Plugin-contributed per-task context (e.g. Myelin: inhibition
         # checks, outcome forecasts, emotional conditioning, matched
-        # procedures for THIS task).
+        # procedures for THIS task). Importance mirrors the memory-store
+        # convention (5.0 baseline + priority) so risk gates scale
+        # scrutiny to stakes.
         task_ctx = self.plugin_manager.collect_task_context(
-            agent.id, task.description,
+            agent.id, task.description, importance=5.0 + task.priority,
         )
         if task_ctx:
             context = context + "\n\n---\n\n" + task_ctx

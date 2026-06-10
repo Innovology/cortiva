@@ -113,12 +113,19 @@ class FabricPlugin:
         """
         return ""
 
-    def task_context_provider(self, agent_id: str, task_description: str) -> str:
+    def task_context_provider(
+        self,
+        agent_id: str,
+        task_description: str,
+        importance: float = 5.0,
+    ) -> str:
         """Return per-task context to inject into the execution prompt.
 
-        Called just before a task is executed, with the task description —
-        the hook for task-specific guidance (risk checks, known
-        procedures, relevant facts). Return empty string for none.
+        Called just before a task is executed, with the task description
+        and its importance (5.0 baseline + task priority) — the hook for
+        task-specific guidance (risk checks, known procedures, relevant
+        facts). Importance lets risk gates scale scrutiny to stakes.
+        Return empty string for none.
         """
         return ""
 
@@ -255,12 +262,17 @@ class PluginManager:
                 logger.error("Plugin %s context_provider error: %s", p.name, exc)
         return "\n\n---\n\n".join(parts) if parts else ""
 
-    def collect_task_context(self, agent_id: str, task_description: str) -> str:
+    def collect_task_context(
+        self,
+        agent_id: str,
+        task_description: str,
+        importance: float = 5.0,
+    ) -> str:
         """Collect per-task context from all plugins."""
         parts: list[str] = []
         for p in self._plugins:
             try:
-                ctx = p.task_context_provider(agent_id, task_description)
+                ctx = p.task_context_provider(agent_id, task_description, importance)
                 if ctx:
                     parts.append(ctx)
             except Exception as exc:
