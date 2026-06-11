@@ -131,6 +131,54 @@ class TestClaudeCodeAdapter:
         assert "5" in cmd
 
     @pytest.mark.asyncio
+    async def test_invoke_resumes_session(self, tmp_path: Path) -> None:
+        adapter = ClaudeCodeAdapter()
+        result_json = json.dumps({"result": "ok"})
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(result_json.encode(), b""))
+        mock_proc.returncode = 0
+        calls = []
+
+        async def capture_exec(*args, **kwargs):
+            calls.append(args)
+            return mock_proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=capture_exec):
+            await adapter.invoke("test", tmp_path, resume_session="sess-123")
+
+        cmd = calls[0]
+        assert "--resume" in cmd
+        assert "sess-123" in cmd
+
+    @pytest.mark.asyncio
+    async def test_invoke_injects_oauth_token(self, tmp_path: Path) -> None:
+        # Regression: the terminal path must carry CLAUDE_CODE_OAUTH_TOKEN so
+        # the background fabric never hangs on the macOS keychain (0 terminal
+        # completions / 54 timeouts before this was wired in).
+        adapter = ClaudeCodeAdapter()
+        result_json = json.dumps({"result": "ok"})
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(result_json.encode(), b""))
+        mock_proc.returncode = 0
+        seen_env: dict = {}
+
+        async def capture_exec(*args, **kwargs):
+            seen_env.update(kwargs.get("env") or {})
+            return mock_proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=capture_exec), \
+                patch(
+                    "cortiva.core.claude_auth.claude_oauth_token",
+                    return_value="tok-abc",
+                ):
+            await adapter.invoke("test", tmp_path, env={"PATH": "/usr/bin"})
+
+        assert seen_env.get("CLAUDE_CODE_OAUTH_TOKEN") == "tok-abc"
+        assert seen_env.get("PATH") == "/usr/bin"  # base env preserved
+
+    @pytest.mark.asyncio
     async def test_is_available_true(self) -> None:
         adapter = ClaudeCodeAdapter()
         with patch("shutil.which", return_value="/usr/local/bin/claude"):

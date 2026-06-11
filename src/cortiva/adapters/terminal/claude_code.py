@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from cortiva.adapters.protocols import AgentResponse, ToolCapabilities
+from cortiva.core.claude_auth import claude_oauth_env
 
 
 class ClaudeCodeAdapter:
@@ -34,9 +35,18 @@ class ClaudeCodeAdapter:
         allowed_tools: list[str] | None = None,
         max_turns: int | None = None,
         env: dict[str, str] | None = None,
+        resume_session: str | None = None,
     ) -> AgentResponse:
-        """Invoke Claude Code CLI with a prompt."""
+        """Invoke Claude Code CLI with a prompt.
+
+        ``resume_session`` continues a prior session id (captured from a
+        previous invoke's ``session_id``) so the agent keeps a single, growing
+        Claude Code conversation about its own work — its persistent dev
+        session — instead of a cold context every task.
+        """
         cmd: list[str] = ["claude", "-p", prompt, "--output-format", output_format]
+        if resume_session:
+            cmd.extend(["--resume", resume_session])
         if self._model:
             cmd.extend(["--model", self._model])
         if allowed_tools:
@@ -55,6 +65,14 @@ class ClaudeCodeAdapter:
         if max_turns is not None:
             cmd.extend(["--max-turns", str(max_turns)])
 
+        # Wire the subscription OAuth token into the subprocess env. The
+        # fabric is a background LaunchAgent and cannot read claude's token
+        # from the macOS Keychain — without this the call hangs and times out
+        # (0 terminal completions / 54 timeouts observed before this fix). The
+        # deep_think wrapper already does this; the terminal path did not, so
+        # every agent's hands-on execution silently died on the keychain.
+        env = claude_oauth_env(env)
+
         start = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -62,6 +80,7 @@ class ClaudeCodeAdapter:
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,  # non-interactive: never block on stdin
                 env=env,
             )
             stdout, stderr = await asyncio.wait_for(

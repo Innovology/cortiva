@@ -379,6 +379,7 @@ class TerminalAgentAdapter(Protocol):
         allowed_tools: list[str] | None = None,
         max_turns: int | None = None,
         env: dict[str, str] | None = None,
+        resume_session: str | None = None,
     ) -> AgentResponse:
         """Invoke the terminal agent with a prompt.
 
@@ -387,6 +388,10 @@ class TerminalAgentAdapter(Protocol):
         env:
             Environment variables for the subprocess.  ``None`` means
             inherit the parent process environment.
+        resume_session:
+            Continue a prior session id, for adapters that support a
+            persistent conversation (e.g. Claude Code).  Adapters without
+            session support ignore it.
         """
         ...
 

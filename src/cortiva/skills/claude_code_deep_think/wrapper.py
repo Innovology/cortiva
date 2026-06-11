@@ -136,34 +136,13 @@ def deep_think(
 def _claude_env() -> dict[str, str]:
     """Environment for the ``claude`` subprocess, with the OAuth token wired in.
 
-    A background process (the fabric) can't read Claude Code's token from the
-    macOS Keychain — the read blocks and the call times out. So we pass the
-    long-lived subscription token (from ``claude setup-token``) explicitly via
-    ``CLAUDE_CODE_OAUTH_TOKEN``: from the env if already set, else from the
-    token file the node writes (HQ delivers it once it's configured). Absent,
-    claude falls back to its own auth (and may hang on the keychain) — so this
-    is what makes headless, unattended claude work.
+    Delegates to the shared ``claude_oauth_env`` (single source of truth) so
+    the token-finding and whitespace-stripping logic can never drift between
+    deep_think, the terminal adapter, and per-agent sessions.
     """
-    import os
-    from pathlib import Path
+    from cortiva.core.claude_auth import claude_oauth_env
 
-    env = dict(os.environ)
-    # Strip ALL whitespace from whatever we use — an embedded newline (from a
-    # token pasted out of a wrapped terminal) makes an invalid auth header.
-    existing = "".join((env.get("CLAUDE_CODE_OAUTH_TOKEN") or "").split())
-    if existing:
-        env["CLAUDE_CODE_OAUTH_TOKEN"] = existing
-    else:
-        try:
-            tok = "".join(
-                (Path.home() / ".cortiva" / ".claude_oauth_token")
-                .read_text(encoding="utf-8").split()
-            )
-            if tok:
-                env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
-        except OSError:
-            pass
-    return env
+    return claude_oauth_env()
 
 
 def _check_preconditions() -> None:

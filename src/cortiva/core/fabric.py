@@ -2639,12 +2639,30 @@ class Fabric:
                     "continuing without provider credentials",
                 )
         creds.update(load_agent_credentials(agent.directory))
-        if creds:
+
+        # Give the agent its OWN persistent Claude Code session: a private
+        # config dir (so session history doesn't collide with other agents on
+        # the shared box) plus a resumed session id, so each task continues the
+        # same growing conversation about its work rather than starting cold.
+        env_overrides = dict(creds)
+        config_dir = cwd / ".claude"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        env_overrides["CLAUDE_CONFIG_DIR"] = str(config_dir)
+
+        session_file = cwd / ".claude_session"
+        resume_session: str | None = None
+        try:
+            prior = session_file.read_text(encoding="utf-8").strip()
+            resume_session = prior or None
+        except OSError:
+            resume_session = None
+
+        if env_overrides:
             base_env = (
                 dict(envelope.env) if envelope.env is not None
                 else dict(os.environ)
             )
-            envelope.env = {**base_env, **creds}
+            envelope.env = {**base_env, **env_overrides}
 
         # Enforce tool-level policy
         policy = self.policy_manager.get(agent.id)
@@ -2655,7 +2673,31 @@ class Fabric:
             cwd=envelope.cwd,
             env=envelope.env,
             allowed_tools=allowed_tools,
+            resume_session=resume_session,
         )
+
+        # A stale/expired session id makes claude error immediately; retry once
+        # from a clean session so one dead session never wedges the agent.
+        if response.is_error and resume_session:
+            logger.info(
+                "Agent %s terminal resume failed; retrying with a fresh session",
+                agent.id,
+            )
+            response = await self.terminal.invoke(
+                prompt=prompt,
+                cwd=envelope.cwd,
+                env=envelope.env,
+                allowed_tools=allowed_tools,
+                resume_session=None,
+            )
+
+        # Persist the (possibly new) session id so the next task resumes it.
+        new_session = getattr(response, "session_id", None)
+        if new_session and new_session != resume_session:
+            try:
+                session_file.write_text(str(new_session), encoding="utf-8")
+            except OSError:
+                logger.debug("Could not persist claude session id for %s", agent.id)
 
         if response.is_error:
             task.status = "exception"

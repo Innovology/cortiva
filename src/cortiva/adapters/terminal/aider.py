@@ -39,6 +39,7 @@ class AiderAdapter:
         allowed_tools: list[str] | None = None,
         max_turns: int | None = None,
         env: dict[str, str] | None = None,
+        resume_session: str | None = None,  # unsupported by aider; ignored
     ) -> AgentResponse:
         """Invoke Aider CLI with a prompt."""
         cmd: list[str] = [
