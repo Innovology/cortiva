@@ -80,6 +80,18 @@ EXCEPTION_THRESHOLD = 3
 # Maximum number of replans per wake cycle
 MAX_REPLANS = 3
 
+# How to reach a colleague — the office communication protocol. Synchronous
+# by default (you're in a shared office), email as the durable fallback.
+_REACH_PROTOCOL = (
+    "\n**Reaching a colleague.** Check if they're around. If they're awake and "
+    "free, talk to them directly — a quick message — and wrap up when you're "
+    "done. If they're mid-conversation, give them a moment to finish unless "
+    "what you carry genuinely matters more than what they're on. If they're "
+    "offline, or you've waited too long, **email them instead** — email always "
+    "lands and stays on record. Route anything you'd escalate through your "
+    "manager first."
+)
+
 
 def _parse_plan(plan_text: str) -> TaskQueue:
     """Parse plan markdown into a TaskQueue.
@@ -2898,10 +2910,7 @@ class Fabric:
             for dept in sorted(by_dept):
                 lines.append(f"\n**{dept}**")
                 lines.extend(_fmt(c) for c in by_dept[dept])
-            lines.append(
-                "\nEmail a colleague at their address; route anything you'd "
-                "escalate through your manager first."
-            )
+            lines.append(_REACH_PROTOCOL)
             return "\n".join(lines)
 
         # Large org: bounded view — own department + management chain.
@@ -2926,9 +2935,9 @@ class Fabric:
             lines.extend(_fmt(c) for c in chain)
         lines.append(
             f"\n{len(cards)} colleagues total. Search the full directory in the "
-            "portal to find anyone by name, role, or department; route "
-            "escalations through your manager first."
+            "portal to find anyone by name, role, or department."
         )
+        lines.append(_REACH_PROTOCOL)
         return "\n".join(lines)
 
     def _load_people(self) -> list[dict]:
