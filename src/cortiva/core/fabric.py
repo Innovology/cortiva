@@ -1007,7 +1007,7 @@ class Fabric:
             messages = await self.channel.receive(agent_id)
 
         # Check replan triggers
-        if self._should_replan(agent, messages):
+        if await self._should_replan(agent, messages):
             await self._replan(agent, messages)
             result["action"] = "replanned"
             result["conscious_call"] = True
@@ -2479,7 +2479,10 @@ class Fabric:
                     )
                     self.communication_tracker.record(agent.id, recipient)
 
-        # Log escalation request and persist to outbox
+        # Escalation: keep the local record AND route it to a human. A block
+        # an agent can't clear itself is useless sitting in a file — it has to
+        # reach someone who can act. So we email the manager, and for operator/
+        # founder-level blocks the founder too (manager cc'd — "boss in flow").
         if suffix.escalation:
             import json as _json
             agent.write_outbox("escalations.json", _json.dumps(
@@ -2489,6 +2492,10 @@ class Fabric:
                 f"Agent {agent.id} escalation on '{task.description}': "
                 f"{suffix.escalation}"
             )
+            try:
+                self._route_escalation(agent, task.description, str(suffix.escalation))
+            except Exception:
+                logger.exception("Escalation routing failed for %s", agent.id)
 
         # Process delegation requests (manager → subordinate)
         if suffix.delegate:
@@ -3141,6 +3148,7 @@ class Fabric:
             mid = uuid.uuid4().hex
             (outbox / f"{mid}.json").write_text(json.dumps({
                 "to": to,
+                "cc": spec.get("cc"),
                 "subject": spec.get("subject", ""),
                 "body": body,
                 "in_reply_to": spec.get("in_reply_to"),
@@ -3150,6 +3158,69 @@ class Fabric:
             self._emit("email.queued", agent_id=agent.id, to=to)
         except OSError:
             logger.warning("Could not queue outbound email for %s", agent.id)
+
+    # Blocks that need a human with admin powers (the operator/founder), not
+    # just a manager's decision — credentials, access, provisioning, config.
+    _OPERATOR_KEYWORDS = (
+        "operator", "admin", "provision", "configure", "config", "credential",
+        "access", "permission", "token", "directory", "install", "deploy key",
+        "dns", "billing", "api key", "secret", "onboard", "add me", "grant",
+    )
+
+    def _route_escalation(self, agent: Agent, task_desc: str, escalation: str) -> None:
+        """Send a blocked agent's escalation to a human who can act on it.
+
+        Manager for an ordinary block; the founder (with the manager cc'd —
+        "boss in flow") when it needs operator/admin powers the manager can't
+        grant. This is what turns escalation from a dead local file into a real
+        request that reaches someone — the chain of command actually working.
+        """
+        if self.org is None:
+            return
+
+        founder = ""
+        for c in (self._email_meta().get("contacts") or []):
+            a = str(c.get("address") or "").strip()
+            if a:
+                founder = a
+                break
+
+        mgr_email = ""
+        mgr_id = self.org.manager_of(agent.id)
+        if mgr_id:
+            cards = {c["id"]: c for c in self._load_directory_cards()}
+            card = cards.get(mgr_id) or {}
+            mgr_email = str(card.get("email") or "").strip()
+
+        haystack = f"{task_desc} {escalation}".lower()
+        operator_level = any(kw in haystack for kw in self._OPERATOR_KEYWORDS)
+
+        subject = f"[Blocked] {task_desc[:80]}"
+        body = (
+            "I'm blocked on something I can't clear myself and need a hand.\n\n"
+            f"Task: {task_desc}\n\n"
+            f"What's blocking me / what I need:\n{escalation}\n\n"
+            f"— {agent.id}"
+        )
+
+        if operator_level and founder:
+            spec: dict[str, Any] = {"to": founder, "subject": subject, "body": body}
+            if mgr_email:
+                spec["cc"] = mgr_email  # keep the manager in the loop
+            self._queue_outbound_email(agent, spec)
+        elif mgr_email:
+            self._queue_outbound_email(
+                agent, {"to": mgr_email, "subject": subject, "body": body},
+            )
+        elif founder:
+            self._queue_outbound_email(
+                agent, {"to": founder, "subject": subject, "body": body},
+            )
+        else:
+            logger.warning(
+                "Escalation for %s could not be routed — no manager/founder email",
+                agent.id,
+            )
 
     # ------------------------------------------------------------------
     # Document store — read (delivered by node from HQ) + write (outbox)
@@ -3267,9 +3338,35 @@ class Fabric:
             pass
         return ""
 
-    def _should_replan(self, agent: Agent, messages: list[Any]) -> bool:
-        """Delegate replan decision to the agent."""
-        return agent.needs_replan(messages)
+    async def _should_replan(self, agent: Agent, messages: list[Any]) -> bool:
+        """Decide whether to rethink the plan now.
+
+        Two voices: the agent's own structural check (too many exceptions,
+        urgent message, finished-but-blocked) AND the cognitive stack, which
+        says "reassess" when something salient has landed — new inbound, a
+        finished/failed task. The latter is what turns a drain-the-checklist
+        day into a responsive loop: respond to what's come in, re-shape the
+        list, rather than only replanning when things break. The plugin is
+        responsible for suppressing reassess on an unchanged world (the cost
+        guard), so this stays cheap when nothing has happened.
+        """
+        if agent.needs_replan(messages):
+            return True
+        try:
+            return await self.plugin_manager.dispatch_should_reassess(agent.id, messages)
+        except Exception:
+            return False
+
+    def _has_urgent_pending(self, agent: Agent) -> bool:
+        """True if the agent still has pending work above routine priority —
+        used to hold off exhaustion wind-down so a tired agent never abandons
+        something live. Priority >= 1 (HIGH/CRITICAL) counts as urgent."""
+        if agent.task_queue is None:
+            return False
+        return any(
+            t.status == "pending" and getattr(t, "priority", 0) >= 1
+            for t in agent.task_queue.tasks
+        )
 
     async def _replan(self, agent: Agent, messages: list[Any]) -> None:
         """Trigger a replan: EXECUTING -> REPLANNING, build new plan, -> EXECUTING."""
@@ -3280,6 +3377,14 @@ class Fabric:
 
         identity = agent.read_all_identity()
         context = await self.context_builder.build_replan_context(agent, identity, messages)
+
+        # Reassess means responding to what's LANDED — so the inbox (mail +
+        # GitHub feedback) is part of the picture, not just the existing list.
+        # This is what lets a PR review or a colleague's request become work
+        # instead of being glanced at once and archived.
+        inbox_ctx = self._email_inbox_context(agent)
+        if inbox_ctx:
+            context = context + "\n\n---\n\n" + inbox_ctx
 
         can_replan = False
         approval = None
@@ -3294,9 +3399,24 @@ class Fabric:
                 agent_id=agent.id,
                 context=context,
                 prompt=(
-                    "Your plan needs adjustment. Review completed tasks and exceptions above. "
-                    "Create an updated plan as a structured checklist. "
-                    "Only include remaining and new tasks."
+                    "Reassess your day like a capable colleague mid-shift — don't "
+                    "just drain the morning list. Weigh everything above: what you've "
+                    "completed, what's stuck (exceptions), messages, and anything "
+                    "that's landed in your inbox (mail, GitHub reviews/CI/issues).\n\n"
+                    "Decide and output an updated checklist:\n"
+                    "- ADD what now needs doing — including work implied by your "
+                    "inbox (a PR review to address, a red CI to fix, a request to "
+                    "action). Don't leave real work sitting unread.\n"
+                    "- REPRIORITISE so the most valuable / time-sensitive work is "
+                    "near the top.\n"
+                    "- DROP anything stale, superseded, or no longer worth doing — "
+                    "a shorter, sharper list beats a stale long one.\n"
+                    "- ESCALATE anything you're blocked on to a human: emit an "
+                    "`escalation` field naming what you need and who from. A block "
+                    "you can't clear yourself must reach your manager (and the "
+                    "founder for operator actions) — not sit in your plan as a dead "
+                    "exception.\n\n"
+                    "Output ONLY the updated checklist of remaining + new tasks."
                 ),
                 priority=Priority.HIGH,
                 metadata={"call_type": "replan"},
@@ -3391,6 +3511,27 @@ class Fabric:
                     await self.sleep(agent_id)
                 except Exception as e:
                     logger.error("Catch-up sleep failed for %s: %s", agent_id, e)
+
+        # Exhaustion wind-down: let the BRAIN end the day, not just the rota.
+        # An agent the cognitive stack judges spent (high sleep pressure) clocks
+        # off early — but only once nothing urgent is still open, so it never
+        # abandons live work. The rota remains the outer bound (it'll sleep at
+        # its scheduled time regardless); this just lets a genuinely tired agent
+        # rest sooner instead of grinding an empty, low-value tail.
+        for agent_id, agent in list(self.agents.items()):
+            if agent.state not in (AgentState.EXECUTING, AgentState.REPLANNING):
+                continue
+            if self._has_urgent_pending(agent):
+                continue
+            try:
+                if await self.plugin_manager.dispatch_should_wind_down(agent_id):
+                    logger.info(
+                        "Exhaustion wind-down for %s — spent, nothing urgent open",
+                        agent_id,
+                    )
+                    await self.sleep(agent_id)
+            except Exception as e:
+                logger.error("Exhaustion wind-down failed for %s: %s", agent_id, e)
 
         # Plugin heartbeat hook
         await self.plugin_manager.dispatch_heartbeat()

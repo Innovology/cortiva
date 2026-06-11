@@ -103,6 +103,23 @@ class FabricPlugin:
     async def on_hook(self, source: str, event_type: str, payload: dict) -> None:
         """Called when an inbound hook is received."""
 
+    # ----- Cognitive queries (the brain advising the loop) -----
+
+    async def should_wind_down(self, agent_id: str) -> bool:
+        """Should this agent clock off now? A cognitive plugin returns True
+        when the agent is genuinely spent (high sleep pressure) — letting the
+        brain, not just the rota, decide when the day is done. Default: no
+        opinion."""
+        return False
+
+    async def should_reassess(self, agent_id: str, messages: list[Any]) -> bool:
+        """Should this agent rethink its plan now? A cognitive plugin returns
+        True when something salient has landed (new inbound, a finished or
+        failed task) so the agent responds to what's come in and re-shapes its
+        list, rather than draining a fixed morning checklist. Default: no
+        opinion."""
+        return False
+
     # ----- Context injection (sync) -----
 
     def context_provider(self, agent_id: str) -> str:
@@ -249,6 +266,28 @@ class PluginManager:
                 await p.on_hook(source, event_type, payload)
             except Exception as exc:
                 logger.error("Plugin %s on_hook error: %s", p.name, exc)
+
+    async def dispatch_should_wind_down(self, agent_id: str) -> bool:
+        """True if ANY plugin judges the agent spent enough to clock off."""
+        for p in self._plugins:
+            try:
+                if await p.should_wind_down(agent_id):
+                    return True
+            except Exception as exc:
+                logger.error("Plugin %s should_wind_down error: %s", p.name, exc)
+        return False
+
+    async def dispatch_should_reassess(
+        self, agent_id: str, messages: list[Any],
+    ) -> bool:
+        """True if ANY plugin judges something salient warrants a rethink."""
+        for p in self._plugins:
+            try:
+                if await p.should_reassess(agent_id, messages):
+                    return True
+            except Exception as exc:
+                logger.error("Plugin %s should_reassess error: %s", p.name, exc)
+        return False
 
     def collect_context(self, agent_id: str) -> str:
         """Collect additional context from all plugins."""
