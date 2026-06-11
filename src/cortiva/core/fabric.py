@@ -93,6 +93,19 @@ _REACH_PROTOCOL = (
 )
 
 
+def _is_github_email(from_field: str) -> bool:
+    """True when an email is a GitHub notification (sender on github.com).
+
+    Covers ``notifications@github.com`` and ``noreply@github.com`` — the
+    addresses GitHub sends PR/issue/review/CI notifications from.
+    """
+    import re
+
+    m = re.search(r"[\w.+-]+@([\w.-]+)", from_field or "")
+    domain = (m.group(1) if m else (from_field or "")).strip().lower()
+    return domain == "github.com" or domain.endswith(".github.com")
+
+
 def _resolve_msg_email(
     recipient: str, cards_by_key: dict, domain: str,
 ) -> str | None:
@@ -2787,7 +2800,13 @@ class Fabric:
                 cur = mgr
 
         priority = [m for m in items if _addr(m.get("from", "")) in authority]
-        normal = [m for m in items if _addr(m.get("from", "")) not in authority]
+        rest = [m for m in items if _addr(m.get("from", "")) not in authority]
+        # GitHub notifications are feedback on the agent's OWN work — comments
+        # on their PRs/issues, review requests, CI. They were landing in the
+        # "ignore as you judge" bucket and piling up unread, so feedback loops
+        # never closed. Pull them into their own action-expected block.
+        github = [m for m in rest if _is_github_email(m.get("from", ""))]
+        normal = [m for m in rest if not _is_github_email(m.get("from", ""))]
 
         lines: list[str] = []
         if priority:
@@ -2810,6 +2829,21 @@ class Fabric:
                     + (f" — _{who}_" if who else "")
                     + f" — {m.get('subject', '')}  \n  {snippet}"
                 )
+            lines.append("")
+        if github:
+            lines.append("## 🔧 GitHub — feedback on your work, respond there\n")
+            lines.append(
+                f"{len(github)} GitHub notification(s) — comments on your pull "
+                "requests or issues, review requests, CI results. This is "
+                "feedback on **your own work** and it **needs a response**: open "
+                "the PR or issue with your github tools (`gh pr view`, "
+                "`gh issue view`), read the full thread, and **reply there** — a "
+                "review comment left unanswered blocks whoever's waiting on you. "
+                "Don't let these pile up unread.\n"
+            )
+            for m in github[:10]:
+                snippet = (m.get("text") or "").strip().replace("\n", " ")[:200]
+                lines.append(f"- **{m.get('subject', '')}**  \n  {snippet}")
             lines.append("")
         if normal:
             lines.append("## 📧 New Mail — notification\n")
