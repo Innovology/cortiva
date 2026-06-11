@@ -93,6 +93,29 @@ _REACH_PROTOCOL = (
 )
 
 
+def _resolve_msg_email(
+    recipient: str, cards_by_key: dict, domain: str,
+) -> str | None:
+    """Best-effort email address for a peer-message recipient.
+
+    Used when a message can't be delivered in-process (recipient on another
+    machine, or unknown to the bus) so it falls back to durable email. Order:
+    an address as given → a known colleague's email → ``<handle>@<domain>``.
+    Returns None when there's no plausible route.
+    """
+    r = (recipient or "").strip()
+    if not r:
+        return None
+    if "@" in r:
+        return r
+    card = cards_by_key.get(r.lower())
+    if card and card.get("email"):
+        return str(card["email"])
+    if domain and all(ch.isalnum() or ch in "-._" for ch in r):
+        return f"{r.lower()}@{domain}"
+    return None
+
+
 def _parse_plan(plan_text: str) -> TaskQueue:
     """Parse plan markdown into a TaskQueue.
 
@@ -2397,21 +2420,51 @@ class Fabric:
         if suffix.document and isinstance(suffix.document, dict):
             self._queue_outbound_document(agent, suffix.document)
 
-        # Send inter-agent messages via channel adapter and persist to outbox
+        # Send inter-agent messages. Deliver in-process when the recipient is
+        # a colleague THIS fabric runs (they'll receive it on their next
+        # cycle). When they're not — on another machine, or unknown to the
+        # in-process bus — fall back to EMAIL so the message never silently
+        # vanishes (the cross-node drop that lost the CEO's memos).
         if suffix.messages:
             import json as _json
             agent.write_outbox("messages.json", _json.dumps(suffix.messages, indent=2))
-            if self.channel:
-                for msg in suffix.messages:
-                    recipient = msg.get("to", "")
-                    content = msg.get("content", "")
-                    if recipient and content:
-                        await self.channel.send(
-                            sender=agent.id,
-                            recipient=recipient,
-                            content=content,
-                        )
-                        self.communication_tracker.record(agent.id, recipient)
+            cards_by_key: dict[str, dict] = {}
+            for c in self._load_directory_cards():
+                for k in (c.get("id"), c.get("name"), c.get("first")):
+                    if k:
+                        cards_by_key[str(k).strip().lower()] = c
+            # Local = a colleague THIS fabric runs (same-node cards) or a known
+            # agent id. Everyone else routes to email.
+            local_keys = set(cards_by_key) | {a.strip().lower() for a in self.agents}
+            domain = (self._email_meta().get("domain") or "").strip()
+            for msg in suffix.messages:
+                recipient = str(msg.get("to", "")).strip()
+                content = msg.get("content", "")
+                if not recipient or not content:
+                    continue
+                if recipient.lower() in local_keys and self.channel:
+                    await self.channel.send(
+                        sender=agent.id, recipient=recipient, content=content,
+                    )
+                    self.communication_tracker.record(agent.id, recipient)
+                    continue
+                addr = _resolve_msg_email(recipient, cards_by_key, domain)
+                if addr:
+                    self._queue_outbound_email(agent, {
+                        "to": addr,
+                        "subject": f"A message from {self._agent_first_name(agent) or agent.id}",
+                        "body": content,
+                    })
+                    logger.info(
+                        "Peer message to %s not reachable in-process — sent as "
+                        "email to %s so it lands.", recipient, addr,
+                    )
+                elif self.channel:
+                    # No email route — best-effort in-process (may queue).
+                    await self.channel.send(
+                        sender=agent.id, recipient=recipient, content=content,
+                    )
+                    self.communication_tracker.record(agent.id, recipient)
 
         # Log escalation request and persist to outbox
         if suffix.escalation:
