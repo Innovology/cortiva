@@ -98,6 +98,7 @@ def deep_think(
             timeout=timeout_s,
             check=False,
             env=_claude_env(),
+            stdin=subprocess.DEVNULL,  # non-interactive: never wait on stdin
         )
     except subprocess.TimeoutExpired as exc:
         elapsed = time.monotonic() - started
