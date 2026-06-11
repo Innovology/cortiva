@@ -147,11 +147,17 @@ def _claude_env() -> dict[str, str]:
     from pathlib import Path
 
     env = dict(os.environ)
-    if not env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+    # Strip ALL whitespace from whatever we use — an embedded newline (from a
+    # token pasted out of a wrapped terminal) makes an invalid auth header.
+    existing = "".join((env.get("CLAUDE_CODE_OAUTH_TOKEN") or "").split())
+    if existing:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = existing
+    else:
         try:
-            tok = (Path.home() / ".cortiva" / ".claude_oauth_token").read_text(
-                encoding="utf-8",
-            ).strip()
+            tok = "".join(
+                (Path.home() / ".cortiva" / ".claude_oauth_token")
+                .read_text(encoding="utf-8").split()
+            )
             if tok:
                 env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
         except OSError:
