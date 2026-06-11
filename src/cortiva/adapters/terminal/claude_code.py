@@ -65,6 +65,14 @@ class ClaudeCodeAdapter:
         if max_turns is not None:
             cmd.extend(["--max-turns", str(max_turns)])
 
+        # If the agent's workspace has a provisioned MCP config (e.g. the
+        # Playwright browser server the dev-env provisioner writes), load it so
+        # the session gains browser_navigate/screenshot tools and can drive the
+        # live product. Project-scoped, picked up only when the file exists.
+        mcp_config = cwd / ".mcp.json"
+        if mcp_config.exists():
+            cmd.extend(["--mcp-config", str(mcp_config)])
+
         # Wire the subscription OAuth token into the subprocess env. The
         # fabric is a background LaunchAgent and cannot read claude's token
         # from the macOS Keychain — without this the call hangs and times out
