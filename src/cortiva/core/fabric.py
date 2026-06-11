@@ -2944,6 +2944,17 @@ class Fabric:
             "is durable and always delivered; the in-office channel only "
             "reaches colleagues who are awake nearby. If you lead a team and "
             "need them all to have something on record, email the group.",
+            "**Reaching humans is NOT blocked.** The in-office channel only "
+            "carries agent-to-agent chatter, but email reaches real people — "
+            "your manager, the founders, human colleagues. So if you're "
+            "**blocked** on something you can't resolve yourself (an access "
+            "grant, an operator/admin action, a decision only a human can "
+            "make), do NOT just journal it and move on hoping someone reads "
+            "it. **Escalate**: emit an `escalation` field naming what you need "
+            "and who from — that emails your manager directly (and a founder, "
+            "with your manager copied, for operator/admin-level asks). It "
+            "reaches a person who can act. A block you sit on is a block that "
+            "never clears.",
         ]
         contacts = meta.get("contacts") or []
         if contacts:
