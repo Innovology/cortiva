@@ -97,6 +97,7 @@ def deep_think(
             text=True,
             timeout=timeout_s,
             check=False,
+            env=_claude_env(),
         )
     except subprocess.TimeoutExpired as exc:
         elapsed = time.monotonic() - started
@@ -129,6 +130,33 @@ def deep_think(
         estimated_cost_gbp=estimated_cost,
         duration_s=elapsed,
     )
+
+
+def _claude_env() -> dict[str, str]:
+    """Environment for the ``claude`` subprocess, with the OAuth token wired in.
+
+    A background process (the fabric) can't read Claude Code's token from the
+    macOS Keychain — the read blocks and the call times out. So we pass the
+    long-lived subscription token (from ``claude setup-token``) explicitly via
+    ``CLAUDE_CODE_OAUTH_TOKEN``: from the env if already set, else from the
+    token file the node writes (HQ delivers it once it's configured). Absent,
+    claude falls back to its own auth (and may hang on the keychain) — so this
+    is what makes headless, unattended claude work.
+    """
+    import os
+    from pathlib import Path
+
+    env = dict(os.environ)
+    if not env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        try:
+            tok = (Path.home() / ".cortiva" / ".claude_oauth_token").read_text(
+                encoding="utf-8",
+            ).strip()
+            if tok:
+                env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
+        except OSError:
+            pass
+    return env
 
 
 def _check_preconditions() -> None:
