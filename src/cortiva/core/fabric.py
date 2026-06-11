@@ -2790,6 +2790,12 @@ class Fabric:
             '"in_reply_to": "<message_id, optional>"}. You can email '
             "colleagues at `<first-name>@" + domain + "` and external "
             "addresses. Send only when it's genuinely useful.",
+            "For anything that must **persist** or reach someone who may be "
+            "asleep or on another machine — a decision, a memo to your team, "
+            "a cadence note — prefer **email** over a passing message. Email "
+            "is durable and always delivered; the in-office channel only "
+            "reaches colleagues who are awake nearby. If you lead a team and "
+            "need them all to have something on record, email the group.",
         ]
         contacts = meta.get("contacts") or []
         if contacts:
