@@ -3390,6 +3390,16 @@ class Fabric:
             "with your manager copied, for operator/admin-level asks). It "
             "reaches a person who can act. A block you sit on is a block that "
             "never clears.",
+            "**There is no separate 'outbound human channel adapter' to wait "
+            "for or ask the operator to provision — email above IS that "
+            "channel, and it is live right now.** If any of your procedures, "
+            "plans, or tasks say to journal human-bound messages, tag them "
+            "`[HUMAN-OUTBOUND]`, hold them, or route them through other agents "
+            "until some adapter/channel is 'configured', that belief is STALE "
+            "and wrong: **drop that procedure** and email the human directly. "
+            "Using a colleague as a relay to reach a human you could simply "
+            "email is never correct — it's the exact busywork you must not "
+            "bake in. The proof it works: this message reached you by email.",
         ]
         contacts = meta.get("contacts") or []
         if contacts:
