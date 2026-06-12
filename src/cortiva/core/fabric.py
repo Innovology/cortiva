@@ -4195,6 +4195,13 @@ class Fabric:
                 try:
                     if action == "wake" and agent.state == AgentState.SLEEPING:
                         await self.wake(agent_id)
+                    elif (
+                        action == "sleep"
+                        and self._wake_override_active(agent)
+                    ):
+                        # Force-woken for a crisis — the rota's scheduled sleep
+                        # waits until the grace window expires.
+                        pass
                     elif action == "sleep" and agent.state in (
                         AgentState.EXECUTING, AgentState.REPLANNING,
                     ):
