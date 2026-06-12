@@ -347,11 +347,7 @@ class MockConsciousness:
     async def think(self, agent_id, context, prompt, **kwargs):
         if "plan" in prompt.lower() or "checklist" in prompt.lower():
             return ConsciousResponse(
-                content=(
-                    "# Today's Plan\n\n"
-                    "- [ ] Review tickets\n"
-                    "- [ ] Process messages\n"
-                ),
+                content=("# Today's Plan\n\n- [ ] Review tickets\n- [ ] Process messages\n"),
                 tokens_in=100,
                 tokens_out=50,
                 model="mock",

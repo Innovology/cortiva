@@ -6,8 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cortiva.adapters.protocols import ConsciousResponse, Priority
-
+from cortiva.adapters.protocols import Priority
 
 # ---------------------------------------------------------------------------
 # Anthropic adapter
@@ -78,7 +77,9 @@ class TestAnthropicAdapter:
         adapter._default_client = mock_client
 
         resp = await adapter.think(
-            "agent-1", "context", "do task",
+            "agent-1",
+            "context",
+            "do task",
             metadata={"task_execution": True},
         )
 
@@ -116,8 +117,7 @@ class TestAnthropicAdapter:
 
         mock_block = MagicMock()
         mock_block.text = (
-            "## Living Summary\nI am a test agent.\n\n"
-            "## Journal\nToday I learned something."
+            "## Living Summary\nI am a test agent.\n\n## Journal\nToday I learned something."
         )
         mock_message = MagicMock()
         mock_message.content = [mock_block]
@@ -226,7 +226,9 @@ class TestGoogleAdapterExtended:
         adapter._default_client = mock_client
 
         resp = await adapter.think(
-            "agent-1", "ctx", "prompt",
+            "agent-1",
+            "ctx",
+            "prompt",
             metadata={"task_execution": True},
         )
 
@@ -242,10 +244,7 @@ class TestGoogleAdapterExtended:
         mock_usage.candidates_token_count = 30
 
         mock_response = MagicMock()
-        mock_response.text = (
-            "## Living Summary\nUpdated identity.\n\n"
-            "## Journal\nReflection entry."
-        )
+        mock_response.text = "## Living Summary\nUpdated identity.\n\n## Journal\nReflection entry."
         mock_response.usage_metadata = mock_usage
 
         mock_client = MagicMock()
@@ -339,7 +338,9 @@ class TestOpenAICompatAdapterExtended:
         adapter._default_client = mock_client
 
         resp = await adapter.think(
-            "agent-1", "ctx", "prompt",
+            "agent-1",
+            "ctx",
+            "prompt",
             metadata={"task_execution": True},
         )
 
@@ -357,10 +358,7 @@ class TestOpenAICompatAdapterExtended:
         mock_usage.completion_tokens = 40
 
         mock_message = MagicMock()
-        mock_message.content = (
-            "## Living Summary\nNew identity.\n\n"
-            "## Journal\nLearned a lot."
-        )
+        mock_message.content = "## Living Summary\nNew identity.\n\n## Journal\nLearned a lot."
 
         mock_choice = MagicMock()
         mock_choice.message = mock_message
@@ -427,7 +425,9 @@ class TestOpenAICompatAdapterExtended:
         adapter._default_client = mock_client
 
         resp = await adapter.think(
-            "agent-1", "ctx", "prompt",
+            "agent-1",
+            "ctx",
+            "prompt",
             priority=Priority.HIGH,
         )
 

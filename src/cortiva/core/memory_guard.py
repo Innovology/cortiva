@@ -54,7 +54,11 @@ class GuardedMemoryAdapter:
     ) -> MemoryRecord:
         """Store a memory — always allowed (agents write to their own store)."""
         return await self._inner.store(
-            agent_id, content, tags=tags, importance=importance, metadata=metadata,
+            agent_id,
+            content,
+            tags=tags,
+            importance=importance,
+            metadata=metadata,
         )
 
     async def search(
@@ -72,10 +76,16 @@ class GuardedMemoryAdapter:
         Shared memory (``__org_shared__``) is always readable.
         """
         caller = _caller_id or agent_id
-        if agent_id != SHARED_AGENT_ID and not self._enforcer.validate_memory_access(caller, agent_id):
+        if agent_id != SHARED_AGENT_ID and not self._enforcer.validate_memory_access(
+            caller, agent_id
+        ):
             return []
         return await self._inner.search(
-            agent_id, query, limit=limit, min_importance=min_importance, tags=tags,
+            agent_id,
+            query,
+            limit=limit,
+            min_importance=min_importance,
+            tags=tags,
         )
 
     async def recall(
@@ -91,10 +101,14 @@ class GuardedMemoryAdapter:
         Shared memory (``__org_shared__``) is always readable.
         """
         caller = _caller_id or agent_id
-        if agent_id != SHARED_AGENT_ID and not self._enforcer.validate_memory_access(caller, agent_id):
+        if agent_id != SHARED_AGENT_ID and not self._enforcer.validate_memory_access(
+            caller, agent_id
+        ):
             return []
         return await self._inner.recall(
-            agent_id, limit=limit, min_importance=min_importance,
+            agent_id,
+            limit=limit,
+            min_importance=min_importance,
         )
 
     async def delete(
@@ -128,7 +142,10 @@ class GuardedMemoryAdapter:
         """
         all_tags = (tags or []) + ["shared", f"author:{caller_id}"]
         return await self._inner.store(
-            SHARED_AGENT_ID, content, tags=all_tags, importance=importance,
+            SHARED_AGENT_ID,
+            content,
+            tags=all_tags,
+            importance=importance,
             metadata={"author": caller_id},
         )
 
@@ -141,7 +158,10 @@ class GuardedMemoryAdapter:
     ) -> list[MemoryRecord]:
         """Search org-wide shared memories.  Always allowed."""
         return await self._inner.search(
-            SHARED_AGENT_ID, query, limit=limit, min_importance=min_importance,
+            SHARED_AGENT_ID,
+            query,
+            limit=limit,
+            min_importance=min_importance,
         )
 
     async def recall_shared(
@@ -152,7 +172,9 @@ class GuardedMemoryAdapter:
     ) -> list[MemoryRecord]:
         """Recall high-importance shared memories."""
         return await self._inner.recall(
-            SHARED_AGENT_ID, limit=limit, min_importance=min_importance,
+            SHARED_AGENT_ID,
+            limit=limit,
+            min_importance=min_importance,
         )
 
     # ------------------------------------------------------------------
@@ -180,7 +202,10 @@ class GuardedMemoryAdapter:
     ) -> list[list[MemoryRecord]]:
         if hasattr(self._inner, "find_clusters"):
             return await self._inner.find_clusters(
-                agent_id, tag=tag, min_importance=min_importance, threshold=threshold,
+                agent_id,
+                tag=tag,
+                min_importance=min_importance,
+                threshold=threshold,
             )
         return []
 
@@ -194,7 +219,10 @@ class GuardedMemoryAdapter:
     ) -> list[MemoryRecord]:
         if hasattr(self._inner, "traverse"):
             return await self._inner.traverse(
-                agent_id, start_id, depth=depth, min_weight=min_weight,
+                agent_id,
+                start_id,
+                depth=depth,
+                min_weight=min_weight,
             )
         return []
 

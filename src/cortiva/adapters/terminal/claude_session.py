@@ -30,10 +30,11 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from cortiva.core.claude_auth import claude_oauth_env
 
@@ -44,23 +45,33 @@ _BINARY = "claude"
 # Tool calls whose inputs look like they mutate the world irreversibly — these
 # are the checkpoints an agent most wants to catch before they land.
 _DESTRUCTIVE_HINTS = (
-    "rm -rf", "rm -r", "git push", "git reset --hard", "git clean",
-    "drop table", "drop database", "truncate", "delete from",
-    "force-push", "--force", "shutdown", "kill -9",
+    "rm -rf",
+    "rm -r",
+    "git push",
+    "git reset --hard",
+    "git clean",
+    "drop table",
+    "drop database",
+    "truncate",
+    "delete from",
+    "force-push",
+    "--force",
+    "shutdown",
+    "kill -9",
 )
 
 
 class Checkpoint(str, Enum):
     """A classified decision point in a session's stream."""
 
-    INIT = "init"               # session started (tools/model known)
-    NARRATION = "narration"     # assistant text — a plan, a thought, progress
-    TOOL = "tool"               # about to use a tool
+    INIT = "init"  # session started (tools/model known)
+    NARRATION = "narration"  # assistant text — a plan, a thought, progress
+    TOOL = "tool"  # about to use a tool
     DESTRUCTIVE = "destructive"  # a tool call that looks irreversible
     TOOL_RESULT = "tool_result"  # a tool returned
-    RATE_LIMIT = "rate_limit"   # backoff signal (for the governor)
-    ERROR = "error"             # something went wrong
-    DONE = "done"               # the session finished (carries result)
+    RATE_LIMIT = "rate_limit"  # backoff signal (for the governor)
+    ERROR = "error"  # something went wrong
+    DONE = "done"  # the session finished (carries result)
 
 
 @dataclass
@@ -118,9 +129,12 @@ class ClaudeSession:
 
     def _build_cmd(self) -> list[str]:
         cmd = [
-            _BINARY, "-p",
-            "--input-format", "stream-json",
-            "--output-format", "stream-json",
+            _BINARY,
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
             "--verbose",
         ]
         if self._resume:
@@ -194,12 +208,15 @@ class ClaudeSession:
         if t == "rate_limit_event":
             return [SessionEvent(Checkpoint.RATE_LIMIT, e, session_id=sid)]
         if t == "result":
-            return [SessionEvent(
-                Checkpoint.DONE, e,
-                text=str(e.get("result") or ""),
-                session_id=sid,
-                is_error=bool(e.get("is_error")),
-            )]
+            return [
+                SessionEvent(
+                    Checkpoint.DONE,
+                    e,
+                    text=str(e.get("result") or ""),
+                    session_id=sid,
+                    is_error=bool(e.get("is_error")),
+                )
+            ]
         if t == "assistant":
             out: list[SessionEvent] = []
             for b in e.get("message", {}).get("content", []) or []:
@@ -209,26 +226,38 @@ class ClaudeSession:
                     name = b.get("name", "")
                     inp = b.get("input", {}) or {}
                     cp = (
-                        Checkpoint.DESTRUCTIVE
-                        if _looks_destructive(name, inp)
-                        else Checkpoint.TOOL
+                        Checkpoint.DESTRUCTIVE if _looks_destructive(name, inp) else Checkpoint.TOOL
                     )
-                    out.append(SessionEvent(
-                        cp, e, tool_name=name, tool_input=inp, session_id=sid,
-                    ))
+                    out.append(
+                        SessionEvent(
+                            cp,
+                            e,
+                            tool_name=name,
+                            tool_input=inp,
+                            session_id=sid,
+                        )
+                    )
                 elif b.get("type") == "text" and b.get("text", "").strip():
-                    out.append(SessionEvent(
-                        Checkpoint.NARRATION, e, text=b["text"], session_id=sid,
-                    ))
+                    out.append(
+                        SessionEvent(
+                            Checkpoint.NARRATION,
+                            e,
+                            text=b["text"],
+                            session_id=sid,
+                        )
+                    )
             return out
         if t == "user":
             for b in e.get("message", {}).get("content", []) or []:
                 if isinstance(b, dict) and b.get("type") == "tool_result":
-                    return [SessionEvent(
-                        Checkpoint.TOOL_RESULT, e,
-                        is_error=bool(b.get("is_error")),
-                        session_id=sid,
-                    )]
+                    return [
+                        SessionEvent(
+                            Checkpoint.TOOL_RESULT,
+                            e,
+                            is_error=bool(b.get("is_error")),
+                            session_id=sid,
+                        )
+                    ]
         return []
 
     async def close(self, *, kill: bool = False) -> str:
@@ -244,7 +273,11 @@ class ClaudeSession:
                     self._proc.stdin.close()
             err = b""
             try:
-                err = await asyncio.wait_for(self._proc.stderr.read(), timeout=5) if self._proc.stderr else b""
+                err = (
+                    await asyncio.wait_for(self._proc.stderr.read(), timeout=5)
+                    if self._proc.stderr
+                    else b""
+                )
             except (TimeoutError, Exception):
                 pass
             try:

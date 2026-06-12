@@ -14,6 +14,7 @@ from cortiva.core.fabric import Fabric, _parse_plan
 # Agent tests
 # ---------------------------------------------------------------------------
 
+
 class TestAgent:
     def test_create_agent(self, tmp_path: Path) -> None:
         agent = Agent(id="test-01", directory=tmp_path / "test-01")
@@ -156,6 +157,7 @@ class TestAgentTodayOutbox:
 class TestRuntimePersistence:
     def test_persist_runtime_state(self, tmp_path: Path) -> None:
         import json
+
         agent = Agent(id="test-01", directory=tmp_path / "test-01")
         agent.ensure_workspace()
         agent.task_queue = TaskQueue(
@@ -185,6 +187,7 @@ class TestRuntimePersistence:
 
     def test_persist_familiarity(self, tmp_path: Path) -> None:
         import json
+
         agent = Agent(id="test-01", directory=tmp_path / "test-01")
         signals = [
             {"task": "Review PR", "strength": "familiar", "valence": "positive", "match_count": 3},
@@ -210,6 +213,7 @@ class TestRuntimePersistence:
 # ---------------------------------------------------------------------------
 # Memory adapter tests
 # ---------------------------------------------------------------------------
+
 
 class TestInMemoryAdapter:
     @pytest.mark.asyncio
@@ -251,6 +255,7 @@ class TestInMemoryAdapter:
 # ---------------------------------------------------------------------------
 # Fabric tests
 # ---------------------------------------------------------------------------
+
 
 class TestFabric:
     def _make_fabric(self, tmp_path: Path) -> Fabric:
@@ -324,6 +329,7 @@ class TestFabric:
 # Plan parsing tests
 # ---------------------------------------------------------------------------
 
+
 class TestPlanParsing:
     def test_checkbox_format(self) -> None:
         plan = (
@@ -356,11 +362,7 @@ class TestPlanParsing:
         assert tq.tasks[2].priority == 0
 
     def test_numbered_lists(self) -> None:
-        plan = (
-            "1. First task\n"
-            "2. Second task\n"
-            "3. Third task\n"
-        )
+        plan = "1. First task\n2. Second task\n3. Third task\n"
         tq = _parse_plan(plan)
         assert len(tq.tasks) == 3
         assert tq.tasks[0].description == "First task"
@@ -392,22 +394,27 @@ class TestPlanParsing:
 # TaskQueue tests
 # ---------------------------------------------------------------------------
 
+
 class TestTaskQueue:
     def test_next_pending_priority_ordering(self) -> None:
-        tq = TaskQueue(tasks=[
-            Task(id="t1", description="Low", priority=0),
-            Task(id="t2", description="Critical", priority=2),
-            Task(id="t3", description="High", priority=1),
-        ])
+        tq = TaskQueue(
+            tasks=[
+                Task(id="t1", description="Low", priority=0),
+                Task(id="t2", description="Critical", priority=2),
+                Task(id="t3", description="High", priority=1),
+            ]
+        )
         nxt = tq.next_pending()
         assert nxt is not None
         assert nxt.id == "t2"  # highest priority first
 
     def test_all_done(self) -> None:
-        tq = TaskQueue(tasks=[
-            Task(id="t1", description="A", status="done"),
-            Task(id="t2", description="B", status="skipped"),
-        ])
+        tq = TaskQueue(
+            tasks=[
+                Task(id="t1", description="A", status="done"),
+                Task(id="t2", description="B", status="skipped"),
+            ]
+        )
         assert tq.all_done() is True
 
         tq.tasks.append(Task(id="t3", description="C", status="pending"))
@@ -433,6 +440,7 @@ class TestTaskQueue:
 # ---------------------------------------------------------------------------
 # Cycle tests
 # ---------------------------------------------------------------------------
+
 
 class TestCycle:
     def _make_fabric(self, tmp_path: Path, consciousness=None, budget: int = 50) -> Fabric:
@@ -497,8 +505,10 @@ class TestCycle:
         # Manually fill exception pile to trigger replan
         for i in range(3):
             exc_task = Task(
-                id=f"exc-{i}", description=f"Failed task {i}",
-                status="exception", error="test error",
+                id=f"exc-{i}",
+                description=f"Failed task {i}",
+                status="exception",
+                error="test error",
             )
             agent.task_queue.exceptions.append(exc_task)
 
@@ -510,6 +520,7 @@ class TestCycle:
 # ---------------------------------------------------------------------------
 # Plan vs Reality tests
 # ---------------------------------------------------------------------------
+
 
 class TestPlanVsReality:
     @pytest.mark.asyncio
@@ -536,6 +547,7 @@ class TestPlanVsReality:
 # ---------------------------------------------------------------------------
 # Full cycle tests
 # ---------------------------------------------------------------------------
+
 
 class TestFullCycle:
     @pytest.mark.asyncio
@@ -578,6 +590,7 @@ class TestFullCycle:
 # ---------------------------------------------------------------------------
 # Mock adapters for testing
 # ---------------------------------------------------------------------------
+
 
 class MockConsciousness:
     """Mock consciousness adapter that returns canned responses."""

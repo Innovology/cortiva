@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -102,7 +102,8 @@ class PlanStore:
     def save(self, plan: HorizonPlan) -> None:
         self._plans_dir.mkdir(parents=True, exist_ok=True)
         self._path(plan.horizon, plan.period).write_text(
-            json.dumps(plan.to_dict(), indent=2), encoding="utf-8",
+            json.dumps(plan.to_dict(), indent=2),
+            encoding="utf-8",
         )
 
     def load(self, horizon: PlanHorizon, period: str) -> HorizonPlan | None:
@@ -172,8 +173,7 @@ async def build_monthly_context(
 
     if previous_monthly:
         sections.append(
-            f"### Previous Month ({previous_monthly.period})\n"
-            f"{previous_monthly.content[:500]}\n"
+            f"### Previous Month ({previous_monthly.period})\n{previous_monthly.content[:500]}\n"
         )
 
     # High-importance memories (learnings, patterns)
@@ -181,9 +181,7 @@ async def build_monthly_context(
         memories = await memory.recall(agent_id, limit=10, min_importance=7.0)
         if memories:
             mem_lines = [f"- {m.content[:100]}" for m in memories]
-            sections.append(
-                "### Key Learnings from Memory\n" + "\n".join(mem_lines) + "\n"
-            )
+            sections.append("### Key Learnings from Memory\n" + "\n".join(mem_lines) + "\n")
     except Exception:
         pass
 
@@ -217,14 +215,12 @@ async def build_weekly_context(
 
     if monthly_plan:
         sections.append(
-            f"### Monthly Objectives ({monthly_plan.period})\n"
-            f"{monthly_plan.content[:500]}\n"
+            f"### Monthly Objectives ({monthly_plan.period})\n{monthly_plan.content[:500]}\n"
         )
 
     if previous_weekly:
         sections.append(
-            f"### Previous Week ({previous_weekly.period})\n"
-            f"{previous_weekly.content[:400]}\n"
+            f"### Previous Week ({previous_weekly.period})\n{previous_weekly.content[:400]}\n"
         )
 
     if delegation_context:
@@ -233,13 +229,14 @@ async def build_weekly_context(
     # Recent learnings (last 7 days worth)
     try:
         memories = await memory.search(
-            agent_id, "learned", limit=10, tags=["learning"],
+            agent_id,
+            "learned",
+            limit=10,
+            tags=["learning"],
         )
         if memories:
             learn_lines = [f"- {m.content[:100]}" for m in memories[:5]]
-            sections.append(
-                "### Recent Learnings\n" + "\n".join(learn_lines) + "\n"
-            )
+            sections.append("### Recent Learnings\n" + "\n".join(learn_lines) + "\n")
     except Exception:
         pass
 
@@ -272,9 +269,7 @@ async def build_daily_context(
         )
 
     if yesterday_reflection:
-        sections.append(
-            f"### Yesterday's Reflection\n{yesterday_reflection[:300]}\n"
-        )
+        sections.append(f"### Yesterday's Reflection\n{yesterday_reflection[:300]}\n")
 
     if delegation_context:
         sections.append(f"### Delegated Tasks\n{delegation_context}\n")
@@ -385,16 +380,10 @@ class Planner:
         parts: list[str] = []
         monthly = self.store.current_monthly()
         if monthly:
-            parts.append(
-                f"## Monthly Objectives ({monthly.period})\n\n"
-                f"{monthly.content}\n"
-            )
+            parts.append(f"## Monthly Objectives ({monthly.period})\n\n{monthly.content}\n")
         weekly = self.store.current_weekly()
         if weekly:
-            parts.append(
-                f"## This Week's Plan ({weekly.period})\n\n"
-                f"{weekly.content}\n"
-            )
+            parts.append(f"## This Week's Plan ({weekly.period})\n\n{weekly.content}\n")
         return "\n---\n\n".join(parts) if parts else ""
 
 

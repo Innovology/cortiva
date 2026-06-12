@@ -53,8 +53,7 @@ class SlackChannelAdapter:
                 from slack_sdk.web.async_client import AsyncWebClient
             except ImportError:
                 raise ImportError(
-                    "slack-sdk is not installed. "
-                    "Install it with: pip install 'slack-sdk>=3.0'"
+                    "slack-sdk is not installed. Install it with: pip install 'slack-sdk>=3.0'"
                 )
             if not self._token:
                 raise ValueError(

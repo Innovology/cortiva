@@ -49,9 +49,7 @@ class TestSlackSend:
             "ts": "111.222",
         }
 
-        msg = await adapter.send(
-            "agent-01", "human", "reply", thread_id="000.111"
-        )
+        msg = await adapter.send("agent-01", "human", "reply", thread_id="000.111")
         adapter._client.chat_postMessage.assert_called_once_with(
             channel="C001",
             text="reply",

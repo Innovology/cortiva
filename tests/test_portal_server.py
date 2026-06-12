@@ -8,6 +8,7 @@ import pytest
 
 try:
     from fastapi.testclient import TestClient
+
     _HAS_FASTAPI = True
 except ImportError:
     _HAS_FASTAPI = False
@@ -17,6 +18,7 @@ except ImportError:
 class TestPortalServer:
     def _make_app(self, tmp_path: Path):
         from cortiva.portal.server import create_app
+
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         db_path = tmp_path / "portal.db"
@@ -96,17 +98,23 @@ class TestPortalServer:
 
     def _bootstrap_and_get_token(self, client: TestClient) -> str:
         """Bootstrap first user and return auth token."""
-        resp = client.post("/api/auth/bootstrap", json={
-            "email": "admin@test.com",
-            "password": "testpass123",
-            "name": "Admin",
-            "org_name": "Test Org",
-        })
-        if resp.status_code not in (200, 201):
-            resp = client.post("/api/auth/login", json={
+        resp = client.post(
+            "/api/auth/bootstrap",
+            json={
                 "email": "admin@test.com",
                 "password": "testpass123",
-            })
+                "name": "Admin",
+                "org_name": "Test Org",
+            },
+        )
+        if resp.status_code not in (200, 201):
+            resp = client.post(
+                "/api/auth/login",
+                json={
+                    "email": "admin@test.com",
+                    "password": "testpass123",
+                },
+            )
         if resp.status_code not in (200, 201):
             return ""
         data = resp.json()

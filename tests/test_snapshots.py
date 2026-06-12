@@ -2,9 +2,19 @@
 
 from pathlib import Path
 
-import pytest
-
-from cortiva.core.agent import Agent, WORKSPACE_DIRS
+from cortiva.core.agent import WORKSPACE_DIRS
+from cortiva.core.promotion import (
+    PromotionAssessment,
+    PromotionManager,
+    assess_probation,
+    confirm_promotion,
+    extend_probation,
+    get_promotion,
+    initiate_promotion,
+    is_probationary,
+    revert_promotion,
+    set_backfill,
+)
 from cortiva.core.snapshots import (
     SnapshotManager,
     clone_from_snapshot,
@@ -17,19 +27,6 @@ from cortiva.core.snapshots import (
     list_snapshots,
     restore_snapshot,
 )
-from cortiva.core.promotion import (
-    PromotionAssessment,
-    PromotionManager,
-    assess_probation,
-    auto_resolve_probation,
-    confirm_promotion,
-    extend_probation,
-    get_promotion,
-    initiate_promotion,
-    is_probationary,
-    revert_promotion,
-    set_backfill,
-)
 
 
 def _make_agent(tmp_path: Path, agent_id: str = "test-01") -> Path:
@@ -39,9 +36,7 @@ def _make_agent(tmp_path: Path, agent_id: str = "test-01") -> Path:
     for subdir in WORKSPACE_DIRS:
         (agent_dir / subdir).mkdir()
 
-    (agent_dir / "identity" / "identity.md").write_text(
-        f"# {agent_id}\n\nI am a test agent.\n"
-    )
+    (agent_dir / "identity" / "identity.md").write_text(f"# {agent_id}\n\nI am a test agent.\n")
     (agent_dir / "identity" / "soul.md").write_text(
         f"# {agent_id} — Persona\n\nMethodical and thorough.\n"
     )
@@ -51,15 +46,14 @@ def _make_agent(tmp_path: Path, agent_id: str = "test-01") -> Path:
     (agent_dir / "identity" / "procedures.md").write_text(
         f"# {agent_id} — Procedures\n\n## Invoice Processing\n\n1. Read invoice.\n"
     )
-    (agent_dir / "journal" / "2026-03-01.md").write_text(
-        "# 2026-03-01\n\nFirst day on the job.\n"
-    )
+    (agent_dir / "journal" / "2026-03-01.md").write_text("# 2026-03-01\n\nFirst day on the job.\n")
     return agent_dir
 
 
 # ---------------------------------------------------------------------------
 # Snapshot tests
 # ---------------------------------------------------------------------------
+
 
 class TestSnapshots:
     def test_create_and_list(self, tmp_path: Path) -> None:
@@ -174,6 +168,7 @@ class TestSnapshots:
 # Promotion tests
 # ---------------------------------------------------------------------------
 
+
 class TestPromotion:
     def _make_role_template(self, tmp_path: Path) -> Path:
         """Create a target role template directory."""
@@ -185,8 +180,7 @@ class TestPromotion:
             "Supervise bookkeepers. Approve exceptions.\n"
         )
         (tpl / "identity" / "soul.md").write_text(
-            "# head-accounting — Persona\n\n"
-            "Strategic thinker. Decisive under pressure.\n"
+            "# head-accounting — Persona\n\nStrategic thinker. Decisive under pressure.\n"
         )
         return tpl
 
@@ -286,6 +280,7 @@ class TestPromotion:
 # Snapshot Manager tests
 # ---------------------------------------------------------------------------
 
+
 class TestSnapshotManager:
     def test_create_and_list(self, tmp_path: Path) -> None:
         agent_dir = _make_agent(tmp_path)
@@ -350,6 +345,7 @@ class TestExportImport:
 # Promotion Assessment tests
 # ---------------------------------------------------------------------------
 
+
 class TestPromotionAssessment:
     def _make_role_template(self, tmp_path: Path) -> Path:
         tpl = tmp_path / "head-accounting"
@@ -357,9 +353,7 @@ class TestPromotionAssessment:
         (tpl / "identity" / "responsibilities.md").write_text(
             "# head-accounting — Responsibilities\n\n## Primary\n\nManage dept.\n"
         )
-        (tpl / "identity" / "soul.md").write_text(
-            "# head-accounting — Persona\n\nDecisive.\n"
-        )
+        (tpl / "identity" / "soul.md").write_text("# head-accounting — Persona\n\nDecisive.\n")
         return tpl
 
     def test_assess_not_probationary(self, tmp_path: Path) -> None:
@@ -377,16 +371,21 @@ class TestPromotionAssessment:
 
     def test_assessment_with_metrics(self, tmp_path: Path) -> None:
         import json
+
         agent_dir = _make_agent(tmp_path)
         tpl = self._make_role_template(tmp_path)
         initiate_promotion(agent_dir, tpl)
 
         # Write mock task metrics
-        (agent_dir / "today" / "task_queue.json").write_text(json.dumps({
-            "tasks": [],
-            "replan_count": 0,
-            "summary": {"done": 8, "pending": 0, "exceptions": 2},
-        }))
+        (agent_dir / "today" / "task_queue.json").write_text(
+            json.dumps(
+                {
+                    "tasks": [],
+                    "replan_count": 0,
+                    "summary": {"done": 8, "pending": 0, "exceptions": 2},
+                }
+            )
+        )
 
         assessment = assess_probation(agent_dir)
         assert assessment is not None
@@ -419,9 +418,7 @@ class TestPromotionManager:
         (tpl / "identity" / "responsibilities.md").write_text(
             "# senior-role — Responsibilities\n\n## Primary\n\nLead.\n"
         )
-        (tpl / "identity" / "soul.md").write_text(
-            "# senior-role — Persona\n\nLeader.\n"
-        )
+        (tpl / "identity" / "soul.md").write_text("# senior-role — Persona\n\nLeader.\n")
         return tpl
 
     def test_manager_lifecycle(self, tmp_path: Path) -> None:

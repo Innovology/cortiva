@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
-
-import pytest
 
 from cortiva.core.timesheet import DaySummary, Timesheet, TimesheetManager, WorkEntry
 
@@ -27,8 +24,11 @@ class TestWorkEntry:
         wake = datetime(2026, 3, 30, 9, 0, tzinfo=UTC)
         sleep = datetime(2026, 3, 30, 17, 0, tzinfo=UTC)
         entry = WorkEntry(
-            wake_time=wake, sleep_time=sleep,
-            tasks_completed=5, tasks_escalated=1, consciousness_calls=12,
+            wake_time=wake,
+            sleep_time=sleep,
+            tasks_completed=5,
+            tasks_escalated=1,
+            consciousness_calls=12,
         )
         d = entry.to_dict()
         assert d["hours"] == 8.0
@@ -87,10 +87,8 @@ class TestDaySummary:
         summary = DaySummary(
             date="2026-03-30",
             entries=[
-                WorkEntry(wake_time=wake, sleep_time=sleep,
-                          tasks_completed=3, tasks_escalated=1),
-                WorkEntry(wake_time=wake, sleep_time=sleep,
-                          tasks_completed=2, tasks_escalated=0),
+                WorkEntry(wake_time=wake, sleep_time=sleep, tasks_completed=3, tasks_escalated=1),
+                WorkEntry(wake_time=wake, sleep_time=sleep, tasks_completed=2, tasks_escalated=0),
             ],
         )
         assert summary.total_tasks_completed == 5

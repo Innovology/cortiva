@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import tempfile
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,8 +15,6 @@ from cortiva.core.fabric import Fabric
 from cortiva.core.ipc import (
     FabricClient,
     FabricServer,
-    default_pid_path,
-    default_socket_path,
     is_pid_alive,
     read_pid,
     remove_pid,
@@ -146,6 +142,7 @@ class TestPidFile:
         pid = read_pid(pid_file)
         assert pid is not None
         import os
+
         assert pid == os.getpid()
 
     def test_read_missing(self, tmp_path: Path) -> None:
@@ -163,6 +160,7 @@ class TestPidFile:
 
     def test_is_pid_alive_self(self) -> None:
         import os
+
         assert is_pid_alive(os.getpid()) is True
 
     def test_is_pid_alive_bogus(self) -> None:
@@ -177,18 +175,18 @@ class TestPidFile:
 class MockConsciousness:
     async def think(self, agent_id, context, prompt, **kwargs):
         return ConsciousResponse(
-            content=(
-                "# Plan\n\n"
-                "- [ ] Task one\n"
-                "- [ ] Task two\n"
-            ),
-            tokens_in=50, tokens_out=25, model="mock",
+            content=("# Plan\n\n- [ ] Task one\n- [ ] Task two\n"),
+            tokens_in=50,
+            tokens_out=25,
+            model="mock",
         )
 
     async def reflect(self, agent_id, context, day_summary):
         return ConsciousResponse(
             content=f"# {agent_id}\n\nReflected.",
-            tokens_in=50, tokens_out=25, model="mock",
+            tokens_in=50,
+            tokens_out=25,
+            model="mock",
         )
 
 

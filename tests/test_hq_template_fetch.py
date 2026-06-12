@@ -30,20 +30,22 @@ from cortiva.templates import (
     parse_hq_slug,
 )
 
-
 # ---------------------------------------------------------------------
 # URI helpers
 # ---------------------------------------------------------------------
 
 
 class TestUriParsing:
-    @pytest.mark.parametrize("arg,expected", [
-        ("hq://cpo", True),
-        ("hq://po-marketmesh", True),
-        ("pm-cortiva", False),
-        ("local-template", False),
-        ("", False),
-    ])
+    @pytest.mark.parametrize(
+        "arg,expected",
+        [
+            ("hq://cpo", True),
+            ("hq://po-marketmesh", True),
+            ("pm-cortiva", False),
+            ("local-template", False),
+            ("", False),
+        ],
+    )
     def test_is_hq_template(self, arg: str, expected: bool) -> None:
         assert is_hq_template(arg) is expected
 
@@ -55,13 +57,17 @@ class TestUriParsing:
         with pytest.raises(ValueError, match="hq://"):
             parse_hq_slug("local-name")
 
-    @pytest.mark.parametrize("bad_slug", [
-        "hq://",
-        "hq://path/traversal",
-        "hq://../escape",
-    ])
+    @pytest.mark.parametrize(
+        "bad_slug",
+        [
+            "hq://",
+            "hq://path/traversal",
+            "hq://../escape",
+        ],
+    )
     def test_parse_hq_slug_rejects_path_traversal(
-        self, bad_slug: str,
+        self,
+        bad_slug: str,
     ) -> None:
         with pytest.raises(ValueError):
             parse_hq_slug(bad_slug)
@@ -98,7 +104,8 @@ def _mock_urlopen(payload: dict, status: int = 200):
 
 class TestApplyHqTemplate:
     def test_happy_path_writes_deploy_and_identity_files(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         payload = {
             "slug": "cpo",
@@ -120,7 +127,9 @@ class TestApplyHqTemplate:
             return_value=_mock_urlopen(payload),
         ):
             written = apply_hq_template(
-                "cpo", target, hq_url="https://hq.example.com",
+                "cpo",
+                target,
+                hq_url="https://hq.example.com",
             )
 
         deploy_path = target / "deploy.yaml"
@@ -135,22 +144,30 @@ class TestApplyHqTemplate:
 
     def test_404_raises_actionable_message(self, tmp_path: Path) -> None:
         err = urllib.error.HTTPError(
-            url="x", code=404, msg="Not Found", hdrs=None,
+            url="x",
+            code=404,
+            msg="Not Found",
+            hdrs=None,
             fp=io.BytesIO(b'{"detail":"Agent \'nope\' not found"}'),
         )
         with patch(
-            "cortiva.templates.urllib.request.urlopen", side_effect=err,
+            "cortiva.templates.urllib.request.urlopen",
+            side_effect=err,
         ):
             with pytest.raises(HqFetchError, match="no agent named"):
                 apply_hq_template("nope", tmp_path / "x", "https://hq.example.com")
 
     def test_500_includes_hq_detail(self, tmp_path: Path) -> None:
         err = urllib.error.HTTPError(
-            url="x", code=500, msg="Server Error", hdrs=None,
+            url="x",
+            code=500,
+            msg="Server Error",
+            hdrs=None,
             fp=io.BytesIO(b'{"detail":"deploy.yaml malformed: missing colon"}'),
         )
         with patch(
-            "cortiva.templates.urllib.request.urlopen", side_effect=err,
+            "cortiva.templates.urllib.request.urlopen",
+            side_effect=err,
         ):
             with pytest.raises(HqFetchError, match="malformed"):
                 apply_hq_template("x", tmp_path / "x", "https://hq.example.com")
@@ -161,7 +178,8 @@ class TestApplyHqTemplate:
         guidance."""
         err = urllib.error.URLError("Connection refused")
         with patch(
-            "cortiva.templates.urllib.request.urlopen", side_effect=err,
+            "cortiva.templates.urllib.request.urlopen",
+            side_effect=err,
         ):
             with pytest.raises(HqFetchError, match="cortiva.yaml"):
                 apply_hq_template("x", tmp_path / "x", "https://hq.example.com")
@@ -169,9 +187,15 @@ class TestApplyHqTemplate:
     def test_malformed_json_response(self, tmp_path: Path) -> None:
         class _Resp:
             status = 200
-            def read(self): return b"this is not json"
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+
+            def read(self):
+                return b"this is not json"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
 
         with patch(
             "cortiva.templates.urllib.request.urlopen",
@@ -189,7 +213,8 @@ class TestApplyHqTemplate:
                 apply_hq_template("x", tmp_path / "x", "https://hq.example.com")
 
     def test_rejects_identity_filename_with_traversal(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Defensive: a compromised or buggy HQ could send a filename
         that escapes the identity dir. The framework must refuse."""
@@ -208,7 +233,8 @@ class TestApplyHqTemplate:
                 apply_hq_template("x", tmp_path / "x", "https://hq.example.com")
 
     def test_trailing_slash_in_hq_url_is_stripped(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Operator typo defence: ``hq.portal_url`` may or may not have
         a trailing slash. The fetcher should produce the same URL
@@ -217,16 +243,21 @@ class TestApplyHqTemplate:
 
         def _check(url, timeout):  # noqa: ARG001
             captured["url"] = url
-            return _mock_urlopen({
-                "slug": "x",
-                "deploy": {"agent": {}},
-                "identity_files": {},
-            })
+            return _mock_urlopen(
+                {
+                    "slug": "x",
+                    "deploy": {"agent": {}},
+                    "identity_files": {},
+                }
+            )
 
         with patch(
-            "cortiva.templates.urllib.request.urlopen", side_effect=_check,
+            "cortiva.templates.urllib.request.urlopen",
+            side_effect=_check,
         ):
             apply_hq_template(
-                "x", tmp_path / "x", "https://hq.example.com/",
+                "x",
+                tmp_path / "x",
+                "https://hq.example.com/",
             )
         assert captured["url"] == "https://hq.example.com/api/agents/definitions/x"

@@ -86,9 +86,7 @@ class TestCodexAdapterInvoke:
         adapter = CodexAdapter()
 
         mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(
-            return_value=(b"stdout error info", b"stderr error info")
-        )
+        mock_proc.communicate = AsyncMock(return_value=(b"stdout error info", b"stderr error info"))
         mock_proc.returncode = 2
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):

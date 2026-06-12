@@ -74,22 +74,22 @@ class AnthropicConsciousnessAdapter:
             if agent_id not in self._clients:
                 try:
                     import anthropic
+
                     self._clients[agent_id] = anthropic.Anthropic(api_key=agent_key)
                 except ImportError:
                     raise ImportError(
-                        "anthropic is not installed. "
-                        "Install it with: pip install anthropic"
+                        "anthropic is not installed. Install it with: pip install anthropic"
                     )
             return self._clients[agent_id]
 
         if self._default_client is None:
             try:
                 import anthropic
+
                 self._default_client = anthropic.Anthropic(api_key=self._default_key)
             except ImportError:
                 raise ImportError(
-                    "anthropic is not installed. "
-                    "Install it with: pip install anthropic"
+                    "anthropic is not installed. Install it with: pip install anthropic"
                 )
         return self._default_client
 

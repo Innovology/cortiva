@@ -112,8 +112,10 @@ class TestPluginManager:
     @pytest.mark.asyncio
     async def test_dispatch_error_isolation(self) -> None:
         """Plugin errors don't crash the dispatch."""
+
         class BrokenPlugin(FabricPlugin):
             name = "broken"
+
             async def on_wake(self, agent_id, agent):
                 raise RuntimeError("plugin crash")
 
@@ -126,9 +128,11 @@ class TestPluginManager:
     def test_collect_ipc_handlers(self) -> None:
         class IPCPlugin(FabricPlugin):
             name = "ipc"
+
             def ipc_handlers(self):
                 async def handler(**kw):
                     return {"ok": True}
+
                 return {"myPlugin.status": handler}
 
         mgr = PluginManager()
@@ -144,9 +148,11 @@ class TestLoadPluginsFromConfig:
 
     def test_load_valid(self) -> None:
         # Load our SamplePlugin from this test module
-        plugins = load_plugins_from_config([
-            "tests.test_plugins.SamplePlugin",
-        ])
+        plugins = load_plugins_from_config(
+            [
+                "tests.test_plugins.SamplePlugin",
+            ]
+        )
         assert len(plugins) == 1
         assert plugins[0].name == "sample"
 
@@ -220,7 +226,9 @@ class TestCollectTaskContext:
         plugin = RecordingPlugin()
         mgr.register(plugin)
         ctx = mgr.collect_task_context(
-            "agent-1", "process the invoice batch", importance=7.0,
+            "agent-1",
+            "process the invoice batch",
+            importance=7.0,
         )
         assert "Cognitive Task Context" in ctx
         assert plugin.task_context_calls == [

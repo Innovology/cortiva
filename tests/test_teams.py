@@ -9,7 +9,6 @@ import pytest
 from cortiva.adapters.channel.teams import TeamsChannelAdapter
 from cortiva.adapters.protocols import ChannelAdapter, Message
 
-
 # ---------------------------------------------------------------------------
 # Protocol conformance
 # ---------------------------------------------------------------------------
@@ -31,9 +30,7 @@ def test_webhook_mode_detected():
 
 
 def test_graph_mode_detected():
-    adapter = TeamsChannelAdapter(
-        client_id="cid", client_secret="csec", tenant_id="tid"
-    )
+    adapter = TeamsChannelAdapter(client_id="cid", client_secret="csec", tenant_id="tid")
     assert adapter._use_graph
 
 
@@ -134,9 +131,7 @@ async def test_send_graph_with_thread():
     adapter._access_token = "fake-token"
     adapter._token_expires_at = 9999999999.0
 
-    msg = await adapter.send(
-        "agent-a", "agent-b", "reply", thread_id="parent-msg-id"
-    )
+    msg = await adapter.send("agent-a", "agent-b", "reply", thread_id="parent-msg-id")
 
     call_url = mock_client.post.call_args[0][0]
     assert "/messages/parent-msg-id/replies" in call_url
@@ -161,22 +156,24 @@ async def test_receive_graph():
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json = MagicMock(return_value={
-        "value": [
-            {
-                "id": "msg-001",
-                "createdDateTime": "2026-01-15T10:00:00Z",
-                "from": {"user": {"displayName": "Alice"}},
-                "body": {"content": "Hi there"},
-            },
-            {
-                "id": "msg-002",
-                "createdDateTime": "2026-01-15T10:01:00Z",
-                "from": {"user": {"displayName": "Bob"}},
-                "body": {"content": "Hello"},
-            },
-        ]
-    })
+    mock_resp.json = MagicMock(
+        return_value={
+            "value": [
+                {
+                    "id": "msg-001",
+                    "createdDateTime": "2026-01-15T10:00:00Z",
+                    "from": {"user": {"displayName": "Alice"}},
+                    "body": {"content": "Hi there"},
+                },
+                {
+                    "id": "msg-002",
+                    "createdDateTime": "2026-01-15T10:01:00Z",
+                    "from": {"user": {"displayName": "Bob"}},
+                    "body": {"content": "Hello"},
+                },
+            ]
+        }
+    )
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_resp)
@@ -208,16 +205,18 @@ async def test_receive_skips_sent_messages():
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json = MagicMock(return_value={
-        "value": [
-            {
-                "id": "msg-001",
-                "createdDateTime": "2026-01-15T10:00:00Z",
-                "from": {"user": {"displayName": "Self"}},
-                "body": {"content": "my own msg"},
-            },
-        ]
-    })
+    mock_resp.json = MagicMock(
+        return_value={
+            "value": [
+                {
+                    "id": "msg-001",
+                    "createdDateTime": "2026-01-15T10:00:00Z",
+                    "from": {"user": {"displayName": "Self"}},
+                    "body": {"content": "my own msg"},
+                },
+            ]
+        }
+    )
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_resp)
@@ -269,9 +268,7 @@ async def test_listen_invalid_format():
 
 @pytest.mark.asyncio
 async def test_ensure_token_calls_msal():
-    adapter = TeamsChannelAdapter(
-        client_id="cid", client_secret="csec", tenant_id="tid"
-    )
+    adapter = TeamsChannelAdapter(client_id="cid", client_secret="csec", tenant_id="tid")
 
     mock_app = MagicMock()
     mock_app.acquire_token_for_client.return_value = {

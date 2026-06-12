@@ -99,9 +99,7 @@ class TestEngramMemoryAdapter:
         adapter = EngramMemoryAdapter()
         record = await adapter.store("agent-1", "data")
 
-        mock_mem_instance.store.assert_called_once_with(
-            "data", tags=[], importance=5
-        )
+        mock_mem_instance.store.assert_called_once_with("data", tags=[], importance=5)
         assert record.tags == []
         assert record.importance == 5.0
         assert record.metadata == {}

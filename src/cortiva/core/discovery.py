@@ -15,9 +15,7 @@ import platform
 import shutil
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.error import URLError
 from urllib.request import Request, urlopen
-
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -27,11 +25,12 @@ from urllib.request import Request, urlopen
 @dataclass
 class TerminalAgentInfo:
     """Discovered terminal agent CLI tool."""
-    name: str                    # "claude-code", "codex", "aider"
-    binary: str                  # path to binary
-    version: str = ""            # version string if available
-    available: bool = True       # True if binary found
-    auth_ok: bool = False        # True if authentication check passed
+
+    name: str  # "claude-code", "codex", "aider"
+    binary: str  # path to binary
+    version: str = ""  # version string if available
+    available: bool = True  # True if binary found
+    auth_ok: bool = False  # True if authentication check passed
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,12 +45,13 @@ class TerminalAgentInfo:
 @dataclass
 class LocalModelInfo:
     """A local model discovered via Ollama or similar."""
-    name: str                    # e.g. "qwen3.5:35b-a3b"
-    size_bytes: int = 0          # model file size
-    family: str = ""             # model family
-    parameter_size: str = ""     # e.g. "35B"
-    quantization: str = ""       # e.g. "Q4_K_M"
-    provider: str = "ollama"     # "ollama", "vllm", "llamacpp"
+
+    name: str  # e.g. "qwen3.5:35b-a3b"
+    size_bytes: int = 0  # model file size
+    family: str = ""  # model family
+    parameter_size: str = ""  # e.g. "35B"
+    quantization: str = ""  # e.g. "Q4_K_M"
+    provider: str = "ollama"  # "ollama", "vllm", "llamacpp"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,9 +67,10 @@ class LocalModelInfo:
 @dataclass
 class EndpointInfo:
     """A custom API endpoint (vLLM, llama.cpp, remote service)."""
+
     name: str
     url: str
-    provider: str = "custom"     # "vllm", "llamacpp", "custom"
+    provider: str = "custom"  # "vllm", "llamacpp", "custom"
     models: list[str] = field(default_factory=list)
     healthy: bool = False
 
@@ -86,6 +87,7 @@ class EndpointInfo:
 @dataclass
 class ResourceSnapshot:
     """System resource information."""
+
     cpu_cores: int = 0
     ram_total_gb: float = 0.0
     ram_available_gb: float = 0.0
@@ -109,6 +111,7 @@ class ResourceSnapshot:
 @dataclass
 class NodeCapabilities:
     """Complete capability manifest for this node."""
+
     node_id: str
     terminal_agents: list[TerminalAgentInfo] = field(default_factory=list)
     local_models: list[LocalModelInfo] = field(default_factory=list)
@@ -162,9 +165,7 @@ class NodeCapabilities:
         # Check custom endpoints
         endpoints: list[EndpointInfo] = []
         if custom_endpoints:
-            checks = [
-                _check_endpoint(ep) for ep in custom_endpoints
-            ]
+            checks = [_check_endpoint(ep) for ep in custom_endpoints]
             endpoints = await asyncio.gather(*checks)
 
         return cls(
@@ -199,7 +200,7 @@ async def _run_cmd(cmd: list[str], timeout: float = 10.0) -> tuple[int, str]:
         return proc.returncode or 0, stdout.decode("utf-8", errors="replace").strip()
     except FileNotFoundError:
         return -1, ""
-    except (TimeoutError, asyncio.TimeoutError):
+    except TimeoutError:
         return -2, ""
     except Exception:
         return -3, ""
@@ -212,9 +213,13 @@ async def _discover_terminal_agents() -> list[TerminalAgentInfo]:
     for name, binary_name, version_cmd in _TERMINAL_AGENTS:
         binary_path = shutil.which(binary_name)
         if not binary_path:
-            results.append(TerminalAgentInfo(
-                name=name, binary="", available=False,
-            ))
+            results.append(
+                TerminalAgentInfo(
+                    name=name,
+                    binary="",
+                    available=False,
+                )
+            )
             continue
 
         code, output = await _run_cmd(version_cmd)
@@ -230,18 +235,17 @@ async def _discover_terminal_agents() -> list[TerminalAgentInfo]:
         elif name == "codex":
             auth_ok = bool(os.environ.get("OPENAI_API_KEY"))
         elif name == "aider":
-            auth_ok = bool(
-                os.environ.get("ANTHROPIC_API_KEY")
-                or os.environ.get("OPENAI_API_KEY")
-            )
+            auth_ok = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"))
 
-        results.append(TerminalAgentInfo(
-            name=name,
-            binary=binary_path,
-            version=version,
-            available=True,
-            auth_ok=auth_ok,
-        ))
+        results.append(
+            TerminalAgentInfo(
+                name=name,
+                binary=binary_path,
+                version=version,
+                available=True,
+                auth_ok=auth_ok,
+            )
+        )
 
     return results
 
@@ -266,14 +270,16 @@ async def _discover_ollama_models(
     models: list[LocalModelInfo] = []
     for entry in data.get("models", []):
         details = entry.get("details", {})
-        models.append(LocalModelInfo(
-            name=entry.get("name", ""),
-            size_bytes=entry.get("size", 0),
-            family=details.get("family", ""),
-            parameter_size=details.get("parameter_size", ""),
-            quantization=details.get("quantization_level", ""),
-            provider="ollama",
-        ))
+        models.append(
+            LocalModelInfo(
+                name=entry.get("name", ""),
+                size_bytes=entry.get("size", 0),
+                family=details.get("family", ""),
+                parameter_size=details.get("parameter_size", ""),
+                quantization=details.get("quantization_level", ""),
+                provider="ollama",
+            )
+        )
 
     return models
 
@@ -299,7 +305,10 @@ async def _check_endpoint(config: dict[str, Any]) -> EndpointInfo:
     models = config.get("models", [])
 
     info = EndpointInfo(
-        name=name, url=url, provider=provider, models=models,
+        name=name,
+        url=url,
+        provider=provider,
+        models=models,
     )
 
     if not url:
@@ -350,9 +359,10 @@ def _discover_resources() -> ResourceSnapshot:
     # RAM — try psutil, fall back to platform-specific
     try:
         import psutil
+
         mem = psutil.virtual_memory()
-        snap.ram_total_gb = mem.total / (1024 ** 3)
-        snap.ram_available_gb = mem.available / (1024 ** 3)
+        snap.ram_total_gb = mem.total / (1024**3)
+        snap.ram_available_gb = mem.available / (1024**3)
     except ImportError:
         snap.ram_total_gb = _get_ram_total_gb()
         snap.ram_available_gb = snap.ram_total_gb  # can't determine free without psutil
@@ -360,8 +370,8 @@ def _discover_resources() -> ResourceSnapshot:
     # Disk
     try:
         usage = shutil.disk_usage(".")
-        snap.disk_total_gb = usage.total / (1024 ** 3)
-        snap.disk_free_gb = usage.free / (1024 ** 3)
+        snap.disk_total_gb = usage.total / (1024**3)
+        snap.disk_free_gb = usage.free / (1024**3)
     except Exception:
         pass
 
@@ -374,12 +384,15 @@ def _get_ram_total_gb() -> float:
     if system == "Darwin":
         try:
             import subprocess
+
             result = subprocess.run(
                 ["sysctl", "-n", "hw.memsize"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode == 0:
-                return int(result.stdout.strip()) / (1024 ** 3)
+                return int(result.stdout.strip()) / (1024**3)
         except Exception:
             pass
     elif system == "Linux":
@@ -388,7 +401,7 @@ def _get_ram_total_gb() -> float:
                 for line in f:
                     if line.startswith("MemTotal:"):
                         kb = int(line.split()[1])
-                        return kb / (1024 ** 2)
+                        return kb / (1024**2)
         except Exception:
             pass
     return 0.0

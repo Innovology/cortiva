@@ -28,7 +28,6 @@ Design notes:
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -111,8 +110,7 @@ def deep_think(
 
     if proc.returncode != 0:
         raise DeepThinkError(
-            f"claude -p exited rc={proc.returncode}; stderr tail:\n"
-            f"{(proc.stderr or '')[-500:]}",
+            f"claude -p exited rc={proc.returncode}; stderr tail:\n{(proc.stderr or '')[-500:]}",
         )
 
     # Parse the response. claude --print returns plain text.
@@ -123,7 +121,8 @@ def deep_think(
 
     logger.info(
         "deep_think completed in %.1fs; estimated cost £%.4f",
-        elapsed, estimated_cost,
+        elapsed,
+        estimated_cost,
     )
     return DeepThinkResult(
         text=response_text,

@@ -10,7 +10,7 @@ Install: pip install neo4j
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from cortiva.adapters.protocols import MemoryRecord
@@ -44,11 +44,10 @@ class Neo4jMemoryAdapter:
             try:
                 from neo4j import GraphDatabase
             except ImportError:
-                raise ImportError(
-                    "neo4j is not installed. Install it with: pip install neo4j"
-                )
+                raise ImportError("neo4j is not installed. Install it with: pip install neo4j")
             self._driver = GraphDatabase.driver(
-                self._uri, auth=(self._username, self._password),
+                self._uri,
+                auth=(self._username, self._password),
             )
         return self._driver
 
@@ -84,7 +83,7 @@ class Neo4jMemoryAdapter:
         metadata: dict[str, Any] | None = None,
     ) -> MemoryRecord:
         record_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self._run(
             """
             CREATE (m:Memory {
@@ -94,13 +93,20 @@ class Neo4jMemoryAdapter:
                 prediction_error: 0.0, created_at: $created_at
             })
             """,
-            id=record_id, agent_id=agent_id, content=content,
-            tags=tags or [], importance=importance,
-            metadata=str(metadata or {}), created_at=now,
+            id=record_id,
+            agent_id=agent_id,
+            content=content,
+            tags=tags or [],
+            importance=importance,
+            metadata=str(metadata or {}),
+            created_at=now,
         )
         return MemoryRecord(
-            id=record_id, content=content, agent_id=agent_id,
-            tags=tags or [], importance=importance,
+            id=record_id,
+            content=content,
+            agent_id=agent_id,
+            tags=tags or [],
+            importance=importance,
             metadata=metadata or {},
         )
 
@@ -125,14 +131,13 @@ class Neo4jMemoryAdapter:
               {tag_clause}
             RETURN m ORDER BY m.importance DESC LIMIT $limit
             """,
-            agent_id=agent_id, query=query,
-            min_importance=min_importance, limit=limit,
+            agent_id=agent_id,
+            query=query,
+            min_importance=min_importance,
+            limit=limit,
             tags=tags or [],
         )
-        return [
-            self._record_from_node(dict(r["m"]), agent_id)
-            for r in results
-        ]
+        return [self._record_from_node(dict(r["m"]), agent_id) for r in results]
 
     async def recall(
         self,
@@ -147,12 +152,11 @@ class Neo4jMemoryAdapter:
             WHERE m.agent_id = $agent_id AND m.importance >= $min_importance
             RETURN m ORDER BY m.importance DESC LIMIT $limit
             """,
-            agent_id=agent_id, min_importance=min_importance, limit=limit,
+            agent_id=agent_id,
+            min_importance=min_importance,
+            limit=limit,
         )
-        return [
-            self._record_from_node(dict(r["m"]), agent_id)
-            for r in results
-        ]
+        return [self._record_from_node(dict(r["m"]), agent_id) for r in results]
 
     async def delete(self, agent_id: str, memory_id: str) -> bool:
         result = self._run(
@@ -161,7 +165,8 @@ class Neo4jMemoryAdapter:
             DETACH DELETE m
             RETURN count(m) AS deleted
             """,
-            id=memory_id, agent_id=agent_id,
+            id=memory_id,
+            agent_id=agent_id,
         )
         return result[0].get("deleted", 0) > 0 if result else False
 
@@ -182,8 +187,10 @@ class Neo4jMemoryAdapter:
             MATCH (b:Memory {{id: $to_id, agent_id: $agent_id}})
             CREATE (a)-[r:{rel_type} {{weight: $weight}}]->(b)
             """,
-            from_id=from_id, to_id=to_id,
-            agent_id=agent_id, weight=weight,
+            from_id=from_id,
+            to_id=to_id,
+            agent_id=agent_id,
+            weight=weight,
         )
 
     async def find_clusters(
@@ -205,8 +212,10 @@ class Neo4jMemoryAdapter:
             RETURN m, collect(DISTINCT n) AS cluster
             ORDER BY m.importance DESC
             """,
-            agent_id=agent_id, min_importance=min_importance,
-            threshold=threshold, tag=tag or "",
+            agent_id=agent_id,
+            min_importance=min_importance,
+            threshold=threshold,
+            tag=tag or "",
         )
         clusters: list[list[MemoryRecord]] = []
         seen: set[str] = set()
@@ -240,13 +249,12 @@ class Neo4jMemoryAdapter:
             RETURN DISTINCT connected
             ORDER BY connected.importance DESC
             """,
-            start_id=start_id, agent_id=agent_id,
-            depth=depth, min_weight=min_weight,
+            start_id=start_id,
+            agent_id=agent_id,
+            depth=depth,
+            min_weight=min_weight,
         )
-        return [
-            self._record_from_node(dict(r["connected"]), agent_id)
-            for r in results
-        ]
+        return [self._record_from_node(dict(r["connected"]), agent_id) for r in results]
 
     async def get_edges(
         self,
@@ -259,7 +267,8 @@ class Neo4jMemoryAdapter:
             RETURN type(r) AS relationship, r.weight AS weight,
                    n.id AS target_id, n.content AS target_content
             """,
-            id=memory_id, agent_id=agent_id,
+            id=memory_id,
+            agent_id=agent_id,
         )
         return [
             {

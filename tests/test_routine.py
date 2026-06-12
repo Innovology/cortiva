@@ -7,8 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from cortiva.adapters.protocols import FamiliaritySignal
-from cortiva.adapters.routine.simple import SimpleRoutineAdapter, _tokenize, _extract_procedures
-
+from cortiva.adapters.routine.simple import SimpleRoutineAdapter, _extract_procedures, _tokenize
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,6 +44,7 @@ FAMILIAR_SIGNAL = FamiliaritySignal(
 # Tokenizer / procedure extraction
 # ---------------------------------------------------------------------------
 
+
 class TestTokenize:
     def test_lowercases_and_removes_stop_words(self) -> None:
         tokens = _tokenize("The Quick Brown Fox Jumps")
@@ -74,6 +74,7 @@ class TestExtractProcedures:
 # ---------------------------------------------------------------------------
 # SimpleRoutineAdapter
 # ---------------------------------------------------------------------------
+
 
 class TestSimpleRoutineAdapter:
     @pytest.mark.asyncio
@@ -176,6 +177,7 @@ class TestSimpleRoutineAdapter:
 # OllamaRoutineAdapter (with mocked embedding client)
 # ---------------------------------------------------------------------------
 
+
 class TestOllamaRoutineAdapter:
     @pytest.mark.asyncio
     async def test_falls_back_when_ollama_unavailable(self) -> None:
@@ -203,6 +205,7 @@ class TestOllamaRoutineAdapter:
 
         # Mock embed to return vectors where invoice-related texts are similar
         call_count = 0
+
         async def mock_embed(text: str) -> list[float]:
             nonlocal call_count
             call_count += 1
@@ -269,14 +272,17 @@ class TestOllamaRoutineAdapter:
 # Config integration
 # ---------------------------------------------------------------------------
 
+
 class TestRoutineConfig:
     def test_routine_adapters_in_registry(self) -> None:
         from cortiva.core.config import _ROUTINE_ADAPTERS
+
         assert "simple" in _ROUTINE_ADAPTERS
         assert "ollama" in _ROUTINE_ADAPTERS
 
     def test_build_fabric_with_simple_routine(self, tmp_path) -> None:
         from cortiva.core.config import build_fabric
+
         config = {
             "fabric": {"name": "test"},
             "memory": {"adapter": "inmemory"},
@@ -294,6 +300,7 @@ class TestRoutineConfig:
 
     def test_build_fabric_without_routine(self, tmp_path) -> None:
         from cortiva.core.config import build_fabric
+
         config = {
             "fabric": {"name": "test"},
             "memory": {"adapter": "inmemory"},
@@ -312,6 +319,7 @@ class TestRoutineConfig:
 # Integration: fabric uses routine adapter
 # ---------------------------------------------------------------------------
 
+
 class TestFabricRoutineIntegration:
     @pytest.mark.asyncio
     async def test_cycle_uses_routine_for_procedural_match(self, tmp_path) -> None:
@@ -320,17 +328,26 @@ class TestFabricRoutineIntegration:
         from cortiva.core.fabric import Fabric
 
         mock_consciousness = AsyncMock()
-        mock_consciousness.think = AsyncMock(return_value=ConsciousResponse(
-            content=(
-                "# Plan\n\n"
-                "- [ ] Verify invoice amounts against purchase order and post to general ledger\n"
-                "- [ ] Review weekly report\n"
-            ),
-            tokens_in=50, tokens_out=25, model="mock",
-        ))
-        mock_consciousness.reflect = AsyncMock(return_value=ConsciousResponse(
-            content="Good day.", tokens_in=50, tokens_out=25, model="mock",
-        ))
+        mock_consciousness.think = AsyncMock(
+            return_value=ConsciousResponse(
+                content=(
+                    "# Plan\n\n"
+                    "- [ ] Verify invoice amounts against purchase order and post to general ledger\n"
+                    "- [ ] Review weekly report\n"
+                ),
+                tokens_in=50,
+                tokens_out=25,
+                model="mock",
+            )
+        )
+        mock_consciousness.reflect = AsyncMock(
+            return_value=ConsciousResponse(
+                content="Good day.",
+                tokens_in=50,
+                tokens_out=25,
+                model="mock",
+            )
+        )
 
         routine = SimpleRoutineAdapter(confidence_threshold=0.15, defer_threshold=0.05)
 
@@ -370,20 +387,27 @@ class TestFabricRoutineIntegration:
 # Mock helper for config tests
 # ---------------------------------------------------------------------------
 
+
 def _mock_import_adapter(registry, name, kind):
     """Return real adapters for memory/routine, mock for consciousness."""
     if kind == "memory":
         from cortiva.adapters.memory.inmemory import InMemoryAdapter
+
         return InMemoryAdapter
     if kind == "routine":
         from cortiva.adapters.routine.simple import SimpleRoutineAdapter
+
         return SimpleRoutineAdapter
+
     # Return a mock class for consciousness
     class MockCls:
         def __init__(self, **kwargs):
             pass
+
         async def think(self, **kwargs):
             pass
+
         async def reflect(self, **kwargs):
             pass
+
     return MockCls

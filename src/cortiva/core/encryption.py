@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import logging
 import os
 import secrets
@@ -89,6 +88,7 @@ class EncryptionVault:
         self._has_crypto = False
         try:
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
             self._aesgcm = AESGCM(key[:32])  # AES-256 needs 32 bytes
             self._has_crypto = True
         except ImportError:
@@ -118,12 +118,12 @@ class EncryptionVault:
         version = data[len(_MAGIC)]
 
         if version == _VERSION and self._has_crypto and self._aesgcm is not None:
-            nonce = data[len(_MAGIC) + 1: len(_MAGIC) + 13]
-            ciphertext = data[len(_MAGIC) + 13:]
+            nonce = data[len(_MAGIC) + 1 : len(_MAGIC) + 13]
+            ciphertext = data[len(_MAGIC) + 13 :]
             return self._aesgcm.decrypt(nonce, ciphertext, None)
         elif version == 0:
             # XOR fallback
-            payload = data[len(_MAGIC) + 1:]
+            payload = data[len(_MAGIC) + 1 :]
             key_stream = hashlib.sha256(self._key).digest()
             return bytes(b ^ key_stream[i % 32] for i, b in enumerate(payload))
         else:
@@ -152,7 +152,7 @@ class EncryptionVault:
         if not path.exists():
             return False
         try:
-            header = path.read_bytes()[:len(_MAGIC)]
+            header = path.read_bytes()[: len(_MAGIC)]
             return header == _MAGIC
         except OSError:
             return False
@@ -185,11 +185,10 @@ class EncryptionVault:
         try:
             from azure.identity import DefaultAzureCredential
             from azure.keyvault.keys import KeyClient
-            from azure.keyvault.keys.crypto import CryptographyClient
+            from azure.keyvault.keys.crypto import CryptographyClient  # noqa: F401
         except ImportError:
             raise ImportError(
-                "Azure Key Vault support requires: "
-                "pip install azure-identity azure-keyvault-keys"
+                "Azure Key Vault support requires: pip install azure-identity azure-keyvault-keys"
             )
 
         credential = DefaultAzureCredential()
@@ -202,13 +201,16 @@ class EncryptionVault:
 
         logger.info(
             "Encryption key loaded from Azure Key Vault: %s/%s",
-            vault_url, key_name,
+            vault_url,
+            key_name,
         )
         return cls(symmetric_key)
 
     @classmethod
     def from_config(
-        cls, config: EncryptionConfig, agents_dir: Path,
+        cls,
+        config: EncryptionConfig,
+        agents_dir: Path,
     ) -> EncryptionVault | None:
         """Create a vault from parsed config.
 

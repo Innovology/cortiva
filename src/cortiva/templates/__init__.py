@@ -59,9 +59,7 @@ def get_template_path(name: str) -> Path:
     candidate = files.joinpath(name)
     if not candidate.is_dir():
         available = list_templates()
-        raise KeyError(
-            f"Unknown template: {name!r}. Available: {', '.join(available)}"
-        )
+        raise KeyError(f"Unknown template: {name!r}. Available: {', '.join(available)}")
     # importlib.resources.files returns a Traversable; for on-disk packages
     # it's already a Path.  Cast for the type checker.
     return Path(str(candidate))
@@ -106,7 +104,7 @@ def parse_hq_slug(template_arg: str) -> str:
         raise ValueError(
             f"Expected hq:// reference, got {template_arg!r}",
         )
-    slug = template_arg[len(_HQ_SCHEME):]
+    slug = template_arg[len(_HQ_SCHEME) :]
     if not slug or "/" in slug or ".." in slug:
         raise ValueError(f"Invalid HQ slug: {slug!r}")
     return slug
@@ -150,7 +148,8 @@ def apply_hq_template(
     except urllib.error.HTTPError as exc:
         try:
             detail = json.loads(exc.read().decode("utf-8")).get(
-                "detail", "",
+                "detail",
+                "",
             )
         except Exception:
             detail = ""

@@ -176,11 +176,41 @@ def parse_responsibilities(content: str) -> AuthorityBoundaries:
 # ---------------------------------------------------------------------------
 
 
-_STOP_WORDS = frozenset({
-    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "is", "it", "that", "this", "with", "from", "by", "as", "be",
-    "can", "may", "i", "my", "we", "our", "do", "not", "no", "should",
-})
+_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "is",
+        "it",
+        "that",
+        "this",
+        "with",
+        "from",
+        "by",
+        "as",
+        "be",
+        "can",
+        "may",
+        "i",
+        "my",
+        "we",
+        "our",
+        "do",
+        "not",
+        "no",
+        "should",
+    }
+)
 
 # Matches negative authority statements like "may NOT merge"
 _NEGATIVE_RE = re.compile(r"\bmay\s+not\b|\bcannot\b|\bmust\s+not\b|\bdo\s+not\b", re.IGNORECASE)
@@ -233,18 +263,12 @@ class AuthorityValidator:
     def __init__(self, boundaries: AuthorityBoundaries) -> None:
         self.boundaries = boundaries
         # Pre-compile keyword sets for each rule
-        self._primary_kw = [
-            (rule, _extract_keywords(rule)) for rule in boundaries.primary
-        ]
-        self._secondary_kw = [
-            (rule, _extract_keywords(rule)) for rule in boundaries.secondary
-        ]
+        self._primary_kw = [(rule, _extract_keywords(rule)) for rule in boundaries.primary]
+        self._secondary_kw = [(rule, _extract_keywords(rule)) for rule in boundaries.secondary]
         self._escalation_kw: list[tuple[str, set[str], str]] = []
         for target in boundaries.escalation_targets:
             for topic in target.topics:
-                self._escalation_kw.append(
-                    (topic, _extract_keywords(topic), target.target_agent)
-                )
+                self._escalation_kw.append((topic, _extract_keywords(topic), target.target_agent))
         self._negative_kw = [
             (stmt, _extract_keywords(stmt))
             for stmt in boundaries.authority_statements
