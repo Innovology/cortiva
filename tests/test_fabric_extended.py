@@ -1152,7 +1152,7 @@ class TestManagerWake:
 
         woken: list[str] = []
 
-        async def _spy_wake(aid):
+        async def _spy_wake(aid, **_kw):
             woken.append(aid)
             return fabric.agents[aid]
 
