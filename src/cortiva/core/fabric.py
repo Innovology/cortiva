@@ -554,7 +554,9 @@ class Fabric:
         sticks. A normal rota wake passes 0 and behaves exactly as before.
         """
         agent = self.get_agent(agent_id)
-        agent.transition(AgentState.WAKING)
+        # A forced wake grants the grace window REGARDLESS of current state — so
+        # an operator/manager can also keep an already-awake agent up for a
+        # crisis (and a wake that races the agent's own cycle still sticks).
         if override_minutes and override_minutes > 0:
             from datetime import UTC, datetime, timedelta
 
@@ -565,7 +567,12 @@ class Fabric:
                 "Force-waking agent %s — rota re-sleep suppressed for %.0fm",
                 agent_id, override_minutes,
             )
-        else:
+        # Already awake? The grace is set; don't re-run the full wake sequence
+        # (that would reset their day). Just keep them going.
+        if agent.state != AgentState.SLEEPING:
+            return agent
+        agent.transition(AgentState.WAKING)
+        if not (override_minutes and override_minutes > 0):
             logger.info(f"Waking agent: {agent_id}")
 
         # Keep the org chart current. Reassignments are applied to
