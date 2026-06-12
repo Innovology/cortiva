@@ -3437,6 +3437,20 @@ class Fabric:
         if self.org is None:
             return
 
+        # A real escalation names something the agent genuinely can't resolve.
+        # Don't email the hollow ones ("None", "Nothing's blocking me", "already
+        # escalated", "nothing yet") — those were flooding inboxes with
+        # look-alike non-blocks. If there's no actual ask, it's not an escalation.
+        esc = (escalation or "").strip()
+        if len(esc) < 8 or esc.lower().lstrip(" .—-").startswith(
+            ("none", "nothing", "n/a", "na ", "no blocker", "nope", "no, ")
+        ):
+            logger.info(
+                "Skipping hollow escalation from %s (no real blocker: %r)",
+                agent.id, esc[:60],
+            )
+            return
+
         founder = ""
         for c in (self._email_meta().get("contacts") or []):
             a = str(c.get("address") or "").strip()
@@ -3455,10 +3469,12 @@ class Fabric:
         operator_level = any(kw in haystack for kw in self._OPERATOR_KEYWORDS)
 
         subject = f"[Blocked] {task_desc[:80]}"
+        # Factual brief — the node's voice pass rewrites this into the agent's
+        # own words before it sends, so keep it plain here.
         body = (
-            "I'm blocked on something I can't clear myself and need a hand.\n\n"
+            f"I need to escalate a blocker I can't clear myself.\n\n"
             f"Task: {task_desc}\n\n"
-            f"What's blocking me / what I need:\n{escalation}\n\n"
+            f"What I need: {esc}\n\n"
             f"— {agent.id}"
         )
 
@@ -3670,11 +3686,14 @@ class Fabric:
                     "near the top.\n"
                     "- DROP anything stale, superseded, or no longer worth doing — "
                     "a shorter, sharper list beats a stale long one.\n"
-                    "- ESCALATE anything you're blocked on to a human: emit an "
-                    "`escalation` field naming what you need and who from. A block "
-                    "you can't clear yourself must reach your manager (and the "
-                    "founder for operator actions) — not sit in your plan as a dead "
-                    "exception.\n\n"
+                    "- ESCALATE only a GENUINE blocker you truly cannot clear "
+                    "yourself — emit an `escalation` field naming the specific "
+                    "thing you need and who from. It reaches your manager (or the "
+                    "founder for operator actions). Do NOT escalate routine "
+                    "status, a task that isn't actually blocked, or something "
+                    "you've already handled — no real blocker means no "
+                    "escalation. A genuine block must not sit as a dead exception; "
+                    "a non-block must not become noise in someone's inbox.\n\n"
                     "Output ONLY the updated checklist of remaining + new tasks."
                 ),
                 priority=Priority.HIGH,
