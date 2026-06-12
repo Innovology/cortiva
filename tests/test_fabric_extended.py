@@ -964,3 +964,104 @@ class TestBackfillConvictions:
 
         # No heading written → will retry on a later boot.
         assert fabric._CONVICTIONS_HEADING not in soul.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Idle proactive reassess — a cleared queue must look for work, not sit inert
+# ---------------------------------------------------------------------------
+
+
+class _CountingConsciousness:
+    """Counts think() calls and returns a configurable plan body."""
+
+    def __init__(self, plan_body: str = "") -> None:
+        self.calls = 0
+        self.plan_body = plan_body
+
+    async def think(self, agent_id, context, prompt, **kwargs):
+        self.calls += 1
+        return ConsciousResponse(
+            content=self.plan_body, tokens_in=10, tokens_out=5, model="mock",
+        )
+
+    async def reflect(self, agent_id, context, day_summary):
+        return ConsciousResponse(content="", model="mock")
+
+
+def _fabric_with(tmp_path: Path, cons) -> Fabric:
+    return Fabric(
+        agents_dir=tmp_path / "agents",
+        memory=InMemoryAdapter(),
+        consciousness=cons,
+    )
+
+
+def _executing_agent_empty_queue(fabric: Fabric, aid: str):
+    from cortiva.core.agent import TaskQueue
+
+    agent = fabric.register_agent(aid, consciousness_budget=100)
+    agent.transition(AgentState.WAKING)
+    agent.transition(AgentState.PLANNING)
+    agent.transition(AgentState.EXECUTING)
+    agent.task_queue = TaskQueue(tasks=[])
+    return agent
+
+
+class TestIdleProactiveReassess:
+    @pytest.mark.asyncio
+    async def test_empty_queue_triggers_proactive_reassess(self, tmp_path):
+        cons = _CountingConsciousness(plan_body="")  # finds nothing this time
+        fabric = _fabric_with(tmp_path, cons)
+        _executing_agent_empty_queue(fabric, "idle-1")
+
+        res = await fabric.cycle("idle-1")
+        assert res["action"] == "reassessed_idle"
+        assert res["conscious_call"] is True
+        assert cons.calls == 1  # it actually thought, not sat inert
+
+    @pytest.mark.asyncio
+    async def test_reassess_is_throttled(self, tmp_path):
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        _executing_agent_empty_queue(fabric, "idle-2")
+
+        first = await fabric.cycle("idle-2")
+        assert first["action"] == "reassessed_idle"
+        # Immediately again — inside the throttle window → quiet idle, no call.
+        second = await fabric.cycle("idle-2")
+        assert second["action"] == "idle"
+        assert second["conscious_call"] is False
+        assert cons.calls == 1  # still just the one
+
+    @pytest.mark.asyncio
+    async def test_reassess_runs_again_after_interval(self, tmp_path):
+        from datetime import UTC, datetime, timedelta
+
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-3")
+
+        await fabric.cycle("idle-3")
+        assert cons.calls == 1
+        # Age the throttle stamp past the interval.
+        agent._last_idle_reassess = datetime.now(UTC) - timedelta(
+            seconds=fabric._IDLE_REASSESS_INTERVAL_S + 1
+        )
+        await fabric.cycle("idle-3")
+        assert cons.calls == 2  # looked for work again
+
+    @pytest.mark.asyncio
+    async def test_proactive_reassess_can_pull_in_work(self, tmp_path):
+        # When there IS something worth doing, the reassess fills the queue.
+        cons = _CountingConsciousness(
+            plan_body="- [ ] **[HIGH]** Follow up on the pending PR review\n"
+        )
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-4")
+
+        await fabric.cycle("idle-4")
+        # The proactive reassess generated a real next task.
+        assert agent.task_queue is not None
+        assert any(
+            "PR review" in t.description for t in agent.task_queue.tasks
+        )

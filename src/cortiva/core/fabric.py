@@ -1035,7 +1035,17 @@ class Fabric:
         # Agent decides what to work on next
         task = agent.next_task()
         if task is None:
-            result["action"] = "idle"
+            # Queue cleared — but "finished the list" is NOT "done for the day".
+            # A capable colleague who's cleared their plate looks for the next
+            # valuable thing (boredom is where good work starts), rather than
+            # sitting inert for hours burning a shift. Run a THROTTLED proactive
+            # reassess that can pull in inbox work or start something worthwhile;
+            # if there's genuinely nothing, it stays quietly idle and the
+            # exhaustion wind-down ends the day. This is the fix for agents
+            # clocking hours with zero consciousness calls.
+            reassessed = await self._idle_reassess(agent, messages)
+            result["action"] = "reassessed_idle" if reassessed else "idle"
+            result["conscious_call"] = reassessed
             result["all_tasks_complete"] = (
                 agent.task_queue.all_done() if agent.task_queue else True
             )
@@ -3820,8 +3830,49 @@ class Fabric:
             for t in agent.task_queue.tasks
         )
 
-    async def _replan(self, agent: Agent, messages: list[Any]) -> None:
-        """Trigger a replan: EXECUTING -> REPLANNING, build new plan, -> EXECUTING."""
+    # How often an idle agent (empty queue) runs a proactive look-for-work
+    # reassess. Far slower than the 30s heartbeat so a quiet agent keeps hunting
+    # for value without burning the consciousness budget or the local model.
+    _IDLE_REASSESS_INTERVAL_S = 360.0
+
+    async def _idle_reassess(self, agent: Agent, messages: list[Any]) -> bool:
+        """Proactive reassess when the queue is empty — throttled.
+
+        A cleared list is a prompt to find the next valuable thing, not a cue to
+        sit inert for the rest of a shift (the bug behind agents clocking hours
+        with zero consciousness calls). We reassess proactively at a measured
+        cadence so the agent keeps looking for work and stays available, while a
+        genuinely-empty outcome is honest ("nothing worth doing, rest"). Real
+        reassess activity builds legitimate sleep pressure, so the exhaustion
+        wind-down still ends the day. Returns True if it ran a conscious call.
+        """
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        last = getattr(agent, "_last_idle_reassess", None)
+        if last is not None and (
+            now - last
+        ).total_seconds() < self._IDLE_REASSESS_INTERVAL_S:
+            return False
+        agent._last_idle_reassess = now
+        try:
+            await self._replan(agent, messages, proactive=True)
+        except Exception:
+            logger.debug(
+                "idle proactive reassess failed for %s", agent.id, exc_info=True,
+            )
+            return False
+        return True
+
+    async def _replan(
+        self, agent: Agent, messages: list[Any], *, proactive: bool = False,
+    ) -> None:
+        """Trigger a replan: EXECUTING -> REPLANNING, build new plan, -> EXECUTING.
+
+        ``proactive=True`` is the empty-queue case: the agent has cleared its
+        list and is looking for the next valuable thing to do, rather than
+        reacting to something that just landed.
+        """
         assert agent.task_queue is not None
 
         if agent.state == AgentState.EXECUTING:
@@ -3847,10 +3898,30 @@ class Fabric:
             can_replan = agent.spend_consciousness()
 
         if can_replan:
-            response = await self.consciousness.think(
-                agent_id=agent.id,
-                context=context,
-                prompt=(
+            if proactive:
+                prompt = (
+                    "You've cleared your task list. That's the start of good "
+                    "work, not the end of your day — a capable colleague with a "
+                    "clear plate looks for the next most valuable thing to do.\n\n"
+                    "Weigh everything above: your responsibilities and goals, "
+                    "what you've just finished, anything stuck, messages, and your "
+                    "inbox (mail, GitHub reviews/CI/issues).\n\n"
+                    "Decide and output a fresh checklist of what to do next:\n"
+                    "- PICK UP real inbox work first (a PR to review, a red CI to "
+                    "fix, a request to action) — don't leave it sitting unread.\n"
+                    "- Then PROACTIVELY propose the most valuable work your role "
+                    "should drive now: move a goal forward, unblock a colleague, "
+                    "tighten something you own, prepare what's coming. Be concrete "
+                    "and specific — real tasks you can start, not vague intentions.\n"
+                    "- ESCALATE only a GENUINE blocker you cannot clear yourself "
+                    "(emit an `escalation` field naming the thing and who from).\n\n"
+                    "If — after genuinely looking — there is truly nothing worth "
+                    "doing right now, output an empty list and say so plainly; it's "
+                    "fine to rest rather than invent busywork. Output ONLY the "
+                    "checklist."
+                )
+            else:
+                prompt = (
                     "Reassess your day like a capable colleague mid-shift — don't "
                     "just drain the morning list. Weigh everything above: what you've "
                     "completed, what's stuck (exceptions), messages, and anything "
@@ -3872,7 +3943,11 @@ class Fabric:
                     "escalation. A genuine block must not sit as a dead exception; "
                     "a non-block must not become noise in someone's inbox.\n\n"
                     "Output ONLY the updated checklist of remaining + new tasks."
-                ),
+                )
+            response = await self.consciousness.think(
+                agent_id=agent.id,
+                context=context,
+                prompt=prompt,
                 priority=Priority.HIGH,
                 metadata={"call_type": "replan"},
             )
