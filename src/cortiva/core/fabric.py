@@ -2903,16 +2903,24 @@ class Fabric:
                 session_id=sid, tools_used=tools,
             )
 
-        # Slot B questions Slot A's output — Claude reviewing Claude.
-        critique = await self._slot_b_critique(task.description, final, ctx["env"])
+        # Slot B questions Slot A's output — on a model NEVER weaker than the
+        # one that did the work (a weak critic just rubber-stamps a strong
+        # producer). Same model as Slot A here; the real upgrade is a DIFFERENT
+        # strong family (e.g. Qwen-Max) so the reviewer doesn't share the
+        # producer's blind spots — verify with a different lineage than you
+        # produced with.
+        critique = await self._slot_b_critique(task.description, final, model)
         return SessionResult(
             agent_id=agent.id, task_id=task.id, ok=True,
             outcome=final[:500], session_id=sid, tools_used=tools, critique=critique,
         )
 
-    async def _slot_b_critique(self, task_desc: str, outcome: str, env: dict) -> str:
-        """Slot B: a quick Claude pass that challenges Slot A's output. Returns
-        a one-line verdict (or '' if unavailable). Best-effort — never fatal."""
+    async def _slot_b_critique(
+        self, task_desc: str, outcome: str, model: str | None,
+    ) -> str:
+        """Slot B: a Claude pass that challenges Slot A's output, on a model at
+        least as capable as the one that produced it (``model`` = Slot A's; None
+        = the CLI default). One-line verdict, or '' if unavailable. Best-effort."""
         try:
             from cortiva.skills.claude_code_deep_think.wrapper import deep_think
 
@@ -2925,8 +2933,8 @@ class Fabric:
                     "something's missing, wrong, or unverified, say so plainly. "
                     "If it's solid, reply 'LGTM'."
                 ),
-                timeout_s=60.0,
-                extra_args=["--model", "haiku"],
+                timeout_s=90.0,
+                extra_args=(["--model", model] if model else None),
             )
             return (res.text or "").strip()[:300]
         except Exception:
