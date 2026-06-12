@@ -12,10 +12,10 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass
@@ -189,7 +189,7 @@ class EventBus:
             return []
 
         events: list[FabricEvent] = []
-        with open(self._log_path, "r", encoding="utf-8") as f:
+        with open(self._log_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -205,6 +205,7 @@ class EventBus:
 # ---------------------------------------------------------------------------
 # Standard event type constants
 # ---------------------------------------------------------------------------
+
 
 class EventTypes:
     """Constants for standard event types."""

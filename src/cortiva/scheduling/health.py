@@ -239,9 +239,7 @@ def assess_schedule_health(
     if model_concurrency and model_concurrency > 0:
         # Excess awake-agents per slot, converted to agent-hours of queueing.
         excess_agent_hours = sum(max(0, c - model_concurrency) for c in occ) * slot_h
-        health.contended_hours = round(
-            sum(slot_h for c in occ if c > model_concurrency), 2
-        )
+        health.contended_hours = round(sum(slot_h for c in occ if c > model_concurrency), 2)
         contention_penalty = excess_agent_hours * _PEN_PER_CONTENTION_AGENT_HOUR
         if health.contended_hours > 0:
             # Point the AR Scheduler at a role to stagger out of the busiest
@@ -264,8 +262,11 @@ def assess_schedule_health(
                     f"{health.peak_concurrency} agents awake at ~{peak_h:05.2f} but the "
                     f"local model serves ~{model_concurrency} at once — the rest queue "
                     f"({health.contended_hours:.1f}h contended)."
-                    + (f" Stagger {movable} out to ease it." if movable else
-                       " Stagger a non-manager role out, or add model capacity."),
+                    + (
+                        f" Stagger {movable} out to ease it."
+                        if movable
+                        else " Stagger a non-manager role out, or add model capacity."
+                    ),
                 )
             )
 
@@ -360,7 +361,10 @@ def recommend_schedule_change(
     Pure + deterministic; it recommends, it doesn't apply.
     """
     base = assess_schedule_health(
-        agents, schedules, signals=signals, slot_minutes=slot_minutes,
+        agents,
+        schedules,
+        signals=signals,
+        slot_minutes=slot_minutes,
         model_concurrency=model_concurrency,
     )
     if target is None:
@@ -391,7 +395,10 @@ def recommend_schedule_change(
         trial = dict(schedules)
         trial[target] = trial_windows
         score = assess_schedule_health(
-            agents, trial, signals=signals, slot_minutes=slot_minutes,
+            agents,
+            trial,
+            signals=signals,
+            slot_minutes=slot_minutes,
             model_concurrency=model_concurrency,
         ).responsiveness_score
         # Strictly better only (ties keep the current schedule → no churn).

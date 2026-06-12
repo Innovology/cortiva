@@ -25,19 +25,21 @@ class TestSkillParsing:
         assert skill.mcp is None
 
     def test_parse_full(self) -> None:
-        skill = parse_skill({
-            "name": "linear",
-            "description": "Linear integration",
-            "category": "project-management",
-            "version": "2.0",
-            "tags": ["issues", "tickets"],
-            "mcp": {
-                "package": "@linear/mcp-server",
-                "command": "npx @linear/mcp-server",
-                "env": ["LINEAR_API_KEY"],
-            },
-            "procedures": "## Linear\nUse Linear tools.",
-        })
+        skill = parse_skill(
+            {
+                "name": "linear",
+                "description": "Linear integration",
+                "category": "project-management",
+                "version": "2.0",
+                "tags": ["issues", "tickets"],
+                "mcp": {
+                    "package": "@linear/mcp-server",
+                    "command": "npx @linear/mcp-server",
+                    "env": ["LINEAR_API_KEY"],
+                },
+                "procedures": "## Linear\nUse Linear tools.",
+            }
+        )
         assert skill.name == "linear"
         assert skill.category == "project-management"
         assert skill.mcp is not None

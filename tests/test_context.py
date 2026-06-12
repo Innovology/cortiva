@@ -96,13 +96,18 @@ class TestContextBuilderExecution:
         await memory.store("ctx-01", "Previous code review notes", importance=7.0, tags=["review"])
         builder = ContextBuilder(memory=memory)
         agent = _make_agent(tmp_path)
-        agent.task_queue = TaskQueue(tasks=[
-            Task(id="t1", description="Review PR", status="in_progress"),
-        ])
+        agent.task_queue = TaskQueue(
+            tasks=[
+                Task(id="t1", description="Review PR", status="in_progress"),
+            ]
+        )
         identity = agent.read_all_identity()
 
         result = await builder.build_execution_context(
-            agent, identity, [], "code review",
+            agent,
+            identity,
+            [],
+            "code review",
         )
         assert "## Skills" in result
         assert "## Responsibilities" in result
@@ -142,7 +147,9 @@ class TestContextBuilderReflection:
         identity = agent.read_all_identity()
 
         result = await builder.build_reflection_context(
-            agent, identity, "Tasks completed: 5\nGood day overall.",
+            agent,
+            identity,
+            "Tasks completed: 5\nGood day overall.",
         )
         assert "## Day Summary" in result
         assert "Tasks completed: 5" in result
@@ -163,9 +170,11 @@ class TestTruncation:
         high_section = "A" * 150  # fits
         low_section = "B" * 150  # won't fit
 
-        result = builder._truncate([
-            (100, high_section),
-            (10, low_section),
-        ])
+        result = builder._truncate(
+            [
+                (100, high_section),
+                (10, low_section),
+            ]
+        )
         assert "A" * 150 in result
         assert "B" * 150 not in result

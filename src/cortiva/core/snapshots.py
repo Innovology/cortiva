@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -328,9 +328,7 @@ def import_snapshot(agent_dir: Path, archive_path: Path) -> SnapshotMetadata | N
             meta = SnapshotMetadata.from_dict(data)
             # Update agent_id to match destination agent
             meta.agent_id = agent_dir.name
-            meta_path.write_text(
-                json.dumps(meta.to_dict(), indent=2), encoding="utf-8"
-            )
+            meta_path.write_text(json.dumps(meta.to_dict(), indent=2), encoding="utf-8")
             return meta
 
     return None

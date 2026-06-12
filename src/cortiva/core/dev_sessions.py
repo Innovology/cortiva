@@ -23,8 +23,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class SessionResult:
     error: str = ""
     session_id: str = ""
     tools_used: int = 0
-    critique: str = ""               # Slot-B's verdict, if it was run
+    critique: str = ""  # Slot-B's verdict, if it was run
     meta: dict[str, Any] = field(default_factory=dict)
 
 
@@ -93,7 +94,9 @@ class DevSessionManager:
             except Exception as exc:  # noqa: BLE001 — never let a session crash the fabric
                 logger.exception("Dev session crashed for %s/%s", agent_id, task_id)
                 result = SessionResult(
-                    agent_id=agent_id, task_id=task_id, ok=False,
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    ok=False,
                     error=f"session crashed: {exc}",
                 )
             self._completed[agent_id].append(result)
@@ -104,7 +107,10 @@ class DevSessionManager:
         task.add_done_callback(lambda t: self._active[agent_id].discard(t))
         logger.info(
             "Launched dev session for %s/%s (%d/%d active)",
-            agent_id, task_id, self.active_count(agent_id), self._max,
+            agent_id,
+            task_id,
+            self.active_count(agent_id),
+            self._max,
         )
         return True
 

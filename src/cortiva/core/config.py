@@ -36,7 +36,10 @@ _MEMORY_ADAPTERS: dict[str, tuple[str, str]] = {
 _CONSCIOUSNESS_ADAPTERS: dict[str, tuple[str, str]] = {
     "anthropic": ("cortiva.adapters.consciousness.anthropic", "AnthropicConsciousnessAdapter"),
     "openai": ("cortiva.adapters.consciousness.openai_compat", "OpenAICompatibleAdapter"),
-    "openai-compatible": ("cortiva.adapters.consciousness.openai_compat", "OpenAICompatibleAdapter"),
+    "openai-compatible": (
+        "cortiva.adapters.consciousness.openai_compat",
+        "OpenAICompatibleAdapter",
+    ),
     "google": ("cortiva.adapters.consciousness.google", "GoogleAdapter"),
     "cortiva-routed": (
         "cortiva.adapters.consciousness.cortiva_routed",
@@ -128,9 +131,7 @@ def _build_budget_manager(config: dict[str, Any]) -> ConsciousnessBudgetManager 
 
     # Build fallback chain
     chain_names = budget_section.get("fallback_chain", [backend_name])
-    fallback_chain = [
-        _BACKEND_TYPE_MAP.get(n, BackendType.API) for n in chain_names
-    ]
+    fallback_chain = [_BACKEND_TYPE_MAP.get(n, BackendType.API) for n in chain_names]
 
     # Build per-backend configs
     backend_configs: dict[BackendType, dict[str, Any]] = {}
@@ -216,9 +217,7 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
             # String values (e.g. "terminal") are reserved for future
             # terminal-agent routing and are ignored for now.
         if override_adapters:
-            consciousness = ConsciousnessRouter(
-                default=consciousness, overrides=override_adapters
-            )
+            consciousness = ConsciousnessRouter(default=consciousness, overrides=override_adapters)
 
     # --- Channel adapter (optional) ---
     channel = None
@@ -331,6 +330,7 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
     plugins_list = config.get("plugins")
     if plugins_list and isinstance(plugins_list, list):
         from cortiva.core.plugins import load_plugins_from_config
+
         for plugin in load_plugins_from_config(plugins_list):
             fabric.plugin_manager.register(plugin)
 

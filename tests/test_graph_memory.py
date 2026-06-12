@@ -5,8 +5,7 @@ from __future__ import annotations
 import pytest
 
 from cortiva.adapters.memory.inmemory import InMemoryAdapter
-from cortiva.adapters.protocols import GraphMemoryAdapter, MemoryRecord
-
+from cortiva.adapters.protocols import MemoryRecord
 
 # ---------------------------------------------------------------------------
 # Extended MemoryRecord fields
@@ -23,7 +22,9 @@ class TestMemoryRecordExtended:
 
     def test_new_fields_populated(self) -> None:
         record = MemoryRecord(
-            id="1", content="test", agent_id="a",
+            id="1",
+            content="test",
+            agent_id="a",
             outcome="success",
             emotion_dimensions={"confidence": 0.8, "frustration": 0.1},
             prediction_error=0.3,
@@ -172,6 +173,7 @@ class TestInMemoryGraphOps:
 class TestNeo4jAdapterImport:
     def test_import_and_init(self) -> None:
         from cortiva.adapters.memory.neo4j import Neo4jMemoryAdapter
+
         adapter = Neo4jMemoryAdapter(
             uri="bolt://localhost:7687",
             username="neo4j",
@@ -181,6 +183,7 @@ class TestNeo4jAdapterImport:
 
     def test_config_registry(self) -> None:
         from cortiva.core.config import _MEMORY_ADAPTERS
+
         assert "neo4j" in _MEMORY_ADAPTERS
 
 

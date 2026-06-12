@@ -21,10 +21,11 @@ from typing import Any
 @dataclass
 class Task:
     """A single unit of work in an agent's plan."""
+
     id: str
     description: str
-    status: str = "pending"   # pending | in_progress | done | skipped | exception
-    priority: int = 0         # 0=normal, 1=high, 2=critical
+    status: str = "pending"  # pending | in_progress | done | skipped | exception
+    priority: int = 0  # 0=normal, 1=high, 2=critical
     outcome: str = ""
     error: str = ""
 
@@ -32,6 +33,7 @@ class Task:
 @dataclass
 class TaskQueue:
     """Ordered queue of tasks with exception tracking."""
+
     tasks: list[Task] = field(default_factory=list)
     exceptions: list[Task] = field(default_factory=list)
     replan_count: int = 0
@@ -107,35 +109,38 @@ def _parse_plan(plan_text: str) -> TaskQueue:
             continue
 
         task_id += 1
-        tasks.append(Task(
-            id=f"task-{task_id}",
-            description=description,
-            status="done" if done else "pending",
-            priority=priority,
-        ))
+        tasks.append(
+            Task(
+                id=f"task-{task_id}",
+                description=description,
+                status="done" if done else "pending",
+                priority=priority,
+            )
+        )
 
     return TaskQueue(tasks=tasks)
 
 
 class AgentState(Enum):
     """Lifecycle states. Agents don't start/stop — they sleep/wake."""
-    ONBOARDING = "onboarding"    # First-time setup, no experience yet
-    SLEEPING = "sleeping"        # Idle, identity persists on disk
-    WAKING = "waking"            # Loading identity, checking queue
-    PLANNING = "planning"        # Building today's plan (conscious)
-    EXECUTING = "executing"      # Working through plan
-    REPLANNING = "replanning"    # Adjusting plan mid-cycle (conscious)
-    REFLECTING = "reflecting"    # End-of-day review (conscious)
+
+    ONBOARDING = "onboarding"  # First-time setup, no experience yet
+    SLEEPING = "sleeping"  # Idle, identity persists on disk
+    WAKING = "waking"  # Loading identity, checking queue
+    PLANNING = "planning"  # Building today's plan (conscious)
+    EXECUTING = "executing"  # Working through plan
+    REPLANNING = "replanning"  # Adjusting plan mid-cycle (conscious)
+    REFLECTING = "reflecting"  # End-of-day review (conscious)
 
 
 # Standard identity file names (subdirectory layout)
 IDENTITY_FILES = {
-    "identity": "identity/identity.md",           # Living Summary
-    "soul": "identity/soul.md",                   # Persona parameters
-    "skills": "identity/skills.md",               # Domain knowledge
+    "identity": "identity/identity.md",  # Living Summary
+    "soul": "identity/soul.md",  # Persona parameters
+    "skills": "identity/skills.md",  # Domain knowledge
     "responsibilities": "identity/responsibilities.md",  # R&R authority
-    "procedures": "identity/procedures.md",       # Promoted procedural knowledge
-    "plan": "today/plan.md",                      # Current plan
+    "procedures": "identity/procedures.md",  # Promoted procedural knowledge
+    "plan": "today/plan.md",  # Current plan
 }
 
 # Standard workspace subdirectories
@@ -401,10 +406,14 @@ class Agent:
             AgentState.WAKING: {AgentState.PLANNING, AgentState.SLEEPING},
             AgentState.PLANNING: {AgentState.EXECUTING, AgentState.SLEEPING},
             AgentState.EXECUTING: {
-                AgentState.REPLANNING, AgentState.REFLECTING, AgentState.SLEEPING,
+                AgentState.REPLANNING,
+                AgentState.REFLECTING,
+                AgentState.SLEEPING,
             },
             AgentState.REPLANNING: {
-                AgentState.EXECUTING, AgentState.REFLECTING, AgentState.SLEEPING,
+                AgentState.EXECUTING,
+                AgentState.REFLECTING,
+                AgentState.SLEEPING,
             },
             AgentState.REFLECTING: {AgentState.SLEEPING},
         }
@@ -413,9 +422,7 @@ class Agent:
     def transition(self, target: AgentState) -> None:
         """Transition to a new state."""
         if not self.can_transition(target):
-            raise ValueError(
-                f"Invalid transition: {self.state.value} → {target.value}"
-            )
+            raise ValueError(f"Invalid transition: {self.state.value} → {target.value}")
         if target == AgentState.WAKING:
             self.last_wake = datetime.utcnow()
             self.consciousness_budget_used = 0

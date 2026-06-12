@@ -71,31 +71,31 @@ class LivingSummaryRegenerator:
         """Gather experience data for summary regeneration."""
         # Key memories (highest importance)
         key_memories = await self.memory.recall(
-            agent_id, limit=self.memory_limit, min_importance=self.min_importance,
+            agent_id,
+            limit=self.memory_limit,
+            min_importance=self.min_importance,
         )
 
         # Learnings (tagged with "learning" or "reflection")
         learnings = await self.memory.search(
-            agent_id, "learned",
+            agent_id,
+            "learned",
             limit=self.learning_limit,
             tags=["learning"],
         )
 
         # Task patterns (tagged with "task")
         task_memories = await self.memory.search(
-            agent_id, "Task:",
+            agent_id,
+            "Task:",
             limit=self.memory_limit,
             tags=["task"],
         )
 
         # Compute simple stats
         total_tasks = len(task_memories)
-        terminal_tasks = sum(
-            1 for m in task_memories if "terminal" in m.tags
-        )
-        escalated = sum(
-            1 for m in task_memories if "escalated" in m.tags
-        )
+        terminal_tasks = sum(1 for m in task_memories if "terminal" in m.tags)
+        escalated = sum(1 for m in task_memories if "escalated" in m.tags)
 
         # Extract recurring themes from content
         themes = _extract_themes(key_memories + learnings)
@@ -151,8 +151,7 @@ class LivingSummaryRegenerator:
 
         if responsibilities:
             sections.append(
-                "## Your Role & Responsibilities (your anchor)\n\n"
-                f"{responsibilities[:1500]}\n"
+                f"## Your Role & Responsibilities (your anchor)\n\n{responsibilities[:1500]}\n"
             )
 
         if revision_count > 0:
@@ -170,21 +169,15 @@ class LivingSummaryRegenerator:
         if key_memories:
             mem_lines = [f"- {m.content}" for m in key_memories[:10]]
             sections.append(
-                f"## Key Experiences ({len(key_memories)} total)\n\n"
-                + "\n".join(mem_lines) + "\n"
+                f"## Key Experiences ({len(key_memories)} total)\n\n" + "\n".join(mem_lines) + "\n"
             )
 
         if learnings:
             learn_lines = [f"- {m.content}" for m in learnings[:10]]
-            sections.append(
-                f"## Learnings\n\n" + "\n".join(learn_lines) + "\n"
-            )
+            sections.append("## Learnings\n\n" + "\n".join(learn_lines) + "\n")
 
         if themes:
-            sections.append(
-                f"## Recurring Themes\n\n"
-                + ", ".join(themes) + "\n"
-            )
+            sections.append("## Recurring Themes\n\n" + ", ".join(themes) + "\n")
 
         if task_count > 0:
             sections.append(
@@ -263,7 +256,10 @@ class LivingSummaryRegenerator:
             revision_count = 0
 
         prompt = self.build_regeneration_prompt(
-            agent, current_identity, day_summary, experience,
+            agent,
+            current_identity,
+            day_summary,
+            experience,
             soul=soul,
             responsibilities=responsibilities,
             revision_count=revision_count,
@@ -284,13 +280,62 @@ def _extract_themes(memories: list[MemoryRecord]) -> list[str]:
 
     # Skip common stop words
     stop_words = {
-        "the", "a", "an", "is", "was", "are", "were", "be", "been",
-        "being", "have", "has", "had", "do", "does", "did", "will",
-        "would", "could", "should", "may", "might", "shall", "can",
-        "to", "of", "in", "for", "on", "with", "at", "by", "from",
-        "and", "or", "but", "not", "no", "this", "that", "it", "its",
-        "i", "my", "me", "we", "our", "you", "your", "they", "their",
-        "task", "completed", "done", "outcome", "agent",
+        "the",
+        "a",
+        "an",
+        "is",
+        "was",
+        "are",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "and",
+        "or",
+        "but",
+        "not",
+        "no",
+        "this",
+        "that",
+        "it",
+        "its",
+        "i",
+        "my",
+        "me",
+        "we",
+        "our",
+        "you",
+        "your",
+        "they",
+        "their",
+        "task",
+        "completed",
+        "done",
+        "outcome",
+        "agent",
     }
 
     for mem in memories:

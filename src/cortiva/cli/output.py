@@ -24,21 +24,27 @@ except ImportError:
     _RICH_AVAILABLE = False
 
 # Cortiva brand colours
-_THEME = Theme({
-    "info": "cyan",
-    "success": "green",
-    "warning": "yellow",
-    "error": "red bold",
-    "agent.executing": "green",
-    "agent.sleeping": "dim",
-    "agent.planning": "cyan",
-    "agent.reflecting": "magenta",
-    "agent.waking": "yellow",
-    "agent.onboarding": "blue",
-    "header": "bold dark_violet",
-    "muted": "dim",
-    "highlight": "bold",
-}) if _RICH_AVAILABLE else None  # type: ignore[assignment]
+_THEME = (
+    Theme(
+        {
+            "info": "cyan",
+            "success": "green",
+            "warning": "yellow",
+            "error": "red bold",
+            "agent.executing": "green",
+            "agent.sleeping": "dim",
+            "agent.planning": "cyan",
+            "agent.reflecting": "magenta",
+            "agent.waking": "yellow",
+            "agent.onboarding": "blue",
+            "header": "bold dark_violet",
+            "muted": "dim",
+            "highlight": "bold",
+        }
+    )
+    if _RICH_AVAILABLE
+    else None
+)  # type: ignore[assignment]
 
 console = Console(theme=_THEME) if _RICH_AVAILABLE else None  # type: ignore[arg-type]
 
@@ -190,9 +196,7 @@ class _PlainTable:
                     widths[i] = max(widths[i], len(val))
 
         # Header
-        header = "  ".join(
-            c["header"].ljust(w) for c, w in zip(self.columns, widths)
-        )
+        header = "  ".join(c["header"].ljust(w) for c, w in zip(self.columns, widths))
         print(f"  {header}")
         print(f"  {'  '.join('-' * w for w in widths)}")
 

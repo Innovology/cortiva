@@ -30,13 +30,13 @@ from typing import Any
 @dataclass
 class NodeState:
     node_id: str
-    grade: int                 # deployment tier: hosts agents of grade <= this
+    grade: int  # deployment tier: hosts agents of grade <= this
     ram_free_gb: float
     ram_total_gb: float
     agents_deployed: int
     agent_slots: int
     name: str = ""
-    pressure: float = 0.0      # SRE signal 0..1 (higher = more saturated)
+    pressure: float = 0.0  # SRE signal 0..1 (higher = more saturated)
 
     def free_slots(self) -> int:
         return max(0, self.agent_slots - self.agents_deployed)
@@ -49,7 +49,7 @@ class AgentState:
     current_node: str
     asleep: bool
     name: str = ""
-    last_moved_hours_ago: float = 1e9   # large => not recently moved
+    last_moved_hours_ago: float = 1e9  # large => not recently moved
 
 
 @dataclass
@@ -98,9 +98,9 @@ def _can_host(
     """Can `target` take `agent` without breaching grade, slots, or RAM?"""
     if target.node_id == agent.current_node:
         return False
-    if target.grade < agent.grade:           # Grade-1 never onto a Grade-0 node
+    if target.grade < agent.grade:  # Grade-1 never onto a Grade-0 node
         return False
-    if target.free_slots() <= 0:             # capacity
+    if target.free_slots() <= 0:  # capacity
         return False
     # leave headroom after the move (estimate the agent's marginal cost)
     if target.ram_free_gb - est_agent_gb < ram_headroom_gb:
@@ -146,33 +146,45 @@ def plan_rebalance(
             if len(plan.moves) >= max_moves:
                 break
             if not agent.asleep:
-                plan.skipped.append({"agent_id": agent.agent_id,
-                                     "reason": "awake — only sleeping agents can move"})
+                plan.skipped.append(
+                    {"agent_id": agent.agent_id, "reason": "awake — only sleeping agents can move"}
+                )
                 continue
             if agent.last_moved_hours_ago < cooldown_hours:
-                plan.skipped.append({"agent_id": agent.agent_id,
-                                     "reason": f"in cooldown ({cooldown_hours}h)"})
+                plan.skipped.append(
+                    {"agent_id": agent.agent_id, "reason": f"in cooldown ({cooldown_hours}h)"}
+                )
                 continue
             # pick the best grade-compatible target with headroom
             targets = sorted(
-                (n for n in nodes
-                 if n.node_id != src.node_id
-                 and n.grade >= agent.grade
-                 and free_slots.get(n.node_id, 0) > 0
-                 and ram_free.get(n.node_id, 0) - est_agent_gb >= ram_headroom_gb),
+                (
+                    n
+                    for n in nodes
+                    if n.node_id != src.node_id
+                    and n.grade >= agent.grade
+                    and free_slots.get(n.node_id, 0) > 0
+                    and ram_free.get(n.node_id, 0) - est_agent_gb >= ram_headroom_gb
+                ),
                 key=lambda n: -ram_free.get(n.node_id, 0),  # most headroom first
             )
             if not targets:
-                plan.skipped.append({"agent_id": agent.agent_id,
-                                     "reason": "no grade-compatible node with headroom"})
+                plan.skipped.append(
+                    {"agent_id": agent.agent_id, "reason": "no grade-compatible node with headroom"}
+                )
                 continue
             tgt = targets[0]
-            plan.moves.append(Move(
-                agent_id=agent.agent_id, from_node=src.node_id, to_node=tgt.node_id,
-                reason=(f"{src.name or src.node_id[:8]} pressured "
+            plan.moves.append(
+                Move(
+                    agent_id=agent.agent_id,
+                    from_node=src.node_id,
+                    to_node=tgt.node_id,
+                    reason=(
+                        f"{src.name or src.node_id[:8]} pressured "
                         f"(ram_free={src.ram_free_gb:.0f}G, pressure={src.pressure:.2f}); "
-                        f"{tgt.name or tgt.node_id[:8]} has headroom"),
-            ))
+                        f"{tgt.name or tgt.node_id[:8]} has headroom"
+                    ),
+                )
+            )
             # update working capacity so the next move sees the new state
             free_slots[tgt.node_id] -= 1
             ram_free[tgt.node_id] -= est_agent_gb
@@ -184,7 +196,6 @@ def plan_rebalance(
         plan.summary = f"{len(plan.moves)} move(s) proposed to relieve pressured node(s)."
     else:
         plan.summary = (
-            "Node(s) pressured but no eligible agent to move "
-            "(asleep + grade-fit + headroom)."
+            "Node(s) pressured but no eligible agent to move (asleep + grade-fit + headroom)."
         )
     return plan

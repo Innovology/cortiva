@@ -36,11 +36,26 @@ OPTIMIZE_SCHEDULE_TOOL: dict[str, Any] = {
                 },
                 "day_start": {"type": "number", "description": "Earliest hour (0-24)."},
                 "day_end": {"type": "number", "description": "Latest hour (0-24)."},
-                "w_overtime": {"type": "number", "description": "Weight: relieve overworked agents."},
-                "w_blocked": {"type": "number", "description": "Weight: protect manager oversight."},
-                "w_spread": {"type": "number", "description": "Weight: keep people overlapping (lower to spread)."},
-                "w_peak": {"type": "number", "description": "Weight: leave headroom under the ceiling."},
-                "w_preference": {"type": "number", "description": "Weight: honour preferred start times."},
+                "w_overtime": {
+                    "type": "number",
+                    "description": "Weight: relieve overworked agents.",
+                },
+                "w_blocked": {
+                    "type": "number",
+                    "description": "Weight: protect manager oversight.",
+                },
+                "w_spread": {
+                    "type": "number",
+                    "description": "Weight: keep people overlapping (lower to spread).",
+                },
+                "w_peak": {
+                    "type": "number",
+                    "description": "Weight: leave headroom under the ceiling.",
+                },
+                "w_preference": {
+                    "type": "number",
+                    "description": "Weight: honour preferred start times.",
+                },
                 "apply": {
                     "type": "boolean",
                     "description": "true to apply the rota, false for a dry-run preview.",

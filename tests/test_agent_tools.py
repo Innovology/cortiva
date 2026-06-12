@@ -34,17 +34,25 @@ class TestToolsForAgent:
 class TestOverlay:
     def test_tool_call_overlays_onto_suffix(self) -> None:
         suffix = ReflectionSuffix()
-        apply_tool_calls_to_suffix(suffix, [
-            {"name": "optimize_schedule",
-             "arguments": {"capacity_ceiling": 200, "apply": True}},
-        ])
+        apply_tool_calls_to_suffix(
+            suffix,
+            [
+                {
+                    "name": "optimize_schedule",
+                    "arguments": {"capacity_ceiling": 200, "apply": True},
+                },
+            ],
+        )
         assert suffix.optimize_schedule == {"capacity_ceiling": 200, "apply": True}
 
     def test_tool_call_takes_precedence_over_prose(self) -> None:
         suffix = ReflectionSuffix(optimize_schedule={"capacity_ceiling": 10})
-        apply_tool_calls_to_suffix(suffix, [
-            {"name": "optimize_schedule", "arguments": {"capacity_ceiling": 200}},
-        ])
+        apply_tool_calls_to_suffix(
+            suffix,
+            [
+                {"name": "optimize_schedule", "arguments": {"capacity_ceiling": 200}},
+            ],
+        )
         assert suffix.optimize_schedule == {"capacity_ceiling": 200}
 
     def test_unknown_tool_ignored(self) -> None:
@@ -65,10 +73,12 @@ class TestOpenAICompatToolParsing:
         class _Msg:
             content = "I will optimise the rota."
             tool_calls = [
-                SimpleNamespace(function=SimpleNamespace(
-                    name="optimize_schedule",
-                    arguments='{"capacity_ceiling": 130, "apply": true}',
-                ))
+                SimpleNamespace(
+                    function=SimpleNamespace(
+                        name="optimize_schedule",
+                        arguments='{"capacity_ceiling": 130, "apply": true}',
+                    )
+                )
             ]
 
         class _Resp:
@@ -87,15 +97,16 @@ class TestOpenAICompatToolParsing:
         monkeypatch.setattr(adapter, "_get_client", lambda agent_id="": _Client())
 
         resp = await adapter.think(
-            agent_id="ar-scheduler", context="ctx", prompt="do it",
+            agent_id="ar-scheduler",
+            context="ctx",
+            prompt="do it",
             tools=[OPTIMIZE_SCHEDULE_TOOL],
         )
         # tools were forwarded to the API
         assert "tools" in captured and captured["tool_choice"] == "auto"
         # tool_calls parsed into structured form
         assert resp.tool_calls == [
-            {"name": "optimize_schedule",
-             "arguments": {"capacity_ceiling": 130, "apply": True}},
+            {"name": "optimize_schedule", "arguments": {"capacity_ceiling": 130, "apply": True}},
         ]
 
     @pytest.mark.asyncio
@@ -103,6 +114,7 @@ class TestOpenAICompatToolParsing:
         from cortiva.adapters.consciousness.openai_compat import (
             OpenAICompatibleAdapter,
         )
+
         captured: dict = {}
 
         class _Msg:

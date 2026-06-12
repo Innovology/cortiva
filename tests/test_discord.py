@@ -259,7 +259,10 @@ class TestDiscordInterAgentCommunication:
         await adapter.listen("agent-b", ["100"])
 
         msg = _make_message(
-            1, 2001, "hello from A", bot=True,
+            1,
+            2001,
+            "hello from A",
+            bot=True,
             embeds=[_cortiva_embed("agent-a")],
         )
         _setup_channel(adapter, 100, [msg])
@@ -275,7 +278,10 @@ class TestDiscordInterAgentCommunication:
         await adapter.listen("agent-a", ["100"])
 
         msg = _make_message(
-            1, 2001, "my own message", bot=True,
+            1,
+            2001,
+            "my own message",
+            bot=True,
             embeds=[_cortiva_embed("agent-a")],
         )
         _setup_channel(adapter, 100, [msg])
@@ -290,7 +296,10 @@ class TestDiscordInterAgentCommunication:
         await adapter.listen("agent-b", ["100"])
 
         msg = _make_message(
-            1, 2001, "private to B", bot=True,
+            1,
+            2001,
+            "private to B",
+            bot=True,
             embeds=[_cortiva_embed("agent-c", recipient="agent-b")],
         )
 
@@ -350,7 +359,10 @@ class TestDiscordInterAgentCommunication:
         await adapter.listen("agent-b", ["100"])
 
         msg = _make_message(
-            1, 2001, "cortiva agent msg", bot=True,
+            1,
+            2001,
+            "cortiva agent msg",
+            bot=True,
             embeds=[_cortiva_embed("agent-a")],
         )
         _setup_channel(adapter, 100, [msg])

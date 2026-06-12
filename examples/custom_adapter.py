@@ -81,9 +81,7 @@ class LoggingMemoryAdapter:
         min_importance: float = 0.0,
     ) -> list[MemoryRecord]:
         self._log("recall", agent_id, f"limit={limit}")
-        results = await self._inner.recall(
-            agent_id, limit=limit, min_importance=min_importance
-        )
+        results = await self._inner.recall(agent_id, limit=limit, min_importance=min_importance)
         self._log("recall", agent_id, f"returned {len(results)} record(s)")
         return results
 

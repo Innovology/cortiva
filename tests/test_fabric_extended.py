@@ -14,7 +14,6 @@ from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
 from cortiva.core.fabric import Fabric
 from cortiva.core.reflection import ReflectionSuffix
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -84,7 +83,10 @@ class TestConsciousPlan:
         identity = agent.read_all_identity()
 
         result = await fabric._conscious_plan(
-            agent, identity, "ctx", "Make a checklist plan",
+            agent,
+            identity,
+            "ctx",
+            "Make a checklist plan",
             call_type="plan",
         )
         assert result is not None
@@ -101,7 +103,10 @@ class TestConsciousPlan:
         identity = agent.read_all_identity()
 
         result = await fabric._conscious_plan(
-            agent, identity, "ctx", "Make a checklist plan",
+            agent,
+            identity,
+            "ctx",
+            "Make a checklist plan",
         )
         assert result is None
 
@@ -115,7 +120,10 @@ class TestConsciousPlan:
 
         captured: list[str] = []
         await fabric._conscious_plan(
-            agent, identity, "ctx", "Make a checklist plan",
+            agent,
+            identity,
+            "ctx",
+            "Make a checklist plan",
             on_success=lambda text: captured.append(text),
         )
         assert len(captured) == 1
@@ -230,7 +238,9 @@ class TestProcessReflection:
 
         # Nothing in the shared tier.
         shared = await fabric.memory.recall(
-            "__org_shared__", limit=5, min_importance=6.0,
+            "__org_shared__",
+            limit=5,
+            min_importance=6.0,
         )
         assert not any("validate inputs" in m.content for m in shared)
 
@@ -266,8 +276,10 @@ class TestCheckApprovedTasks:
         agent = fabric.register_agent("appr-01")
 
         task = Task(
-            id="t1", description="Deploy to staging",
-            status="pending_approval", priority=0,
+            id="t1",
+            description="Deploy to staging",
+            status="pending_approval",
+            priority=0,
         )
         agent.task_queue = TaskQueue(tasks=[task])
 
@@ -434,6 +446,7 @@ class TestWakeMultiHorizonPlanning:
 
         # Plans should have been created
         from cortiva.core.planner import Planner
+
         planner = Planner(agent.directory)
         assert planner.store.current_monthly() is not None
         assert planner.store.current_weekly() is not None
@@ -445,6 +458,7 @@ class TestWakeMultiHorizonPlanning:
 
         # Pre-create plans
         from cortiva.core.planner import Planner
+
         planner = Planner(agent.directory)
         planner.save_monthly("Pre-existing monthly plan")
         planner.save_weekly("Pre-existing weekly plan")
@@ -478,14 +492,24 @@ class TestOrgFromAgents:
     def test_derives_reporting_and_departments(self, tmp_path: Path) -> None:
         fabric = _make_fabric(tmp_path)
         agents_dir = tmp_path / "agents"
-        _write_deploy(agents_dir, "ceo", name="Maren", department="executive",
-                      reports_to="human-founder", authority_level=5)
-        _write_deploy(agents_dir, "cpo", name="Astrid", department="product",
-                      reports_to="ceo", authority_level=5)
-        _write_deploy(agents_dir, "po", name="Yuki", department="product",
-                      reports_to="cpo")
-        _write_deploy(agents_dir, "dev", name="Amara", department="engineering",
-                      reports_to="po")
+        _write_deploy(
+            agents_dir,
+            "ceo",
+            name="Maren",
+            department="executive",
+            reports_to="human-founder",
+            authority_level=5,
+        )
+        _write_deploy(
+            agents_dir,
+            "cpo",
+            name="Astrid",
+            department="product",
+            reports_to="ceo",
+            authority_level=5,
+        )
+        _write_deploy(agents_dir, "po", name="Yuki", department="product", reports_to="cpo")
+        _write_deploy(agents_dir, "dev", name="Amara", department="engineering", reports_to="po")
 
         fabric.discover_agents()
 
@@ -505,12 +529,11 @@ class TestOrgFromAgents:
     def test_org_context_names_manager_and_reports(self, tmp_path: Path) -> None:
         fabric = _make_fabric(tmp_path)
         agents_dir = tmp_path / "agents"
-        _write_deploy(agents_dir, "ceo", name="Maren", department="executive",
-                      reports_to="human-founder")
-        _write_deploy(agents_dir, "cpo", name="Astrid", department="product",
-                      reports_to="ceo")
-        _write_deploy(agents_dir, "po", name="Yuki", department="product",
-                      reports_to="cpo")
+        _write_deploy(
+            agents_dir, "ceo", name="Maren", department="executive", reports_to="human-founder"
+        )
+        _write_deploy(agents_dir, "cpo", name="Astrid", department="product", reports_to="ceo")
+        _write_deploy(agents_dir, "po", name="Yuki", department="product", reports_to="cpo")
 
         fabric.discover_agents()
         ctx = fabric.org.org_context_for("cpo")
@@ -526,8 +549,7 @@ class TestOrgFromAgents:
         fabric._org_from_config = True
         agents_dir = tmp_path / "agents"
         _write_deploy(agents_dir, "x", name="X", department="d", reports_to="y")
-        _write_deploy(agents_dir, "y", name="Y", department="d",
-                      reports_to="human")
+        _write_deploy(agents_dir, "y", name="Y", department="d", reports_to="human")
 
         fabric.discover_agents()
         # Untouched: still the explicit config, not derived from deploy.yaml
@@ -545,13 +567,14 @@ class TestScheduleOptimization:
         fabric = _make_fabric(tmp_path)
         agents_dir = tmp_path / "agents"
         # COO has scheduling authority; give it reports so it's a manager.
-        _write_deploy(agents_dir, "coo", name="Marcus", department="operations",
-                      reports_to="ceo")
-        _write_deploy(agents_dir, "ceo", name="Maren", department="executive",
-                      reports_to="human-founder")
+        _write_deploy(agents_dir, "coo", name="Marcus", department="operations", reports_to="ceo")
+        _write_deploy(
+            agents_dir, "ceo", name="Maren", department="executive", reports_to="human-founder"
+        )
         for i in range(6):
-            _write_deploy(agents_dir, f"dev-{i}", name=f"Dev{i}",
-                          department="engineering", reports_to="coo")
+            _write_deploy(
+                agents_dir, f"dev-{i}", name=f"Dev{i}", department="engineering", reports_to="coo"
+            )
         fabric.discover_agents()
         return fabric
 
@@ -568,7 +591,7 @@ class TestScheduleOptimization:
         # Persisted to disk for restart survival.
         assert (tmp_path / "agents" / ".schedules.json").exists()
         # Reviewable artifact written.
-        note = (tmp_path / "agents" / "coo" / "today" / "schedule_optimization.md")
+        note = tmp_path / "agents" / "coo" / "today" / "schedule_optimization.md"
         assert note.exists()
         assert "Applied:** True" in note.read_text()
 
@@ -581,8 +604,7 @@ class TestScheduleOptimization:
 
         # Nothing applied — no persisted schedule, no artifact.
         assert not (tmp_path / "agents" / ".schedules.json").exists()
-        assert not (tmp_path / "agents" / "dev-0" / "today"
-                    / "schedule_optimization.md").exists()
+        assert not (tmp_path / "agents" / "dev-0" / "today" / "schedule_optimization.md").exists()
 
     @pytest.mark.asyncio
     async def test_persisted_rota_reloads_on_start(self, tmp_path: Path) -> None:
@@ -612,9 +634,14 @@ class TestToolCallExecutionPath:
                 return ConsciousResponse(
                     content="Optimising the workforce rota.",
                     model="m",
-                    tool_calls=[{"name": "optimize_schedule",
-                                 "arguments": {"capacity_ceiling": 200, "apply": True}}],
+                    tool_calls=[
+                        {
+                            "name": "optimize_schedule",
+                            "arguments": {"capacity_ceiling": 200, "apply": True},
+                        }
+                    ],
                 )
+
             async def reflect(self, agent_id, context, day_summary):
                 return ConsciousResponse(content="", model="m")
 
@@ -624,27 +651,33 @@ class TestToolCallExecutionPath:
             consciousness=_ToolMock(),
         )
         agents_dir = tmp_path / "agents"
-        _write_deploy(agents_dir, "coo", name="Marcus", department="operations",
-                      reports_to="ceo")
-        _write_deploy(agents_dir, "ceo", name="Maren", department="executive",
-                      reports_to="human-founder")
+        _write_deploy(agents_dir, "coo", name="Marcus", department="operations", reports_to="ceo")
+        _write_deploy(
+            agents_dir, "ceo", name="Maren", department="executive", reports_to="human-founder"
+        )
         for i in range(4):
-            _write_deploy(agents_dir, f"dev-{i}", name=f"D{i}",
-                          department="engineering", reports_to="coo")
+            _write_deploy(
+                agents_dir, f"dev-{i}", name=f"D{i}", department="engineering", reports_to="coo"
+            )
         fabric.discover_agents()
 
         coo = fabric.get_agent("coo")
-        coo.task_queue = TaskQueue(tasks=[
-            Task(id="t1", description="Optimise the workforce rota", status="pending", priority=2),
-        ])
+        coo.task_queue = TaskQueue(
+            tasks=[
+                Task(
+                    id="t1", description="Optimise the workforce rota", status="pending", priority=2
+                ),
+            ]
+        )
         coo.transition(AgentState.WAKING)
         coo.transition(AgentState.PLANNING)
         coo.transition(AgentState.EXECUTING)
 
         await fabric.cycle("coo")
 
-        assert (tmp_path / "agents" / ".schedules.json").exists(), \
+        assert (tmp_path / "agents" / ".schedules.json").exists(), (
             "tool_call did not apply the rota"
+        )
         note = tmp_path / "agents" / "coo" / "today" / "schedule_optimization.md"
         assert note.exists() and "Applied:** True" in note.read_text()
 
@@ -687,9 +720,11 @@ class TestScheduleDebounce:
 
 class TestPreSleepJournalRitual:
     async def _sleep_once(self, fabric, agent):
-        agent.task_queue = TaskQueue(tasks=[
-            Task(id="t", description="did work", status="done", outcome="ok"),
-        ])
+        agent.task_queue = TaskQueue(
+            tasks=[
+                Task(id="t", description="did work", status="done", outcome="ok"),
+            ]
+        )
         agent.transition(AgentState.WAKING)
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)
@@ -699,9 +734,10 @@ class TestPreSleepJournalRitual:
     async def test_sleep_writes_timestamped_entry_with_feelings(self, tmp_path: Path) -> None:
         fabric = _make_fabric(tmp_path)
         agent = fabric.register_agent("ritual-1", consciousness_budget=50)
-        agent.write_today("emotions.json",
-                          '{"satisfaction":0.6,"frustration":0.1,"curiosity":0.7,'
-                          '"confidence":0.6,"caution":0.1}')
+        agent.write_today(
+            "emotions.json",
+            '{"satisfaction":0.6,"frustration":0.1,"curiosity":0.7,"confidence":0.6,"caution":0.1}',
+        )
         await self._sleep_once(fabric, agent)
 
         journal = (agent.journal_path()).read_text()
@@ -748,8 +784,12 @@ class TestRoutineDeferDoesNotKill:
             routine=_DeferRoutine(),
         )
         agent = fabric.register_agent("d-1", consciousness_budget=50)
-        task = Task(id="t1", description="Send the cadence template to the team",
-                    status="pending", priority=1)
+        task = Task(
+            id="t1",
+            description="Send the cadence template to the team",
+            status="pending",
+            priority=1,
+        )
         agent.task_queue = TaskQueue(tasks=[task])
         agent.transition(AgentState.WAKING)
         agent.transition(AgentState.PLANNING)
@@ -771,7 +811,7 @@ class TestSleepGapCatchUp:
         def at(h, m=0):
             return datetime(2026, 6, 7, h, m, tzinfo=UTC)
 
-        assert fabric._in_sleep_gap("g-1", at(17)) is True   # past sleep
+        assert fabric._in_sleep_gap("g-1", at(17)) is True  # past sleep
         assert fabric._in_sleep_gap("g-1", at(12)) is False  # working
         assert fabric._in_sleep_gap("g-1", at(16, 5)) is False  # within grace
 
@@ -780,14 +820,15 @@ class TestSleepGapCatchUp:
 
         fabric = _make_fabric(tmp_path)
         fabric.scheduler.register(
-            "g-2", {"wake": "08:00,12:00", "sleep": "10:00,14:00"},
+            "g-2",
+            {"wake": "08:00,12:00", "sleep": "10:00,14:00"},
         )
 
         def at(h, m=0):
             return datetime(2026, 6, 7, h, m, tzinfo=UTC)
 
-        assert fabric._in_sleep_gap("g-2", at(11)) is True   # gap between windows
-        assert fabric._in_sleep_gap("g-2", at(9)) is False   # in window 1
+        assert fabric._in_sleep_gap("g-2", at(11)) is True  # gap between windows
+        assert fabric._in_sleep_gap("g-2", at(9)) is False  # in window 1
         assert fabric._in_sleep_gap("g-2", at(13)) is False  # in window 2
 
 
@@ -809,15 +850,21 @@ class TestOrphanedSessionReconcile:
 class TestEmailInboxContext:
     def test_inbox_injected_and_marked_read(self, tmp_path: Path) -> None:
         import json
+
         fabric = _make_fabric(tmp_path)
         agent = fabric.register_agent("ceo", consciousness_budget=10)
         inbox = agent.directory / "inbox"
         inbox.mkdir(parents=True, exist_ok=True)
-        (inbox / "m1.json").write_text(json.dumps({
-            "from": "alexander.browne@innovology.io",
-            "subject": "Welcome to the team",
-            "text": "Glad to have you, Maren.",
-        }), encoding="utf-8")
+        (inbox / "m1.json").write_text(
+            json.dumps(
+                {
+                    "from": "alexander.browne@innovology.io",
+                    "subject": "Welcome to the team",
+                    "text": "Glad to have you, Maren.",
+                }
+            ),
+            encoding="utf-8",
+        )
 
         ctx = fabric._email_inbox_context(agent)
         assert "New Mail" in ctx or "notification" in ctx.lower()
@@ -863,12 +910,12 @@ class TestBackfillConvictions:
         return soul
 
     @pytest.mark.asyncio
-    async def test_backfills_soul_without_convictions(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    async def test_backfills_soul_without_convictions(self, tmp_path: Path, monkeypatch) -> None:
         fabric = _make_fabric(tmp_path)
         soul = self._seed_soul(
-            fabric, "maren", "---\nagent_id: maren\n---\n\n# Maren — Persona\n\n"
+            fabric,
+            "maren",
+            "---\nagent_id: maren\n---\n\n# Maren — Persona\n\n"
             "Ambition: quietly relentless. Social style: reserved.\n",
         )
         fabric.register_agent("maren", consciousness_budget=10)
@@ -910,7 +957,8 @@ class TestBackfillConvictions:
             return _FakeDeepThink("new convictions " * 30)
 
         monkeypatch.setattr(
-            "cortiva.skills.claude_code_deep_think.wrapper.deep_think", _spy,
+            "cortiva.skills.claude_code_deep_think.wrapper.deep_think",
+            _spy,
         )
 
         await fabric._backfill_convictions()
@@ -919,12 +967,12 @@ class TestBackfillConvictions:
         assert soul.read_text(encoding="utf-8") == body  # untouched
 
     @pytest.mark.asyncio
-    async def test_idempotent_across_two_runs(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    async def test_idempotent_across_two_runs(self, tmp_path: Path, monkeypatch) -> None:
         fabric = _make_fabric(tmp_path)
         soul = self._seed_soul(
-            fabric, "noor", "# Noor — Persona\n\nAmbition: warm mentor.\n",
+            fabric,
+            "noor",
+            "# Noor — Persona\n\nAmbition: warm mentor.\n",
         )
         fabric.register_agent("noor", consciousness_budget=10)
 
@@ -935,21 +983,18 @@ class TestBackfillConvictions:
             return _FakeDeepThink("Conviction body that is plenty long. " * 8)
 
         monkeypatch.setattr(
-            "cortiva.skills.claude_code_deep_think.wrapper.deep_think", _spy,
+            "cortiva.skills.claude_code_deep_think.wrapper.deep_think",
+            _spy,
         )
 
         await fabric._backfill_convictions()
         await fabric._backfill_convictions()
 
         assert calls["n"] == 1  # second run is a no-op
-        assert soul.read_text(encoding="utf-8").count(
-            fabric._CONVICTIONS_HEADING
-        ) == 1
+        assert soul.read_text(encoding="utf-8").count(fabric._CONVICTIONS_HEADING) == 1
 
     @pytest.mark.asyncio
-    async def test_too_short_reply_leaves_soul_untouched(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    async def test_too_short_reply_leaves_soul_untouched(self, tmp_path: Path, monkeypatch) -> None:
         fabric = _make_fabric(tmp_path)
         body = "# Vera — Persona\n\nAmbition: master craftsperson.\n"
         soul = self._seed_soul(fabric, "vera", body)
@@ -981,7 +1026,10 @@ class _CountingConsciousness:
     async def think(self, agent_id, context, prompt, **kwargs):
         self.calls += 1
         return ConsciousResponse(
-            content=self.plan_body, tokens_in=10, tokens_out=5, model="mock",
+            content=self.plan_body,
+            tokens_in=10,
+            tokens_out=5,
+            model="mock",
         )
 
     async def reflect(self, agent_id, context, day_summary):
@@ -1062,6 +1110,4 @@ class TestIdleProactiveReassess:
         await fabric.cycle("idle-4")
         # The proactive reassess generated a real next task.
         assert agent.task_queue is not None
-        assert any(
-            "PR review" in t.description for t in agent.task_queue.tasks
-        )
+        assert any("PR review" in t.description for t in agent.task_queue.tasks)
