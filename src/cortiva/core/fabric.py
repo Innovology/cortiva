@@ -671,6 +671,11 @@ class Fabric:
         # Consume the hooks (they've been injected into the plan context)
         self.hook_router.pending_for(agent_id)
 
+        # Fresh, tested status of the load-bearing capabilities — keeps stale
+        # "X is blocked" beliefs from surviving contact with reality.
+        capstat = self._capability_status_context(agent)
+        if capstat:
+            context = context + "\n\n---\n\n" + capstat
         # Inject the agent's email inbox (delivered by the node from HQ).
         cap_ctx = self._email_capability_context(agent)
         if cap_ctx:
@@ -3355,6 +3360,76 @@ class Fabric:
         except (ValueError, OSError):
             return {}
 
+    def _capability_status_context(self, agent: Agent) -> str:
+        """Fresh, TESTED status of the load-bearing capabilities, as facts.
+
+        The node probes the real infrastructure each cycle — can outbound email
+        actually send, is GitHub auth live, is the local model up — and writes
+        the results to ``.capability_status.json``. We surface them here as
+        observations the agent should trust OVER its own memory or procedures.
+
+        This is the cure for self-sealing 'X is blocked' beliefs: an agent that
+        decided email was down then *relayed instead of emailing* never ran the
+        test that would disprove it. Putting a just-tested result in front of it
+        each wake means the belief is continuously reconciled with reality —
+        "tested 40s ago: email LIVE" beats "I think the channel is down".
+        """
+        import json
+
+        path = self.agents_dir / ".capability_status.json"
+        if not path.exists():
+            return ""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return ""
+        caps = data.get("capabilities") or data
+        if not isinstance(caps, dict) or not caps:
+            return ""
+        from datetime import UTC, datetime
+
+        age = ""
+        ts = data.get("probed_at")
+        if ts:
+            try:
+                dt = datetime.fromisoformat(str(ts))
+                secs = (datetime.now(UTC) - dt).total_seconds()
+                age = (
+                    f" — tested {int(secs)}s ago" if secs < 120
+                    else f" — tested {int(secs // 60)}m ago"
+                )
+            except (ValueError, TypeError):
+                age = ""
+        lines = [
+            f"## Live capability check{age} (TESTED — trust this over memory)\n",
+        ]
+        label = {
+            "email": "Email / reaching humans",
+            "github": "GitHub (push, PRs, CI)",
+            "model": "Local model",
+        }
+        for key, cap in caps.items():
+            if not isinstance(cap, dict):
+                continue
+            status = str(cap.get("status", "?")).upper()
+            detail = str(cap.get("detail", "")).strip()
+            lines.append(
+                f"- **{label.get(key, key)}: {status}**"
+                + (f" — {detail}" if detail else "")
+            )
+        lines.append(
+            "\nThese were just tested against the real infrastructure. If a "
+            "belief, procedure, or plan of yours says one of these is "
+            "missing/blocked when the check says it's LIVE/OK, **that belief is "
+            "stale — drop it and act on what's tested here.** Before you "
+            "escalate, journal, or route around something as 'blocked', confirm "
+            "it against this check (or, for anything not listed, run the cheapest "
+            "real test first). A workaround that avoids the blocked thing keeps "
+            "you blocked forever — the fastest unblock is usually to just try the "
+            "real thing once."
+        )
+        return "\n".join(lines)
+
     def _email_capability_context(self, agent: Agent) -> str:
         """Standing email context injected each wake (if email is set up):
         the agent's own address, how to send, the human contacts, and the
@@ -3899,6 +3974,12 @@ class Fabric:
         if inbox_ctx:
             context = context + "\n\n---\n\n" + inbox_ctx
 
+        # Fresh tested capability status — so a reassess that's about to escalate
+        # or work around a "blocker" sees what's actually live first.
+        capstat = self._capability_status_context(agent)
+        if capstat:
+            context = context + "\n\n---\n\n" + capstat
+
         can_replan = False
         approval = None
         if self.budget_manager:
@@ -3924,7 +4005,12 @@ class Fabric:
                     "tighten something you own, prepare what's coming. Be concrete "
                     "and specific — real tasks you can start, not vague intentions.\n"
                     "- ESCALATE only a GENUINE blocker you cannot clear yourself "
-                    "(emit an `escalation` field naming the thing and who from).\n\n"
+                    "(emit an `escalation` field naming the thing and who from) "
+                    "— but TEST IT FIRST this cycle: check the live capability "
+                    "check above, or just try the real action once. Don't "
+                    "escalate or route around a block you haven't actually "
+                    "tested; an assumption you've carried for days is usually "
+                    "already cleared.\n\n"
                     "If — after genuinely looking — there is truly nothing worth "
                     "doing right now, output an empty list and say so plainly; it's "
                     "fine to rest rather than invent busywork. Output ONLY the "
@@ -3951,7 +4037,12 @@ class Fabric:
                     "status, a task that isn't actually blocked, or something "
                     "you've already handled — no real blocker means no "
                     "escalation. A genuine block must not sit as a dead exception; "
-                    "a non-block must not become noise in someone's inbox.\n\n"
+                    "a non-block must not become noise in someone's inbox. And "
+                    "TEST a blocker before you escalate or work around it: check "
+                    "the live capability check above, or just try the real action "
+                    "once. A workaround that avoids the blocked thing keeps you "
+                    "blocked — most 'blockers' you've assumed for a while are "
+                    "already cleared.\n\n"
                     "Output ONLY the updated checklist of remaining + new tasks."
                 )
             response = await self.consciousness.think(

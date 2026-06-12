@@ -1065,3 +1065,65 @@ class TestIdleProactiveReassess:
         assert any(
             "PR review" in t.description for t in agent.task_queue.tasks
         )
+
+
+# ---------------------------------------------------------------------------
+# Belief-testing: capability status context + test-before-workaround
+# ---------------------------------------------------------------------------
+
+
+class TestCapabilityStatusContext:
+    def _write_status(self, fabric, caps, probed_at="2026-06-12T18:00:00+00:00"):
+        import json as _json
+        (fabric.agents_dir).mkdir(parents=True, exist_ok=True)
+        (fabric.agents_dir / ".capability_status.json").write_text(
+            _json.dumps({"probed_at": probed_at, "capabilities": caps}),
+            encoding="utf-8",
+        )
+
+    def test_missing_file_is_empty(self, tmp_path):
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("c1", consciousness_budget=10)
+        assert fabric._capability_status_context(agent) == ""
+
+    def test_surfaces_tested_capabilities_as_facts(self, tmp_path):
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("c2", consciousness_budget=10)
+        self._write_status(fabric, {
+            "email": {"status": "live", "detail": "Resend configured; email any human now"},
+            "github": {"status": "failed", "detail": "gh CLI auth not configured"},
+            "model": {"status": "up", "detail": "reachable"},
+        })
+        ctx = fabric._capability_status_context(agent)
+        assert "Live capability check" in ctx
+        assert "TESTED" in ctx
+        # Statuses surfaced
+        assert "LIVE" in ctx and "FAILED" in ctx and "UP" in ctx
+        # The anti-stale-belief instruction is present
+        assert "stale" in ctx.lower() and "drop it" in ctx.lower()
+        # The test-before-workaround instruction is present
+        assert "try the real thing once" in ctx.lower()
+
+    @pytest.mark.asyncio
+    async def test_replan_prompt_demands_test_before_workaround(self, tmp_path):
+        cons = _CountingConsciousness(plan_body="- [ ] do thing\n")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "c3")
+        captured = {}
+
+        async def _think(agent_id, context, prompt, **kw):
+            captured["prompt"] = prompt
+            captured["context"] = context
+            cons.calls += 1
+            return ConsciousResponse(content="- [ ] x\n", model="mock")
+
+        cons.think = _think  # type: ignore[assignment]
+        # capability status should also land in the replan context
+        self._write_status(fabric, {
+            "email": {"status": "live", "detail": "email any human now"},
+        })
+        await fabric._replan(agent, [], proactive=True)
+        assert "prompt" in captured
+        assert "test" in captured["prompt"].lower()
+        # the live capability check rode into the context
+        assert "Live capability check" in captured.get("context", "")
