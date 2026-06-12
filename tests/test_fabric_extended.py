@@ -1127,3 +1127,62 @@ class TestCapabilityStatusContext:
         assert "test" in captured["prompt"].lower()
         # the live capability check rode into the context
         assert "Live capability check" in captured.get("context", "")
+
+
+# ---------------------------------------------------------------------------
+# Manager-wakes-reports — authority-gated rally / call to arms
+# ---------------------------------------------------------------------------
+
+
+class TestManagerWake:
+    @pytest.mark.asyncio
+    async def test_manager_wakes_only_direct_reports(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock as _AM
+
+        fabric = _make_fabric(tmp_path, channel=_AM())
+        agents_dir = tmp_path / "agents"
+        _write_deploy(agents_dir, "cpo", name="Astrid", department="product",
+                      reports_to="ceo")
+        _write_deploy(agents_dir, "po", name="Yuki", department="product",
+                      reports_to="cpo")          # cpo's report
+        _write_deploy(agents_dir, "other", name="Z", department="eng",
+                      reports_to="ceo")          # NOT cpo's report
+        fabric.discover_agents()
+        assert set(fabric.org.subordinates_of("cpo")) == {"po"}
+
+        woken: list[str] = []
+
+        async def _spy_wake(aid):
+            woken.append(aid)
+            return fabric.agents[aid]
+
+        fabric.wake = _spy_wake  # type: ignore[assignment]
+
+        cpo = fabric.agents["cpo"]
+        task = Task(id="t1", description="rally", status="done")
+        suffix = ReflectionSuffix(
+            wake={"agents": ["po", "other"], "reason": "all hands — prod is down"}
+        )
+        await fabric._process_reflection(cpo, task, suffix)
+
+        # Only the actual report was woken; the non-report was ignored.
+        assert woken == ["po"]
+        # The report received the call-to-arms reason.
+        fabric.channel.send.assert_awaited()
+        kwargs = fabric.channel.send.await_args.kwargs
+        assert kwargs.get("recipient") == "po"
+        assert "all hands" in kwargs.get("content", "")
+
+    def test_org_context_advertises_wake_to_managers(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        agents_dir = tmp_path / "agents"
+        _write_deploy(agents_dir, "cpo", name="Astrid", department="product",
+                      reports_to="ceo")
+        _write_deploy(agents_dir, "po", name="Yuki", department="product",
+                      reports_to="cpo")
+        fabric.discover_agents()
+        ctx = fabric.org.org_context_for("cpo")
+        assert '"wake"' in ctx and "call to arms" in ctx
+        # An IC with no reports doesn't get the wake capability.
+        ic_ctx = fabric.org.org_context_for("po")
+        assert '"wake"' not in ic_ctx

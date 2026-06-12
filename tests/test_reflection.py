@@ -272,3 +272,14 @@ def test_deep_think_absent_is_none():
         'x\n---REFLECTION---\n{"outcome": "ok"}'
     )
     assert result.suffix.deep_think is None
+
+
+def test_wake_field_parsed():
+    from cortiva.core.reflection import parse_reflection_suffix
+    text = (
+        "Rallying the team.\n\n---REFLECTION---\n"
+        '{"wake": {"agents": ["amara", "yuki"], "reason": "ship blocker"}}'
+    )
+    res = parse_reflection_suffix(text)
+    assert res.suffix is not None
+    assert res.suffix.wake == {"agents": ["amara", "yuki"], "reason": "ship blocker"}

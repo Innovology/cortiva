@@ -2730,6 +2730,53 @@ class Fabric:
                     except PermissionError as exc:
                         logger.warning("Delegation rejected: %s", exc)
 
+        # Manager rallying their team — wake direct reports NOW (a crisis, a
+        # call to arms, or when the manager's own stress says they need the
+        # team in). Authority-gated: only THIS agent's actual reports (org
+        # chart) are woken; anyone else in the list is ignored.
+        if suffix.wake and isinstance(suffix.wake, dict):
+            targets = suffix.wake.get("agents") or []
+            reason = str(suffix.wake.get("reason") or "").strip()
+            reports = set(self.org.subordinates_of(agent.id)) if self.org else set()
+            for raw in targets if isinstance(targets, list) else []:
+                tid = str(raw).strip()
+                if not tid:
+                    continue
+                if tid not in reports:
+                    logger.info(
+                        "Agent %s tried to wake %s but they're not a direct "
+                        "report — ignored.", agent.id, tid,
+                    )
+                    continue
+                if tid not in self.agents:
+                    # Cross-node report — local fabric can't wake it directly.
+                    logger.info(
+                        "Agent %s wake of %s skipped — not on this node.",
+                        agent.id, tid,
+                    )
+                    continue
+                try:
+                    if self.agents[tid].state == AgentState.SLEEPING:
+                        await self.wake(tid)
+                    # Deliver the call-to-arms so the report knows WHY.
+                    if reason and self.channel:
+                        await self.channel.send(
+                            sender=agent.id, recipient=tid,
+                            content=f"[Woken by {agent.id} — call to arms] {reason}",
+                        )
+                    self._emit(
+                        "agent.woken_by_manager", agent_id=tid,
+                        by=agent.id, reason=reason,
+                    )
+                    logger.info(
+                        "Agent %s woke report %s (reason: %s)",
+                        agent.id, tid, reason[:80] or "—",
+                    )
+                except Exception:
+                    logger.exception(
+                        "Manager wake failed: %s -> %s", agent.id, tid,
+                    )
+
         # Process assignment completion
         if suffix.complete_assignment:
             completed = self.delegation.complete_assignment(

@@ -34,6 +34,13 @@ class ReflectionSuffix:
     """Work assignments to create for subordinates."""
     complete_assignment: str | None = None
     """Assignment ID to mark as completed."""
+    wake: dict[str, Any] | None = None
+    """A manager rallying their team: ``{"agents": ["id", ...], "reason":
+    "..."}``. Wakes the named reports NOW — for a crisis, a call to arms, or
+    when the manager's own stress (high cortisol) says they need the team in.
+    AUTHORITY-GATED: only the agents who actually report to this manager (per
+    the org chart) are woken; anyone else in the list is ignored. The runtime
+    wakes each eligible report and delivers the reason as a message."""
     shared_learning: str | None = None
     """Knowledge to write to the org-wide shared memory tier."""
     schedule: dict[str, Any] = field(default_factory=dict)
@@ -158,6 +165,7 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         escalation=data.get("escalation"),
         delegate=delegate,
         complete_assignment=data.get("complete_assignment"),
+        wake=data.get("wake") if isinstance(data.get("wake"), dict) else None,
         shared_learning=data.get("shared_learning"),
         schedule=data.get("schedule") or {},
         deep_think=data.get("deep_think"),

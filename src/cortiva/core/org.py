@@ -153,6 +153,16 @@ class OrgModel:
                 "You may delegate work to your reports via the "
                 "delegate field in your reflection."
             )
+            lines.append(
+                "When it genuinely matters — a crisis, a call to arms, or when "
+                "your own stress tells you that you need the team in now — you "
+                "can WAKE your reports immediately: emit "
+                '`"wake": {"agents": ["<id>", ...], "reason": "..."}`. Only your '
+                "own reports can be woken, and they'll get your reason. Use it "
+                "sparingly and with cause — pulling someone out of rest is a "
+                "real call; rallying them for nothing burns trust and their "
+                "recovery."
+            )
 
         peers = self.peers_of(agent_id)
         if peers:
