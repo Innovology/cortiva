@@ -282,6 +282,20 @@ class Fabric:
             # 60s headroom over the terminal's own timeout.
             term_timeout = float(getattr(self.terminal, "_timeout", 300.0))
             self.resource_guard.raise_cycle_timeout_floor(term_timeout + 60.0)
+        # Detached, steerable dev sessions (agent-as-driver). When the terminal
+        # is the claude-code adapter, hands-on work runs as a live `claude`
+        # session the agent drives and steers — OFF the heartbeat (so a long
+        # session never freezes the fleet) and capped at 2 concurrent per agent
+        # (Slot A = main, Slot B = verify/voice/critic). CORTIVA_DEV_SESSIONS=0
+        # forces the old synchronous one-shot path (instant rollback).
+        from cortiva.core.dev_sessions import DevSessionManager
+
+        self.dev_sessions = DevSessionManager(max_per_agent=2)
+        self._dev_sessions_enabled = (
+            self.terminal is not None
+            and type(self.terminal).__name__ == "ClaudeCodeAdapter"
+            and os.environ.get("CORTIVA_DEV_SESSIONS", "1") != "0"
+        )
         self.communication_tracker = CommunicationTracker()
         self.cluster_metrics = ClusterMetrics(
             communication_tracker=self.communication_tracker,
@@ -988,6 +1002,11 @@ class Fabric:
 
         # Re-activate any tasks that have been approved since last cycle
         self._check_approved_tasks(agent)
+
+        # Reap any detached dev sessions that finished since the last cycle —
+        # the agent applies its own completed work here (single-threaded), so
+        # the off-heartbeat session never races its task queue.
+        await self._reap_dev_sessions(agent)
 
         # Plugins observe the start of every cycle (cognitive pacing,
         # time-passage drift, etc.).
@@ -2609,6 +2628,13 @@ class Fabric:
             logger.warning(f"Terminal agent unavailable for {agent.id}, falling back")
             return None
 
+        # Agent-as-driver: run hands-on work as a DETACHED, steerable claude
+        # session off the heartbeat (capped at 2/agent), reaped at a later cycle.
+        # Falls through to the synchronous one-shot path below when disabled
+        # (CORTIVA_DEV_SESSIONS=0) or for non-claude terminals.
+        if self._dev_sessions_enabled:
+            return self._dispatch_dev_session(agent, task)
+
         # Build a prompt that includes agent identity context
         identity = agent.read_all_identity()
         procedures = identity.get("procedures", "")
@@ -2729,6 +2755,220 @@ class Fabric:
 
         logger.info(f"Agent {agent.id} completed task via terminal: {task.description[:60]}")
         return True
+
+    # ------------------------------------------------------------------
+    # Agent-as-driver: detached, steerable dev sessions (Slot A + Slot B)
+    # ------------------------------------------------------------------
+
+    _DEV_SESSION_TIMEOUT_S = 1800.0  # 30-min runaway backstop, NOT a work cap
+
+    def _dispatch_dev_session(self, agent: Agent, task: Task) -> bool:
+        """Launch (or defer) a detached dev session for a terminal task.
+
+        Returns True (handled) in every case: launched and now in-flight, or
+        deferred because the agent is at its 2-session cap (the task stays
+        pending and a later cycle launches it). Never blocks the cycle.
+        """
+        if self.dev_sessions.is_in_flight(agent.id, task.id):
+            return True  # a session already owns this task
+        ctx = self._terminal_context_for_session(agent, task)
+        launched = self.dev_sessions.launch(
+            agent.id, task.id,
+            lambda: self._run_dev_session(agent, task, ctx),
+        )
+        if launched:
+            task.status = "in_progress"
+            logger.info(
+                "Agent %s now driving a dev session: %s",
+                agent.id, task.description[:60],
+            )
+        # If not launched (at cap) the task stays pending for a later cycle.
+        return True
+
+    def _terminal_context_for_session(self, agent: Agent, task: Task) -> dict[str, Any]:
+        """Assemble the same execution context the synchronous terminal path
+        builds — prompt, cwd, env (creds + private CLAUDE_CONFIG_DIR), allowed
+        tools, resumed session — so a driven session behaves identically."""
+        identity = agent.read_all_identity()
+        prompt = (
+            f"You are {agent.id}. Execute this task:\n\n{task.description}\n\n"
+            f"## Your Procedures\n{identity.get('procedures', '')}\n\n"
+            f"## Your Responsibilities\n{identity.get('responsibilities', '')}\n\n"
+            "Do the work end to end. When done, summarise what you did and the outcome."
+        )
+        cwd = agent.directory / "workspace"
+        cwd.mkdir(parents=True, exist_ok=True)
+        envelope = self.isolation.prepare_terminal_env(agent_id=agent.id, cmd=[], cwd=cwd)
+
+        creds: dict[str, str] = {}
+        if self.credential_provider is not None:
+            try:
+                creds.update(self.credential_provider.get_env(agent.id))
+            except Exception:
+                logger.exception("Credential provider failed for %s", agent.id)
+        creds.update(load_agent_credentials(agent.directory))
+
+        config_dir = cwd / ".claude"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        creds["CLAUDE_CONFIG_DIR"] = str(config_dir)
+
+        session_file = cwd / ".claude_session"
+        try:
+            resume_session = (session_file.read_text(encoding="utf-8").strip() or None)
+        except OSError:
+            resume_session = None
+
+        base_env = dict(envelope.env) if envelope.env is not None else dict(os.environ)
+        env = {**base_env, **creds}
+        allowed_tools = self.policy_manager.get(agent.id).tools.effective_allowed()
+        return {
+            "prompt": prompt,
+            "cwd": envelope.cwd if envelope.cwd is not None else cwd,
+            "env": env,
+            "allowed_tools": allowed_tools,
+            "resume_session": resume_session,
+            "session_file": session_file,
+        }
+
+    async def _run_dev_session(
+        self, agent: Agent, task: Task, ctx: dict[str, Any],
+    ):
+        """Drive Slot A (the work) as a live, steerable session, then have Slot
+        B (Claude) question its output. Returns a SessionResult the agent reaps.
+
+        The agent (Myelin/Qwen) decides *when* to verify; the verification
+        itself is Claude's — so we never ask the local model to validate
+        Claude's technical work.
+        """
+        from cortiva.adapters.terminal.claude_session import ClaudeSession, Checkpoint
+        from cortiva.core.dev_sessions import SessionResult
+
+        model = getattr(self.terminal, "_model", None)
+
+        async def _drive(resume: str | None) -> tuple[str, str, int, bool]:
+            """Run one Slot-A session. Returns (final_text, session_id, tools, is_error)."""
+            s = ClaudeSession(
+                cwd=ctx["cwd"], model=model, env=ctx["env"],
+                allowed_tools=ctx["allowed_tools"] or None,
+                resume=resume,
+            )
+            final, sid, tools, err = "", "", 0, False
+            await s.start(ctx["prompt"])
+            try:
+                async for ev in s.events():
+                    if ev.session_id:
+                        sid = ev.session_id
+                    if ev.checkpoint is Checkpoint.TOOL or ev.checkpoint is Checkpoint.DESTRUCTIVE:
+                        tools += 1
+                        if ev.checkpoint is Checkpoint.DESTRUCTIVE:
+                            logger.info(
+                                "Agent %s session: destructive step %s", agent.id, ev.tool_name,
+                            )
+                    elif ev.checkpoint is Checkpoint.DONE:
+                        final, err = ev.text, ev.is_error
+                        break
+            finally:
+                await s.close()
+            return final, sid, tools, err
+
+        try:
+            final, sid, tools, err = await asyncio.wait_for(
+                _drive(ctx["resume_session"]), timeout=self._DEV_SESSION_TIMEOUT_S,
+            )
+            # Stale session id errors immediately — retry once from a clean one.
+            if err and ctx["resume_session"]:
+                final, sid, tools, err = await asyncio.wait_for(
+                    _drive(None), timeout=self._DEV_SESSION_TIMEOUT_S,
+                )
+        except TimeoutError:
+            return SessionResult(
+                agent_id=agent.id, task_id=task.id, ok=False,
+                error=f"session exceeded {self._DEV_SESSION_TIMEOUT_S:.0f}s backstop",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return SessionResult(
+                agent_id=agent.id, task_id=task.id, ok=False, error=f"session error: {exc}",
+            )
+
+        if sid:
+            try:
+                ctx["session_file"].write_text(sid, encoding="utf-8")
+            except OSError:
+                pass
+
+        if err or not final:
+            return SessionResult(
+                agent_id=agent.id, task_id=task.id, ok=False,
+                error=(final or "session produced no result")[:300],
+                session_id=sid, tools_used=tools,
+            )
+
+        # Slot B questions Slot A's output — Claude reviewing Claude.
+        critique = await self._slot_b_critique(task.description, final, ctx["env"])
+        return SessionResult(
+            agent_id=agent.id, task_id=task.id, ok=True,
+            outcome=final[:500], session_id=sid, tools_used=tools, critique=critique,
+        )
+
+    async def _slot_b_critique(self, task_desc: str, outcome: str, env: dict) -> str:
+        """Slot B: a quick Claude pass that challenges Slot A's output. Returns
+        a one-line verdict (or '' if unavailable). Best-effort — never fatal."""
+        try:
+            from cortiva.skills.claude_code_deep_think.wrapper import deep_think
+
+            res = await asyncio.to_thread(
+                deep_think,
+                (
+                    "You are a senior reviewer. A colleague was asked to do this "
+                    f"task:\n{task_desc}\n\nThey report:\n{outcome}\n\n"
+                    "In ONE line: is this actually complete and correct? If "
+                    "something's missing, wrong, or unverified, say so plainly. "
+                    "If it's solid, reply 'LGTM'."
+                ),
+                timeout_s=60.0,
+                extra_args=["--model", "haiku"],
+            )
+            return (res.text or "").strip()[:300]
+        except Exception:
+            return ""
+
+    async def _reap_dev_sessions(self, agent: Agent) -> None:
+        """Apply finished detached sessions to the agent's own queue — done at
+        the start of its cycle, single-threaded, so no concurrent state races."""
+        if not self._dev_sessions_enabled or agent.task_queue is None:
+            return
+        for r in self.dev_sessions.drain_completed(agent.id):
+            task = next((t for t in agent.task_queue.tasks if t.id == r.task_id), None)
+            if task is None:
+                continue
+            if r.ok:
+                task.status = "done"
+                task.outcome = r.outcome or "Completed via dev session"
+                agent.tasks_completed_today += 1
+                note = f"Task: {task.description}. Outcome: {task.outcome[:200]}"
+                if r.critique and r.critique.upper() != "LGTM":
+                    note += f" | Reviewer: {r.critique[:150]}"
+                try:
+                    await self.memory.store(
+                        agent_id=agent.id, content=note,
+                        tags=["cycle", "task", "dev_session"],
+                        importance=5.0 + task.priority,
+                    )
+                except Exception:
+                    logger.debug("memory store failed for reaped session", exc_info=True)
+                logger.info(
+                    "Agent %s dev session done (%d tools): %s",
+                    agent.id, r.tools_used, task.description[:50],
+                )
+            else:
+                task.status = "exception"
+                task.error = r.error[:200]
+                agent.task_queue.exceptions.append(task)
+                agent.tasks_escalated_today += 1
+                logger.warning(
+                    "Agent %s dev session failed: %s — %s",
+                    agent.id, task.description[:50], r.error[:120],
+                )
 
     async def _conscious_plan(
         self,
@@ -4244,6 +4484,12 @@ class Fabric:
         """Stop the fabric. Sleep all active agents and close IPC."""
         logger.info("Stopping Cortiva fabric")
         self._running = False
+
+        # Cancel any in-flight detached dev sessions (graceful reload/stop).
+        try:
+            await self.dev_sessions.shutdown()
+        except Exception:
+            logger.debug("dev session shutdown error", exc_info=True)
 
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
