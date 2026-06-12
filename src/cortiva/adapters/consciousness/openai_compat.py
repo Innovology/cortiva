@@ -200,9 +200,16 @@ class OpenAICompatibleAdapter:
         choice = response.choices[0]
         content = choice.message.content or ""
         usage = response.usage
-        if usage:
-            self._perf_tokens_in_total += usage.prompt_tokens or 0
-            self._record_perf(usage.completion_tokens or 0, latency_ms)
+        if usage and (usage.prompt_tokens or 0) > 0:
+            self._perf_tokens_in_total += usage.prompt_tokens
+        # MLX's OpenAI-compat server often omits `usage`, which left tok/s
+        # reporting 0 (no calls ever recorded). Fall back to estimating
+        # completion tokens from the content (~4 chars/token) so the throughput
+        # gauge isn't blind — an honest approximation beats a permanent zero.
+        completion_toks = (usage.completion_tokens if usage else 0) or 0
+        if completion_toks <= 0:
+            completion_toks = max(1, len(content) // 4)
+        self._record_perf(completion_toks, latency_ms)
 
         tool_calls: list[dict[str, Any]] = []
         raw_calls = getattr(choice.message, "tool_calls", None) or []

@@ -27,6 +27,48 @@ from typing import Any
 logger = logging.getLogger("cortiva.capacity")
 
 
+def _ram_gb_stdlib() -> tuple[float, float, float]:
+    """Read RAM without psutil: (total, available, percent_used) in GB.
+
+    The nodes don't ship psutil, so the capacity snapshot was reporting 0GB.
+    macOS via sysctl + vm_stat; Linux via /proc/meminfo. Best-effort — returns
+    zeros if neither works."""
+    import platform
+    import re
+    import subprocess
+
+    total = avail = 0.0
+    try:
+        if platform.system() == "Darwin":
+            total = int(
+                subprocess.run(
+                    ["sysctl", "-n", "hw.memsize"],
+                    capture_output=True, text=True, timeout=3,
+                ).stdout.strip()
+            ) / (1024 ** 3)
+            vm = subprocess.run(
+                ["vm_stat"], capture_output=True, text=True, timeout=3,
+            ).stdout
+            page = 4096
+            def _pages(label: str) -> int:
+                m = re.search(rf"{label}:\s+(\d+)", vm)
+                return int(m.group(1)) if m else 0
+            free = _pages("Pages free") + _pages("Pages inactive") + _pages("Pages purgeable")
+            avail = free * page / (1024 ** 3)
+        else:
+            mi: dict[str, str] = {}
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    k, _, v = line.partition(":")
+                    mi[k.strip()] = v.strip()
+            total = int(mi.get("MemTotal", "0").split()[0]) / (1024 ** 2)
+            avail = int(mi.get("MemAvailable", "0").split()[0]) / (1024 ** 2)
+    except Exception:
+        return 0.0, 0.0, 0.0
+    percent = round((1 - avail / total) * 100, 1) if total > 0 else 0.0
+    return round(total, 2), round(avail, 2), percent
+
+
 @dataclass
 class TaskTiming:
     """Timing data for a single task execution."""
@@ -206,7 +248,8 @@ class CapacityTracker:
         """
         cpu_cores = os.cpu_count() or 1
 
-        # RAM (try psutil, fallback gracefully)
+        # RAM — psutil if present, else a stdlib read (the nodes don't ship
+        # psutil, which left the capacity snapshot reporting 0GB).
         ram_total_gb = 0.0
         ram_available_gb = 0.0
         ram_percent = 0.0
@@ -216,8 +259,10 @@ class CapacityTracker:
             ram_total_gb = mem.total / (1024 ** 3)
             ram_available_gb = mem.available / (1024 ** 3)
             ram_percent = mem.percent
-        except ImportError:
+        except Exception:
             pass
+        if ram_total_gb <= 0:
+            ram_total_gb, ram_available_gb, ram_percent = _ram_gb_stdlib()
 
         # Disk
         try:
