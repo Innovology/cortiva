@@ -1186,3 +1186,31 @@ class TestManagerWake:
         # An IC with no reports doesn't get the wake capability.
         ic_ctx = fabric.org.org_context_for("po")
         assert '"wake"' not in ic_ctx
+
+
+class TestForcedWakeOverride:
+    @pytest.mark.asyncio
+    async def test_forced_wake_sets_override_window(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("fw-1", consciousness_budget=10)
+        await fabric.wake("fw-1", override_minutes=45)
+        assert fabric._wake_override_active(agent, datetime.now(UTC)) is True
+
+    @pytest.mark.asyncio
+    async def test_normal_wake_has_no_override(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("fw-2", consciousness_budget=10)
+        await fabric.wake("fw-2")  # rota wake, no override
+        assert fabric._wake_override_active(agent, datetime.now(UTC)) is False
+
+    @pytest.mark.asyncio
+    async def test_override_expires(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime, timedelta
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("fw-3", consciousness_budget=10)
+        await fabric.wake("fw-3", override_minutes=45)
+        # A moment after the window has passed → no longer active.
+        future = datetime.now(UTC) + timedelta(minutes=46)
+        assert fabric._wake_override_active(agent, future) is False

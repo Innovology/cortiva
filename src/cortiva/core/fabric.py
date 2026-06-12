@@ -539,11 +539,34 @@ class Fabric:
 
     # ----- Lifecycle operations -----
 
-    async def wake(self, agent_id: str) -> Agent:
-        """Wake an agent. Loads identity and begins planning."""
+    # How long a forced (operator/manager) wake overrides the rota's
+    # re-sleep — long enough to actually work a crisis, not the 17s the rota
+    # otherwise allows when you're woken outside your shift.
+    _WAKE_OVERRIDE_MINUTES = 45.0
+
+    async def wake(self, agent_id: str, *, override_minutes: float = 0.0) -> Agent:
+        """Wake an agent. Loads identity and begins planning.
+
+        ``override_minutes`` > 0 marks this as a FORCED wake (operator or a
+        manager rallying the team): for that long, the heartbeat's
+        sleep-gap catch-up and exhaustion wind-down won't immediately put the
+        agent back to sleep, so a crisis wake outside scheduled hours actually
+        sticks. A normal rota wake passes 0 and behaves exactly as before.
+        """
         agent = self.get_agent(agent_id)
         agent.transition(AgentState.WAKING)
-        logger.info(f"Waking agent: {agent_id}")
+        if override_minutes and override_minutes > 0:
+            from datetime import UTC, datetime, timedelta
+
+            agent._wake_override_until = datetime.now(UTC) + timedelta(
+                minutes=override_minutes,
+            )
+            logger.info(
+                "Force-waking agent %s — rota re-sleep suppressed for %.0fm",
+                agent_id, override_minutes,
+            )
+        else:
+            logger.info(f"Waking agent: {agent_id}")
 
         # Keep the org chart current. Reassignments are applied to
         # deploy.yaml out-of-band (by the node client, a separate process),
@@ -2757,7 +2780,9 @@ class Fabric:
                     continue
                 try:
                     if self.agents[tid].state == AgentState.SLEEPING:
-                        await self.wake(tid)
+                        await self.wake(
+                            tid, override_minutes=self._WAKE_OVERRIDE_MINUTES,
+                        )
                     # Deliver the call-to-arms so the report knows WHY.
                     if reason and self.channel:
                         await self.channel.send(
@@ -3951,6 +3976,16 @@ class Fabric:
         except Exception:
             return False
 
+    def _wake_override_active(self, agent: Agent, now: Any = None) -> bool:
+        """True if this agent was force-woken (operator/manager) and is still
+        inside its grace window — the rota must not re-sleep it yet."""
+        until = getattr(agent, "_wake_override_until", None)
+        if until is None:
+            return False
+        from datetime import UTC, datetime
+
+        return (now or datetime.now(UTC)) < until
+
     def _has_urgent_pending(self, agent: Agent) -> bool:
         """True if the agent still has pending work above routine priority —
         used to hold off exhaustion wind-down so a tired agent never abandons
@@ -4178,9 +4213,11 @@ class Fabric:
 
         now = datetime.now(UTC)
         for agent_id, agent in list(self.agents.items()):
-            if agent.state in (
-                AgentState.EXECUTING, AgentState.REPLANNING,
-            ) and self._in_sleep_gap(agent_id, now):
+            if (
+                agent.state in (AgentState.EXECUTING, AgentState.REPLANNING)
+                and self._in_sleep_gap(agent_id, now)
+                and not self._wake_override_active(agent, now)
+            ):
                 try:
                     logger.info(
                         "Catch-up sleep for %s — overran its sleep window",
@@ -4201,6 +4238,8 @@ class Fabric:
                 continue
             if self._has_urgent_pending(agent):
                 continue
+            if self._wake_override_active(agent, now):
+                continue  # force-woken for a crisis — let them work it
             try:
                 if await self.plugin_manager.dispatch_should_wind_down(agent_id):
                     logger.info(
@@ -4278,11 +4317,21 @@ class Fabric:
         async def _handle_status(**_kw: Any) -> dict[str, Any]:
             return {"ok": True, **self.status()}
 
-        async def _handle_agent_wake(agent_id: str = "", **_kw: Any) -> dict[str, Any]:
+        async def _handle_agent_wake(
+            agent_id: str = "", override_minutes: float = -1.0, **_kw: Any
+        ) -> dict[str, Any]:
             if not agent_id:
                 return {"ok": False, "error": "agent_id required"}
             try:
-                agent = await self.wake(agent_id)
+                # A relayed wake (from HQ/operator/manager) is a FORCED wake by
+                # default — it must stick past the rota. -1 sentinel = use the
+                # default grace; an explicit 0 keeps the old rota-respecting wake.
+                grace = (
+                    self._WAKE_OVERRIDE_MINUTES
+                    if override_minutes < 0
+                    else override_minutes
+                )
+                agent = await self.wake(agent_id, override_minutes=grace)
                 return {"ok": True, "agent_id": agent_id, "state": agent.state.value}
             except (KeyError, ValueError) as exc:
                 return {"ok": False, "error": str(exc)}
