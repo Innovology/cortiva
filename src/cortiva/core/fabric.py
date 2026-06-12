@@ -1491,10 +1491,18 @@ class Fabric:
 
             new_dir = self.agents_dir / persona.slug
             (new_dir / "identity").mkdir(parents=True, exist_ok=True)
-            for key, content in HiringManager().identity_files(persona).items():
+            hm = HiringManager()
+            for key, content in hm.identity_files(persona).items():
                 (new_dir / "identity" / f"{key}.md").write_text(
                     content, encoding="utf-8",
                 )
+            # Convictions & worldview — the substance behind "strong opinions".
+            # A frontier pass mints a specific, idiosyncratic worldview for this
+            # hire (seeded by two opposed conviction seeds so same-role hires
+            # diverge); if no model is reachable, a deterministic fallback still
+            # gives them hills to die on. This is what stops every agent
+            # thinking — and writing — in the same flat voice.
+            convictions = await self._generate_convictions(persona, hm)
             # soul.md with disposition front-matter so the emotion engine
             # reads this hire's individual weights.
             import yaml as _yaml
@@ -1505,7 +1513,10 @@ class Fabric:
                 + "---\n\n"
                 + f"# {persona.name} — Persona\n\n"
                 + f"Ambition: {persona.ambition.label}. "
-                + f"Social style: {persona.social.label}.\n"
+                + f"Social style: {persona.social.label}.\n\n"
+                + "## Convictions & Worldview\n\n"
+                + convictions.rstrip()
+                + "\n"
             )
             (new_dir / "identity" / "soul.md").write_text(soul, encoding="utf-8")
             # Minimal deploy.yaml so HQ/portal and node scans see the hire.
@@ -1549,6 +1560,45 @@ class Fabric:
             )
         except Exception:
             logger.exception("Hire provisioning failed for %s", agent.id)
+
+    async def _generate_convictions(self, persona: Any, hm: Any) -> str:
+        """Mint a new hire's worldview via a frontier pass, deterministic
+        fallback if none is reachable.
+
+        Opus (not the local model) because this is the one creative-writing
+        moment that defines who the agent IS for the rest of their life — a
+        seed worth spending a frontier call on. Best-effort: any failure or an
+        unconfigured terminal drops cleanly to the deterministic convictions so
+        a hire is never blocked on model availability.
+        """
+        try:
+            from cortiva.skills.claude_code_deep_think.wrapper import deep_think
+
+            res = await asyncio.to_thread(
+                deep_think,
+                hm.conviction_prompt(persona),
+                timeout_s=120.0,
+                extra_args=["--model", "opus"],
+            )
+            text = (res.text or "").strip()
+            # Guard against a terse/empty model reply collapsing the section —
+            # a too-short answer is worse than the honest deterministic one.
+            if len(text) >= 120:
+                logger.info(
+                    "Minted convictions for %s (%d chars, opus)",
+                    persona.slug, len(text),
+                )
+                return text
+            logger.info(
+                "Conviction pass for %s returned too little (%d chars) — "
+                "using deterministic fallback", persona.slug, len(text),
+            )
+        except Exception:
+            logger.info(
+                "Conviction pass unavailable for %s — using deterministic "
+                "fallback", persona.slug, exc_info=True,
+            )
+        return hm.fallback_convictions(persona)
 
     # ------------------------------------------------------------------
     # Workforce scheduling — the AR Scheduler's tool

@@ -8,6 +8,7 @@ from collections import Counter
 
 from cortiva.core.hiring import (
     AMBITION_ARCHETYPES,
+    CONVICTION_SEEDS,
     SOCIAL_ARCHETYPES,
     HiringManager,
 )
@@ -66,3 +67,52 @@ def test_slug_is_unique_and_meaningful():
     p = mgr.generate(role="Product Owner")
     assert p.name.lower() in p.slug
     assert p.slug == p.slug.lower()
+
+
+def test_each_hire_draws_two_distinct_conviction_seeds():
+    mgr = HiringManager(random.Random(11))
+    for _ in range(200):
+        p = mgr.generate(role="Developer")
+        assert len(p.conviction_seeds) == 2
+        assert p.conviction_seeds[0] != p.conviction_seeds[1]
+        for s in p.conviction_seeds:
+            assert s in CONVICTION_SEEDS
+
+
+def test_same_role_hires_diverge_on_convictions():
+    """The whole point: two developers hired together argue from different
+    corners — friction by design, not role-stamped agreement."""
+    mgr = HiringManager(random.Random(2))
+    pairs = {
+        tuple(sorted(mgr.generate(role="Developer").conviction_seeds))
+        for _ in range(8)
+    }
+    # 8 hires should yield several distinct conviction pairings, not one.
+    assert len(pairs) >= 5
+
+
+def test_fallback_convictions_are_opinionated():
+    mgr = HiringManager(random.Random(4))
+    p = mgr.generate(role="CFO", department="finance")
+    text = mgr.fallback_convictions(p)
+    # Both seeds surface as hills to die on, in the hire's voice.
+    assert "Hills I'll die on" in text
+    for s in p.conviction_seeds:
+        assert s in text
+    assert p.social.label in text
+    assert "push back" in text
+
+
+def test_conviction_prompt_is_role_and_person_specific():
+    mgr = HiringManager(random.Random(6))
+    p = mgr.generate(role="Head of Design", department="design")
+    prompt = mgr.conviction_prompt(p)
+    assert p.name in prompt
+    assert p.role in prompt
+    assert p.ambition.label in prompt
+    assert p.social.label in prompt
+    for s in p.conviction_seeds:
+        assert s in prompt
+    # Asks for first-person, arguable, no-filler convictions.
+    assert "FIRST PERSON" in prompt
+    assert "Hills I'll die on" in prompt

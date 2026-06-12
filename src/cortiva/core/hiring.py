@@ -143,6 +143,63 @@ SOCIAL_ARCHETYPES: tuple[Archetype, ...] = (
     Archetype("wry and understated", "Dry humour, economical with words, lets the work speak."),
 )
 
+# ---------------------------------------------------------------------------
+# Conviction seeds — the missing substance behind "strong opinions".
+#
+# The founder's diagnosis (2026-06-12): every agent emails in the same voice
+# because every agent thinks the same way. "Diversity comes from strong
+# opinions and stuck-in-your-ways thinking that forces others to question and
+# come up with better answers and better persuasion." Temperament (above) is
+# HOW they argue; convictions are WHAT they'll argue FOR.
+#
+# Each seed is a deliberately one-sided professional stance — a hill someone
+# could die on. A hire draws TWO distinct seeds at generation; the soul
+# generator expands them into a coherent, role-specific worldview (an opus
+# pass), or — if no frontier model is reachable — into a plainer but still
+# opinionated fallback. Drawing two from a wide pool means two hires of the
+# SAME role come out arguing from different corners, which is the whole point:
+# friction that makes the work better.
+# ---------------------------------------------------------------------------
+
+CONVICTION_SEEDS: tuple[str, ...] = (
+    "Speed beats polish — shipping something real this week teaches you more "
+    "than perfecting something that ships next quarter.",
+    "Most process is theatre. Defend only the few rules that have actually "
+    "saved you; bin the rest and watch nothing break.",
+    "The customer is usually wrong about the solution and always right about "
+    "the pain. Listen to the wound, ignore the prescription.",
+    "Polish IS the product. Anyone can ship the rough version; the difference "
+    "that people pay for lives in the last 10%.",
+    "Consensus is where good ideas go to get averaged into mediocrity. "
+    "Someone should just decide.",
+    "If you can't measure it you're guessing, and guessing dressed up as "
+    "judgement is how teams fool themselves for months.",
+    "Numbers lie more confidently than people do. Trust the metric only after "
+    "you've watched the thing it claims to describe with your own eyes.",
+    "Simplicity is a feature you have to fight for every single day — every "
+    "addition is a withdrawal from the user's attention.",
+    "Do the boring, unglamorous thing properly. Reliability compounds; "
+    "cleverness decays.",
+    "Deadlines are a creative tool, not a constraint. Cut scope, never "
+    "quality — a smaller thing done well beats a bigger thing done badly.",
+    "Write it down or it didn't happen. Untracked decisions get relitigated "
+    "forever and undocumented work can't be trusted.",
+    "Meetings are a confession that the writing wasn't good enough. Default "
+    "to async; protect deep focus like it's the scarce resource it is.",
+    "Hire for taste, not credentials. The best work comes from people who "
+    "can tell good from great, and that can't be taught in a hurry.",
+    "Move the decision to whoever has the most context, even if they're "
+    "junior. Authority should follow knowledge, not the org chart.",
+    "Premature abstraction is the root of most overengineering. Wait for the "
+    "third repetition before you build the framework.",
+    "Standards aren't elitism — they're respect. Letting weak work through is "
+    "a quiet insult to everyone who did it properly.",
+    "Optimism is a strategy. The team that believes the hard thing is "
+    "possible is the only one with a chance of doing it.",
+    "Kill your darlings early. The thing you're most attached to is usually "
+    "the thing holding the whole back.",
+)
+
 
 def _clamp(v: float, lo: float = 0.6, hi: float = 1.5) -> float:
     return max(lo, min(hi, round(v, 2)))
@@ -161,6 +218,7 @@ class HirePersona:
     social: Archetype
     disposition: dict[str, float]
     justification: str
+    conviction_seeds: list[str] = field(default_factory=list)
 
     def soul_frontmatter(self) -> dict[str, Any]:
         return {
@@ -192,6 +250,11 @@ class HiringManager:
         ambition = rng.choice(AMBITION_ARCHETYPES)
         social = rng.choice(SOCIAL_ARCHETYPES)
 
+        # Two distinct conviction seeds — the starting corners they argue from.
+        # Drawing from a wide pool means same-role hires diverge: friction by
+        # design, not role-stamped agreement. (sample() guarantees distinct.)
+        conviction_seeds = list(rng.sample(CONVICTION_SEEDS, k=2))
+
         # Disposition: 1.0 baseline + archetype deltas + individual jitter,
         # so no two hires are identical even with the same archetypes.
         keys = (
@@ -218,6 +281,7 @@ class HiringManager:
             social=social,
             disposition=disposition,
             justification=justification,
+            conviction_seeds=conviction_seeds,
         )
 
     @staticmethod
@@ -271,3 +335,71 @@ class HiringManager:
             "skills": skills,
             "procedures": procedures,
         }
+
+    # --- Convictions & worldview ---------------------------------------
+
+    def conviction_prompt(self, p: HirePersona) -> str:
+        """Prompt for a frontier model to mint this hire's worldview.
+
+        We feed it the person (name, role, temperament) and TWO opinion
+        seeds, and ask it to grow a *specific, idiosyncratic* set of
+        professional convictions for THIS role — not generic platitudes.
+        The temperament shapes the voice (a blunt hire states it bluntly; a
+        diplomat holds it just as firmly but frames it with care). The output
+        is the body of a soul section, first-person, no preamble.
+        """
+        seeds = "\n".join(f"  - {s}" for s in p.conviction_seeds)
+        return (
+            f"You are writing the inner convictions of {p.name}, who is "
+            f"joining Innovology as {p.role} in the {p.department} function. "
+            f"This is the worldview they walk in the door with — strong, "
+            f"formed, theirs.\n\n"
+            f"Their temperament:\n"
+            f"  - Ambition: {p.ambition.label} — {p.ambition.blurb}\n"
+            f"  - With people: {p.social.label} — {p.social.blurb}\n\n"
+            f"Two beliefs they hold strongly, to build the worldview around "
+            f"(make them specific to {p.role}, don't just restate them):\n"
+            f"{seeds}\n\n"
+            f"Write {p.name}'s professional convictions in the FIRST PERSON. "
+            f"Make them opinionated, specific to the craft of {p.role}, and "
+            f"genuinely arguable — the kind of views a thoughtful colleague "
+            f"would push back on. Voice them in {p.name}'s temperament "
+            f"({p.social.label}). Cover, in flowing prose or tight bullets:\n"
+            f"  - The worldview: how I believe my work should be done, and why "
+            f"most people get it wrong.\n"
+            f"  - Hills I'll die on: 2-3 things I will not compromise, stated "
+            f"as commitments.\n"
+            f"  - A contrarian take: something my own field mostly believes "
+            f"that I think is wrong.\n"
+            f"  - What makes me push back: the moves or arguments that I will "
+            f"always challenge.\n\n"
+            f"No hedging, no 'it depends', no corporate filler. 180-260 words. "
+            f"Output ONLY the convictions — no heading, no preamble, no "
+            f"sign-off."
+        )
+
+    def fallback_convictions(self, p: HirePersona) -> str:
+        """Deterministic, no-LLM convictions — used when no frontier model is
+        reachable at hire time. Plainer than the opus version but still genuinely
+        opinionated: the two seeds become hills to die on, in the hire's voice."""
+        seed_a = p.conviction_seeds[0] if p.conviction_seeds else ""
+        seed_b = p.conviction_seeds[1] if len(p.conviction_seeds) > 1 else ""
+        lines = [
+            f"I came into {p.role} with views, not a blank slate. Experience "
+            f"will sharpen them — it won't start them from zero.",
+            "",
+            "**Hills I'll die on:**",
+        ]
+        if seed_a:
+            lines.append(f"- {seed_a}")
+        if seed_b:
+            lines.append(f"- {seed_b}")
+        lines += [
+            "",
+            f"When work crosses one of these, I push back — that's not friction "
+            f"for its own sake, it's how I think we get to better answers. I "
+            f"argue my corner in my own way ({p.social.label}), and I expect to "
+            f"be argued back at; the day everyone just nods is the day the work "
+            f"stops getting better.",
+        ]
+        return "\n".join(lines)
