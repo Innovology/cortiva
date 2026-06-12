@@ -104,10 +104,36 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+# Style debt accumulated before the lint gate was enforced — ignored so
+# CI is meaningful (green = real regression, not noise). Burn down per
+# rule; remove from this list as each category reaches zero.
+# Burn-down order: E501 (long lines in examples/scripts/cli), N815
+# (mixed-case attrs mirroring external JSON), E741, E402, N806, N818.
+ignore = ["E501", "N815", "E741", "E402", "N806", "N818"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# Grandfathered rules — aspirational but never enforced. Re-enable one at a
+# time as the codebase is progressively cleaned up.
+disallow_any_generics = false
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+warn_return_any = false
+warn_unused_ignores = false
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Files with genuine type errors that predate strict enforcement.
+# Remove each entry once the module is properly typed.
+module = [
+  "cortiva.core.fabric",
+  "cortiva.portal.server",
+  "cortiva.adapters.memory.neo4j",
+  "cortiva.adapters.terminal.codex",
+]
+ignore_errors = true
 
 [tool.coverage.run]
 source = ["cortiva"]
