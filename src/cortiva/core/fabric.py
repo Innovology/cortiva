@@ -1600,6 +1600,133 @@ class Fabric:
             )
         return hm.fallback_convictions(persona)
 
+    _CONVICTIONS_HEADING = "## Convictions & Worldview"
+
+    async def _backfill_convictions(self) -> None:
+        """One-time, idempotent: give pre-conviction agents a worldview.
+
+        Agents hired before the conviction layer existed have temperament but
+        no opinions — which is why they all email in the same flat voice. This
+        articulates the strong professional convictions each one has *clearly
+        already grown into* from their lived identity (NOT random new-hire
+        seeds), and appends a Convictions section to their soul.md.
+
+        Authorised as a one-time correction of an under-specified seed (the old
+        generator never produced convictions; it wasn't the agent's choice) —
+        not a rewrite of a formed personality. Idempotent: any soul that
+        already carries the heading is skipped, so reloads never redo it.
+        Sequential + best-effort so it's gentle on rate limits and a missing
+        model just leaves the soul untouched to retry on a later boot.
+        """
+        try:
+            from cortiva.skills.claude_code_deep_think.wrapper import deep_think
+        except Exception:
+            return
+
+        done = 0
+        for aid in sorted(self.agents):
+            soul_path = self.agents_dir / aid / "identity" / "soul.md"
+            if not soul_path.exists():
+                continue
+            try:
+                soul = soul_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if self._CONVICTIONS_HEADING in soul:
+                continue  # already has convictions — idempotent skip
+
+            # Seed from who they ALREADY are: their living identity + the soul's
+            # temperament line. Convictions must read as theirs, not bolted on.
+            ident_path = self.agents_dir / aid / "identity" / "identity.md"
+            identity = ""
+            if ident_path.exists():
+                try:
+                    identity = ident_path.read_text(encoding="utf-8")[:4000]
+                except OSError:
+                    identity = ""
+            name = self._display_name_for(aid)
+            prompt = self._backfill_conviction_prompt(name, soul, identity)
+            try:
+                res = await asyncio.to_thread(
+                    deep_think, prompt, timeout_s=120.0,
+                    extra_args=["--model", "opus"],
+                )
+                text = (res.text or "").strip()
+            except Exception:
+                logger.info(
+                    "Conviction backfill model call failed for %s — will retry "
+                    "on a later boot", aid, exc_info=True,
+                )
+                continue
+            if len(text) < 120:
+                logger.info(
+                    "Conviction backfill for %s returned too little (%d chars) "
+                    "— leaving soul untouched", aid, len(text),
+                )
+                continue
+            # Re-read + re-check the heading right before writing: a wake may
+            # have rewritten the soul while opus was thinking.
+            try:
+                cur = soul_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if self._CONVICTIONS_HEADING in cur:
+                continue
+            new_soul = cur.rstrip() + "\n\n" + self._CONVICTIONS_HEADING + \
+                "\n\n" + text.rstrip() + "\n"
+            try:
+                soul_path.write_text(new_soul, encoding="utf-8")
+            except OSError:
+                logger.warning("Could not write backfilled soul for %s", aid)
+                continue
+            done += 1
+            logger.info(
+                "Backfilled convictions for %s (%d chars, opus)", aid, len(text),
+            )
+        if done:
+            logger.info("Conviction backfill complete: %d soul(s) updated", done)
+
+    def _display_name_for(self, aid: str) -> str:
+        """The agent's human name from deploy.yaml, falling back to the id."""
+        import yaml
+
+        deploy = self.agents_dir / aid / "deploy.yaml"
+        if deploy.exists():
+            try:
+                spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
+                        or {}).get("agent", {}) or {}
+                name = str(spec.get("name") or "").strip()
+                if name:
+                    return name
+            except (OSError, yaml.YAMLError):
+                pass
+        return aid
+
+    def _backfill_conviction_prompt(
+        self, name: str, soul: str, identity: str,
+    ) -> str:
+        """Prompt opus to surface the convictions an EXISTING agent has already
+        grown into — drawn from their lived identity, in their own voice."""
+        return (
+            f"Below is the persona and lived identity of {name}, a colleague at "
+            f"Innovology who has been doing their job for a while. Read who they "
+            f"are, then articulate the strong professional convictions they have "
+            f"clearly GROWN INTO — the views this specific person holds about how "
+            f"their work should be done. Do not invent a different person; surface "
+            f"what is already implied by who they are, and make it sharp.\n\n"
+            f"=== PERSONA (soul.md) ===\n{soul[:3000]}\n\n"
+            f"=== LIVING IDENTITY (identity.md) ===\n{identity or '(none yet)'}\n\n"
+            f"Write {name}'s convictions in the FIRST PERSON, opinionated and "
+            f"specific to their craft — genuinely arguable views a thoughtful "
+            f"colleague would push back on, voiced in {name}'s own temperament. "
+            f"Cover: the worldview (how I believe my work should be done, and why "
+            f"most people get it wrong); 2-3 hills I'll die on stated as "
+            f"commitments; one contrarian take my own field mostly gets wrong; and "
+            f"what always makes me push back. No hedging, no 'it depends', no "
+            f"corporate filler. 180-260 words. Output ONLY the convictions — no "
+            f"heading, no preamble, no sign-off."
+        )
+
     # ------------------------------------------------------------------
     # Workforce scheduling — the AR Scheduler's tool
     # ------------------------------------------------------------------
@@ -4554,6 +4681,13 @@ class Fabric:
             self.ipc_server = FabricServer()
             self._register_ipc_handlers(self.ipc_server)
             await self.ipc_server.start(ipc_socket)
+
+        # One-time, idempotent: give pre-conviction souls a worldview. Runs in
+        # the background so it never blocks boot; skips any soul that already
+        # has a Convictions section, so a later reload won't redo it.
+        self._convictions_backfill_task = asyncio.create_task(
+            self._backfill_convictions()
+        )
 
         logger.info(f"Fabric running with {len(self.agents)} agents")
 

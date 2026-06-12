@@ -832,3 +832,135 @@ class TestEmailInboxContext:
         fabric = _make_fabric(tmp_path)
         agent = fabric.register_agent("x", consciousness_budget=10)
         assert fabric._email_inbox_context(agent) == ""
+
+
+# ---------------------------------------------------------------------------
+# _backfill_convictions — one-time, idempotent worldview backfill
+# ---------------------------------------------------------------------------
+
+
+class _FakeDeepThink:
+    """Stand-in for the deep_think wrapper result (has a .text attribute)."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class TestBackfillConvictions:
+    def _seed_soul(self, fabric: Fabric, aid: str, body: str) -> Path:
+        agent_dir = fabric.agents_dir / aid / "identity"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        soul = agent_dir / "soul.md"
+        soul.write_text(body, encoding="utf-8")
+        (agent_dir / "identity.md").write_text(
+            f"# {aid}\n\nA seasoned operator who values clarity.\n",
+            encoding="utf-8",
+        )
+        (fabric.agents_dir / aid / "deploy.yaml").write_text(
+            f"agent:\n  name: {aid.title()}\n  role: Engineer\n",
+            encoding="utf-8",
+        )
+        return soul
+
+    @pytest.mark.asyncio
+    async def test_backfills_soul_without_convictions(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        fabric = _make_fabric(tmp_path)
+        soul = self._seed_soul(
+            fabric, "maren", "---\nagent_id: maren\n---\n\n# Maren — Persona\n\n"
+            "Ambition: quietly relentless. Social style: reserved.\n",
+        )
+        fabric.register_agent("maren", consciousness_budget=10)
+
+        conviction = (
+            "I believe reliability is a moral position, not a preference. "
+            "Most teams optimise for the demo and pay for it for years. "
+            "Hill I'll die on: no untested path ships. " * 3
+        )
+        monkeypatch.setattr(
+            "cortiva.skills.claude_code_deep_think.wrapper.deep_think",
+            lambda *a, **k: _FakeDeepThink(conviction),
+        )
+
+        await fabric._backfill_convictions()
+
+        text = soul.read_text(encoding="utf-8")
+        assert fabric._CONVICTIONS_HEADING in text
+        assert "reliability is a moral position" in text
+        # Original persona content preserved (append, not overwrite).
+        assert "quietly relentless" in text
+
+    @pytest.mark.asyncio
+    async def test_skips_soul_that_already_has_convictions(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        fabric = _make_fabric(tmp_path)
+        body = (
+            "# Lara — Persona\n\nAmbition: empire builder.\n\n"
+            f"{fabric._CONVICTIONS_HEADING}\n\nI already have strong views.\n"
+        )
+        soul = self._seed_soul(fabric, "lara", body)
+        fabric.register_agent("lara", consciousness_budget=10)
+
+        called = {"n": 0}
+
+        def _spy(*a, **k):
+            called["n"] += 1
+            return _FakeDeepThink("new convictions " * 30)
+
+        monkeypatch.setattr(
+            "cortiva.skills.claude_code_deep_think.wrapper.deep_think", _spy,
+        )
+
+        await fabric._backfill_convictions()
+
+        assert called["n"] == 0  # model never invoked for an already-done soul
+        assert soul.read_text(encoding="utf-8") == body  # untouched
+
+    @pytest.mark.asyncio
+    async def test_idempotent_across_two_runs(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        fabric = _make_fabric(tmp_path)
+        soul = self._seed_soul(
+            fabric, "noor", "# Noor — Persona\n\nAmbition: warm mentor.\n",
+        )
+        fabric.register_agent("noor", consciousness_budget=10)
+
+        calls = {"n": 0}
+
+        def _spy(*a, **k):
+            calls["n"] += 1
+            return _FakeDeepThink("Conviction body that is plenty long. " * 8)
+
+        monkeypatch.setattr(
+            "cortiva.skills.claude_code_deep_think.wrapper.deep_think", _spy,
+        )
+
+        await fabric._backfill_convictions()
+        await fabric._backfill_convictions()
+
+        assert calls["n"] == 1  # second run is a no-op
+        assert soul.read_text(encoding="utf-8").count(
+            fabric._CONVICTIONS_HEADING
+        ) == 1
+
+    @pytest.mark.asyncio
+    async def test_too_short_reply_leaves_soul_untouched(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        fabric = _make_fabric(tmp_path)
+        body = "# Vera — Persona\n\nAmbition: master craftsperson.\n"
+        soul = self._seed_soul(fabric, "vera", body)
+        fabric.register_agent("vera", consciousness_budget=10)
+
+        monkeypatch.setattr(
+            "cortiva.skills.claude_code_deep_think.wrapper.deep_think",
+            lambda *a, **k: _FakeDeepThink("too short"),
+        )
+
+        await fabric._backfill_convictions()
+
+        # No heading written → will retry on a later boot.
+        assert fabric._CONVICTIONS_HEADING not in soul.read_text(encoding="utf-8")
