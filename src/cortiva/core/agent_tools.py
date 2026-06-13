@@ -175,6 +175,41 @@ EFFICIENCY_REVIEW_TOOL: dict[str, Any] = {
 }
 
 # Tool name -> the ReflectionSuffix field it populates.
+SEND_EMAIL_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "send_email",
+        "description": (
+            "Send an email to a human (the founder, your manager, a colleague) "
+            "or an external contact. This ACTUALLY sends it — describing an "
+            "email in prose, or saying you'll send it, does nothing; you must "
+            "call this tool for it to go out. Use it whenever you owe someone a "
+            "reply or an update — e.g. replying to a founder directive, or "
+            "closing the loop after you've done the work. Every agent can email; "
+            "the outbound channel is live."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Recipient email address.",
+                },
+                "subject": {"type": "string", "description": "Email subject."},
+                "body": {
+                    "type": "string",
+                    "description": "The full message body, in your own voice.",
+                },
+                "cc": {
+                    "type": "string",
+                    "description": "Optional cc address (e.g. keep your manager in the loop).",
+                },
+            },
+            "required": ["to", "subject", "body"],
+        },
+    },
+}
+
 _TOOL_TO_SUFFIX_FIELD = {
     "optimize_schedule": "optimize_schedule",
     "rebalance_nodes": "rebalance_nodes",
@@ -182,6 +217,7 @@ _TOOL_TO_SUFFIX_FIELD = {
     "recommend_schedule": "recommend_schedule",
     "culture_health": "culture_health",
     "efficiency_review": "efficiency_review",
+    "send_email": "email",
 }
 
 
@@ -201,7 +237,11 @@ def tools_for_agent(
     workforce-efficiency review — so the model isn't tempted to call a tool it
     can't use.
     """
-    tools: list[dict[str, Any]] = []
+    # Every agent can email — it's the universal way to reach a human, and
+    # making it a validated tool call (not a coaxed prose suffix) is what stops
+    # an agent DRAFTING a reply but never dispatching it (the 'acknowledged but
+    # not sent' gap). Offered unconditionally.
+    tools: list[dict[str, Any]] = [SEND_EMAIL_TOOL]
     if agent_id in scheduling_authorised:
         tools.append(OPTIMIZE_SCHEDULE_TOOL)
         tools.append(REBALANCE_NODES_TOOL)

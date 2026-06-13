@@ -19,9 +19,11 @@ class TestToolsForAgent:
         tools = tools_for_agent("ar-scheduler", scheduling_authorised={"ar-scheduler"})
         assert any(t["function"]["name"] == "optimize_schedule" for t in tools)
 
-    def test_unauthorised_agent_gets_no_tools(self) -> None:
+    def test_unauthorised_agent_gets_only_email(self) -> None:
+        # Authority-scoped tools (rota, etc.) are withheld, but every agent gets
+        # send_email — it's the universal way to reach a human.
         tools = tools_for_agent("dev-1", scheduling_authorised={"ar-scheduler"})
-        assert tools == []
+        assert [t["function"]["name"] for t in tools] == ["send_email"]
 
     def test_schema_shape_is_valid_openai_function(self) -> None:
         fn = OPTIMIZE_SCHEDULE_TOOL["function"]
@@ -127,3 +129,38 @@ class TestOpenAICompatToolParsing:
         resp = await adapter.think(agent_id="a", context="c", prompt="p")
         assert "tools" not in captured
         assert resp.tool_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Native send_email tool (#282 follow-up) — reliable dispatch, not prose suffix
+# ---------------------------------------------------------------------------
+
+
+def test_send_email_offered_to_every_agent():
+    from cortiva.core.agent_tools import tools_for_agent
+    names = lambda ts: [t["function"]["name"] for t in ts]
+    # Plain agent with no special authority still gets send_email.
+    tools = tools_for_agent("nobody-special", scheduling_authorised=set())
+    assert "send_email" in names(tools)
+    # Scheduling agent gets it too, alongside the rota tools.
+    tools2 = tools_for_agent("sched", scheduling_authorised={"sched"})
+    assert "send_email" in names(tools2)
+    assert "optimize_schedule" in names(tools2)
+
+
+def test_send_email_call_maps_to_email_suffix():
+    from cortiva.core.agent_tools import apply_tool_calls_to_suffix
+    from cortiva.core.reflection import ReflectionSuffix
+
+    suffix = ReflectionSuffix()
+    apply_tool_calls_to_suffix(suffix, [{
+        "name": "send_email",
+        "arguments": {"to": "alex@x.io", "subject": "Status", "body": "Done."},
+    }])
+    assert suffix.email == {"to": "alex@x.io", "subject": "Status", "body": "Done."}
+
+
+def test_send_email_schema_requires_core_fields():
+    from cortiva.core.agent_tools import SEND_EMAIL_TOOL
+    req = SEND_EMAIL_TOOL["function"]["parameters"]["required"]
+    assert set(req) == {"to", "subject", "body"}
