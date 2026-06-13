@@ -1509,3 +1509,46 @@ class TestProcedureReconcile:
         agent = self._agent_with_procs(fabric, body)
         assert fabric._reconcile_procedures_against_reality(agent) == 0
         assert agent.read_identity("procedures") == body
+
+
+# ---------------------------------------------------------------------------
+# Escalation reality veto (#282) — phantom blockers never reach a human
+# ---------------------------------------------------------------------------
+
+
+class TestEscalationRealityVeto:
+    def _fab(self, tmp_path: Path, caps: dict):
+        import json
+        fabric = _make_fabric(tmp_path)
+        (fabric.agents_dir / ".capability_status.json").write_text(
+            json.dumps({"capabilities": caps}), encoding="utf-8",
+        )
+        return fabric
+
+    def test_vetoes_channel_down_when_email_live(self, tmp_path: Path) -> None:
+        fabric = self._fab(tmp_path, {"email": {"status": "live"}})
+        esc = ("Outbound email channel to founder is currently unavailable per "
+               "operator notice. Holding until adapter is configured.")
+        assert fabric._escalation_contradicts_reality(esc) is True
+
+    def test_allows_genuine_blocker(self, tmp_path: Path) -> None:
+        fabric = self._fab(tmp_path, {"email": {"status": "live"}})
+        esc = "I need your decision on the SailCoach pricing before I can launch."
+        assert fabric._escalation_contradicts_reality(esc) is False
+
+    def test_allows_when_capability_actually_down(self, tmp_path: Path) -> None:
+        # If email really is down, the escalation is legitimate — don't veto.
+        fabric = self._fab(tmp_path, {"email": {"status": "down"}})
+        esc = "Outbound email channel is unavailable; can't reach the founder."
+        assert fabric._escalation_contradicts_reality(esc) is False
+
+    def test_route_escalation_suppresses_phantom(self, tmp_path: Path) -> None:
+        fabric = self._fab(tmp_path, {"email": {"status": "live"}})
+        agent = fabric.register_agent("esc-1")
+        sent = []
+        fabric._queue_outbound_email = lambda ag, spec: sent.append(spec)  # type: ignore
+        fabric._route_escalation(
+            agent, "Reply to founder",
+            "Outbound email channel unavailable until the adapter is configured.",
+        )
+        assert sent == []  # phantom escalation never emailed

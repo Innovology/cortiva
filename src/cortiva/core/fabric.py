@@ -3779,6 +3779,36 @@ class Fabric:
         "adapter isn't", "adapter is not", "not configured", "imaginary adapter",
     )
 
+    def _escalation_contradicts_reality(self, escalation: str) -> bool:
+        """True if the escalation claims a capability is unavailable that the
+        probe just tested as LIVE — a phantom blocker that must not be sent
+        (#282). High-precision: needs a capability term AND an 'unavailable'
+        term AND the probe saying that capability is good."""
+        import json
+
+        text = (escalation or "").lower()
+        if not text:
+            return False
+        if not any(u in text for u in self._PROC_UNAVAILABLE):
+            return False
+        path = self.agents_dir / ".capability_status.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return False
+        caps = data.get("capabilities") or data
+        if not isinstance(caps, dict):
+            return False
+        good = {"live", "ok", "up", "healthy", "available", "good"}
+        for cap, info in caps.items():
+            if cap not in self._PROC_CAP_TERMS or not isinstance(info, dict):
+                continue
+            if str(info.get("status", "")).lower() not in good:
+                continue
+            if any(t in text for t in self._PROC_CAP_TERMS[cap]):
+                return True
+        return False
+
     def _reconcile_procedures_against_reality(self, agent: Agent) -> int:
         """Drop procedures a tested-LIVE capability contradicts (#282).
 
@@ -4386,6 +4416,23 @@ class Fabric:
             logger.info(
                 "Skipping hollow escalation from %s (no real blocker: %r)",
                 agent.id, esc[:60],
+            )
+            return
+
+        # Reality veto (#282): the last line of defence. Even with identity,
+        # procedures and memory all reconciled, the local model can CONFABULATE a
+        # blocker in the moment ("outbound email channel unavailable per operator
+        # notice… once the adapter is configured") and emit it as an escalation.
+        # Reality gets the final say at the output gate: if the escalation claims
+        # a capability is down/route-around that the probe says is LIVE, we do
+        # NOT send it — a tested-live capability is never a real blocker. This
+        # cannot be confabulated around because it's checked against the probe,
+        # not the model's belief.
+        if self._escalation_contradicts_reality(esc):
+            logger.warning(
+                "VETOED escalation from %s — it claims a capability is down that "
+                "is tested LIVE (phantom blocker): %r",
+                agent.id, esc[:80],
             )
             return
 
