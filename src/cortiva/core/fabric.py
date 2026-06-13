@@ -946,7 +946,16 @@ class Fabric:
                 else:
                     can_reflect = agent.spend_consciousness()
                 if can_reflect:
-                    raw = await self.living_summary.regenerate(agent, day_summary)
+                    # Feed the just-tested capability status into the rewrite as
+                    # the arbiter — so a stale 'X is blocked' belief gets
+                    # reconciled against reality and corrected by the agent
+                    # itself, instead of being laundered into identity. This is
+                    # the seam: the probe was shown at wake but never reached the
+                    # identity regen.
+                    raw = await self.living_summary.regenerate(
+                        agent, day_summary,
+                        ground_truth=self._capability_status_context(agent),
+                    )
                     if self.budget_manager and approval and approval.backend:
                         self.budget_manager.record_usage(
                             agent_id, approval.backend, 0, 0,

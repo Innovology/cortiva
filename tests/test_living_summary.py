@@ -174,6 +174,57 @@ class TestLivingSummaryRegenerator:
         assert "Handled complex invoice" in prompt
         assert "invoice, vendor" in prompt
 
+    def _exp(self):
+        return {
+            "key_memories": [], "learnings": [], "themes": [],
+            "task_count": 0, "terminal_task_count": 0, "escalated_count": 0,
+        }
+
+    def test_ground_truth_block_and_rule_present(self) -> None:
+        """#282: tested reality is injected ABOVE current identity, with the
+        override rule, so the agent reconciles stale beliefs against it."""
+        regen = self._make_regen()
+        agent = MagicMock()
+        gt = "## Live capability check\n- **Email: LIVE** — you CAN email humans"
+        prompt = regen.build_regeneration_prompt(
+            agent, current_identity="# I route comms internally",
+            day_summary="s", experience=self._exp(), ground_truth=gt,
+        )
+        assert "Verified reality" in prompt
+        assert "you CAN email humans" in prompt
+        assert "OUTRANKS" in prompt
+        assert "that belief is FALSE" in prompt
+        # ground truth precedes the current identity in the prompt
+        assert prompt.index("Verified reality") < prompt.index("Current Identity")
+
+    def test_no_ground_truth_block_when_absent(self) -> None:
+        regen = self._make_regen()
+        agent = MagicMock()
+        prompt = regen.build_regeneration_prompt(
+            agent, current_identity="# x", day_summary="s", experience=self._exp(),
+        )
+        # The section header is conditional (the reconciliation RULE always
+        # mentions the block by name, so assert on the section, not the phrase).
+        assert "## Verified reality" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_regenerate_passes_ground_truth(self) -> None:
+        from unittest.mock import AsyncMock as _AM
+
+        memory = InMemoryAdapter()
+        await memory.store("a", "Task: x. Outcome: done", tags=["task"], importance=7.0)
+        consc = _AM()
+        consc.reflect.return_value = type("R", (), {"content": "# new"})()
+        regen = self._make_regen(memory=memory, consciousness=consc)
+        agent = MagicMock()
+        agent.id = "a"
+        agent.read_identity.return_value = ""
+        agent.identity_history.return_value = []
+        await regen.regenerate(agent, "summary", ground_truth="EMAIL LIVE — probe")
+        ctx = consc.reflect.call_args.kwargs["context"]
+        assert "EMAIL LIVE — probe" in ctx
+        assert "Verified reality" in ctx
+
     @pytest.mark.asyncio
     async def test_regenerate_returns_content(self) -> None:
         memory = InMemoryAdapter()

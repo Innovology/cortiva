@@ -119,6 +119,7 @@ class LivingSummaryRegenerator:
         soul: str = "",
         responsibilities: str = "",
         revision_count: int = 0,
+        ground_truth: str = "",
     ) -> str:
         """Build the prompt for identity.md regeneration.
 
@@ -161,6 +162,20 @@ class LivingSummaryRegenerator:
                 "your identity. Previous versions are archived in "
                 "identity/history/ — this document compounds over time; "
                 "it is never a blank page.\n"
+            )
+
+        # Tested reality — the arbiter. Identity is rewritten from experience,
+        # but experience can be self-sealing: an agent that wrongly decided a
+        # capability was down then *worked around it* never generated the
+        # experience that would disprove the belief, so the belief crystallises
+        # into identity and nothing evicts it. The capability probe is the one
+        # source that actually tested the world; placing it ABOVE the current
+        # identity (with an explicit override rule below) is what lets the agent
+        # reconcile a stale belief against reality and rewrite it ITSELF.
+        if ground_truth:
+            sections.append(
+                "## Verified reality — TESTED just now (this OUTRANKS your "
+                f"memory and your current identity)\n\n{ground_truth}\n"
             )
 
         sections.append(f"## Current Identity\n\n{current_identity}\n")
@@ -213,7 +228,15 @@ class LivingSummaryRegenerator:
             "2. This document compounds. Carry forward the durable "
             "specialisations and hard-won learnings already in your current "
             "identity unless your experience now contradicts them — do not "
-            "start from scratch or let detail evaporate.\n\n"
+            "start from scratch or let detail evaporate.\n"
+            "3. Reconcile against tested reality. If the 'Verified reality' "
+            "block above contradicts any belief in your current identity, "
+            "learnings, or themes — e.g. you believe a capability is "
+            "down/blocked/missing or that you must route around it, but the "
+            "check says it is LIVE/OK — that belief is FALSE. Correct it or "
+            "remove it; do NOT carry it forward. Tested reality outranks "
+            "memory, experience, and your prior identity. (You don't keep "
+            "believing a door is locked after you've just opened it.)\n\n"
             f"Then, on its own line, write exactly `{DAY_REPORT_DELIMITER}` "
             "followed by a short first-person day report — your standup for "
             "the humans you work with. Cover: what you worked on today, "
@@ -228,8 +251,14 @@ class LivingSummaryRegenerator:
         self,
         agent: Agent,
         day_summary: str,
+        ground_truth: str = "",
     ) -> str | None:
         """Regenerate the Living Summary for an agent.
+
+        ``ground_truth`` is the just-tested capability status (from the node
+        probe). It is fed into the rewrite as the arbiter so the agent
+        reconciles any stale belief against reality and corrects it itself —
+        the cure for a false belief crystallising into identity.
 
         Returns the new identity content, or None if regeneration
         was skipped (e.g., not enough experience yet).
@@ -267,6 +296,7 @@ class LivingSummaryRegenerator:
             soul=soul,
             responsibilities=responsibilities,
             revision_count=revision_count,
+            ground_truth=ground_truth,
         )
 
         response = await self.consciousness.reflect(
