@@ -16,6 +16,21 @@ from cortiva.core.living_summary import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_frontier_regen(monkeypatch):
+    """Identity regen now prefers the frontier (claude CLI) path. In tests that
+    would spawn the real `claude` subprocess (slow, non-deterministic) and
+    override the StubConsciousness; disable it so the fabric-integration tests
+    exercise the deterministic local path. Unit tests that pass their own
+    frontier_reflect to regenerate() are unaffected."""
+    async def _none(self, _prompt):
+        return None
+    monkeypatch.setattr(
+        "cortiva.core.fabric.Fabric._frontier_identity_reflect",
+        _none, raising=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # _extract_themes
 # ---------------------------------------------------------------------------
@@ -226,6 +241,65 @@ class TestLivingSummaryRegenerator:
         assert "Verified reality" in ctx
 
     @pytest.mark.asyncio
+    async def test_regenerate_uses_frontier_when_given(self) -> None:
+        memory = InMemoryAdapter()
+        await memory.store("a", "Task: x. Outcome: done", tags=["task"], importance=7.0)
+        consc = AsyncMock()
+        regen = self._make_regen(memory=memory, consciousness=consc)
+        agent = MagicMock()
+        agent.id = "a"
+        agent.read_identity.return_value = ""
+        agent.identity_history.return_value = []
+
+        seen = {}
+        async def _frontier(prompt):
+            seen["prompt"] = prompt
+            return "# frontier-rewritten identity"
+
+        out = await regen.regenerate(agent, "summary", frontier_reflect=_frontier)
+        assert out == "# frontier-rewritten identity"
+        assert "prompt" in seen  # frontier was actually called
+        consc.reflect.assert_not_called()  # local model bypassed
+
+    @pytest.mark.asyncio
+    async def test_regenerate_falls_back_when_frontier_fails(self) -> None:
+        memory = InMemoryAdapter()
+        await memory.store("a", "Task: x. Outcome: done", tags=["task"], importance=7.0)
+        consc = AsyncMock()
+        consc.reflect.return_value = type("R", (), {"content": "# local fallback"})()
+        regen = self._make_regen(memory=memory, consciousness=consc)
+        agent = MagicMock()
+        agent.id = "a"
+        agent.read_identity.return_value = ""
+        agent.identity_history.return_value = []
+
+        async def _boom(prompt):
+            raise RuntimeError("claude unavailable")
+
+        out = await regen.regenerate(agent, "summary", frontier_reflect=_boom)
+        assert out == "# local fallback"  # never breaks regen
+        consc.reflect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_regenerate_falls_back_when_frontier_empty(self) -> None:
+        memory = InMemoryAdapter()
+        await memory.store("a", "Task: x. Outcome: done", tags=["task"], importance=7.0)
+        consc = AsyncMock()
+        consc.reflect.return_value = type("R", (), {"content": "# local fallback"})()
+        regen = self._make_regen(memory=memory, consciousness=consc)
+        agent = MagicMock()
+        agent.id = "a"
+        agent.read_identity.return_value = ""
+        agent.identity_history.return_value = []
+
+        async def _empty(prompt):
+            return "   "
+
+        out = await regen.regenerate(agent, "summary", frontier_reflect=_empty)
+        assert out == "# local fallback"
+        consc.reflect.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_regenerate_returns_content(self) -> None:
         memory = InMemoryAdapter()
         await memory.store("a", "Task: Important work. Outcome: done", tags=["task"], importance=7.0)
@@ -304,11 +378,18 @@ class TestFabricLivingSummaryIntegration:
                     model="stub",
                 )
 
-        return Fabric(
+        fabric = Fabric(
             agents_dir=tmp_path / "agents",
             memory=memory,
             consciousness=StubConsciousness(),
         )
+        # Disable the frontier (claude CLI) regen path so these tests exercise
+        # the local StubConsciousness deterministically instead of spawning the
+        # real `claude` subprocess.
+        async def _no_frontier(_prompt):
+            return None
+        fabric._frontier_identity_reflect = _no_frontier
+        return fabric
 
     @pytest.mark.asyncio
     async def test_sleep_regenerates_identity(self, tmp_path) -> None:

@@ -14,11 +14,15 @@ Later:  "I'm an experienced bookkeeper who specialises in international
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
 
 if TYPE_CHECKING:
     from cortiva.adapters.protocols import ConsciousnessAdapter, MemoryAdapter, MemoryRecord
     from cortiva.core.agent import Agent
+
+logger = logging.getLogger(__name__)
 
 DAY_REPORT_DELIMITER = "---DAY-REPORT---"
 
@@ -252,6 +256,7 @@ class LivingSummaryRegenerator:
         agent: Agent,
         day_summary: str,
         ground_truth: str = "",
+        frontier_reflect: Callable[[str], Awaitable[str | None]] | None = None,
     ) -> str | None:
         """Regenerate the Living Summary for an agent.
 
@@ -298,6 +303,24 @@ class LivingSummaryRegenerator:
             revision_count=revision_count,
             ground_truth=ground_truth,
         )
+
+        # Prefer a frontier model for the rewrite. Reconciling a stale belief
+        # against tested reality — noticing "my identity asserts X, reality says
+        # not-X, therefore remove X" — is a reasoning step the local model
+        # fluffs (it copies the fact in instead of deleting the contradiction).
+        # Falls back to local reflection if the frontier path is unavailable, so
+        # regeneration never breaks.
+        if frontier_reflect is not None:
+            try:
+                raw = await frontier_reflect(prompt)
+            except Exception:
+                logger.warning(
+                    "Frontier identity regen failed for %s; using local",
+                    agent.id, exc_info=True,
+                )
+                raw = None
+            if raw and raw.strip():
+                return raw
 
         response = await self.consciousness.reflect(
             agent_id=agent.id,

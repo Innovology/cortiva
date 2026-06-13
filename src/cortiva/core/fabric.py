@@ -823,6 +823,33 @@ class Fabric:
         except OSError:
             logger.debug("could not write session journal for %s", agent.id)
 
+    async def _frontier_identity_reflect(self, prompt: str) -> str | None:
+        """Run the identity rewrite through the frontier model (the ``claude``
+        CLI on the subscription), not the local model.
+
+        Reconciling a stale belief against tested reality — "my identity says X,
+        reality says not-X, so remove X" — is a reasoning step the local model
+        is not reliable at (it copied the probe in verbatim while keeping the
+        contradiction). Identity regen is once-per-agent-per-day, so the volume
+        is bounded. Returns None on ANY failure (binary/auth/timeout) so the
+        caller falls back to local reflection and regen never breaks.
+        """
+        try:
+            from cortiva.skills.claude_code_deep_think.wrapper import deep_think
+
+            res = await asyncio.to_thread(
+                lambda: deep_think(
+                    prompt, timeout_s=240.0, extra_args=["--model", "opus"],
+                )
+            )
+            return res.text
+        except Exception:
+            logger.warning(
+                "Frontier identity reflect unavailable; regen falls back to local",
+                exc_info=True,
+            )
+            return None
+
     def _identity_regen_due(self, agent: Agent) -> bool:
         """True at most once per calendar day — so frequent sleeps don't
         churn the Living Summary."""
@@ -955,6 +982,7 @@ class Fabric:
                     raw = await self.living_summary.regenerate(
                         agent, day_summary,
                         ground_truth=self._capability_status_context(agent),
+                        frontier_reflect=self._frontier_identity_reflect,
                     )
                     if self.budget_manager and approval and approval.backend:
                         self.budget_manager.record_usage(
