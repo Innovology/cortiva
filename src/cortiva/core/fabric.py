@@ -1392,6 +1392,24 @@ class Fabric:
         if task_ctx:
             context = context + "\n\n---\n\n" + task_ctx
 
+        # Tested reality at EXECUTION time — not just at planning (#282). The
+        # decision to act/escalate is made HERE, and the session + inbox streams
+        # above can carry a stale 'channel is down' framing (an old [Blocked]
+        # thread, a prior confabulation, a colleague quoting it back). Without
+        # the just-tested truth in the room, the model reasons from that
+        # pollution and re-confabulates the blocker — which is exactly how a
+        # corrected agent still emitted "outbound channel unavailable". The probe
+        # is the antidote, placed LAST so it's the most salient thing read before
+        # acting: "email is LIVE — trust this over memory; don't route around a
+        # capability that's up." This was present in the plan/replan contexts but
+        # missing from execution — the real root cause, not the output gate.
+        capstat = self._capability_status_context(agent)
+        if capstat:
+            context = context + "\n\n---\n\n" + capstat
+        cap_email = self._email_capability_context(agent)
+        if cap_email:
+            context = context + "\n\n---\n\n" + cap_email
+
         # High-stakes deliberation (#270): for a critical / risk-laden task,
         # force a System-2 pass — reason through options, what could go wrong,
         # and the reversibility of each, THEN act — instead of reacting. This is

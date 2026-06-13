@@ -1552,3 +1552,45 @@ class TestEscalationRealityVeto:
             "Outbound email channel unavailable until the adapter is configured.",
         )
         assert sent == []  # phantom escalation never emailed
+
+
+# ---------------------------------------------------------------------------
+# Reality block reaches the EXECUTION context, not just planning (#282)
+# ---------------------------------------------------------------------------
+
+
+class TestExecutionContextHasReality:
+    @pytest.mark.asyncio
+    async def test_execution_context_includes_capability_truth(self, tmp_path: Path) -> None:
+        import json
+        from cortiva.adapters.protocols import ConsciousResponse
+        from cortiva.core.agent import AgentState, Task, TaskQueue
+
+        captured = {}
+
+        class _Capturing:
+            async def think(self, agent_id, context, prompt, **kw):
+                captured["ctx"] = context
+                return ConsciousResponse(content="done", model="cap")
+            async def reflect(self, **kw):
+                return ConsciousResponse(content="r", model="cap")
+
+        fabric = _make_fabric(tmp_path)
+        fabric.consciousness = _Capturing()
+        # Probe says email LIVE — the antidote that must reach execution.
+        (fabric.agents_dir / ".capability_status.json").write_text(
+            json.dumps({"capabilities": {"email": {"status": "live",
+              "detail": "you CAN email any human right now"}}}),
+            encoding="utf-8",
+        )
+        agent = fabric.register_agent("exec-1", consciousness_budget=10)
+        agent.state = AgentState.WAKING
+        agent.transition(AgentState.PLANNING)
+        agent.transition(AgentState.EXECUTING)
+        task = Task(id="t1", description="Reply to the founder on status", priority=1)
+        agent.task_queue = TaskQueue(tasks=[task])
+
+        await fabric._execute_task(agent, task, [])
+        assert "ctx" in captured, "consciousness.think was not reached"
+        assert "capability check" in captured["ctx"].lower()
+        assert "email" in captured["ctx"].lower()
