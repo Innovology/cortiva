@@ -49,7 +49,6 @@ from cortiva.core.hooks import HookRouter
 from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
 from cortiva.core.living_summary import (
-    DAY_REPORT_DELIMITER,
     LivingSummaryRegenerator,
     split_identity_and_day_report,
 )
@@ -845,11 +844,11 @@ class Fabric:
             constrained = (
                 prompt
                 + "\n\n---\n\n## OUTPUT FORMAT (strict)\n"
-                "Return ONLY the rewritten identity.md content, then a line with "
-                f"exactly `{DAY_REPORT_DELIMITER}`, then the day report. No "
-                "preamble, no explanation, no commentary, and do NOT ask for "
-                "approval. Do NOT use any tools or write any files — just output "
-                "the text directly."
+                "Output ONLY the rewritten identity.md document — nothing else. "
+                "No preamble, no explanation, no commentary, no day report, no "
+                "closing remarks, and do NOT ask for approval. Do NOT use any "
+                "tools or write any files. Your entire response IS the new "
+                "identity.md, starting with its first heading."
             )
             res = await asyncio.to_thread(
                 lambda: deep_think(
