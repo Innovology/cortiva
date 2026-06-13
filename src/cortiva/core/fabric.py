@@ -1015,6 +1015,20 @@ class Fabric:
                         f"Agent {agent_id} synthesised Living Summary (daily)"
                     )
 
+            # Reconcile PROCEDURES against tested reality too (#282). The
+            # Living Summary fixes identity.md, but the execution/escalation
+            # path ALSO reads procedures.md — a phantom procedure there ("route
+            # human comms internally until the adapter is configured") kept an
+            # agent escalating even after its identity was corrected. Runs every
+            # sleep; deterministic + high-precision (drops a procedure only when
+            # it asserts a capability is down that the probe says is LIVE).
+            try:
+                self._reconcile_procedures_against_reality(agent)
+            except Exception:
+                logger.debug(
+                    "Procedure reconcile failed for %s", agent.id, exc_info=True,
+                )
+
         # Final runtime state persistence before clearing
         agent.persist_runtime_state()
         agent.clear_plan()
@@ -3743,6 +3757,80 @@ class Fabric:
             return json.loads(path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             return {}
+
+    # Capability vocabulary for procedure reconciliation (#282). A procedure
+    # contradicts reality when a currently-GOOD capability is both NAMED and
+    # asserted unavailable — requiring BOTH keeps it high-precision so a true
+    # procedure is never dropped.
+    _PROC_CAP_TERMS = {
+        "email": ("email", "outbound", "human channel", "reach the founder",
+                  "reach humans", "resend", "adapter"),
+        "github": ("github", "git push", "gh cli", "pull request", " pr ",
+                   "open a pr"),
+        "model": ("model server", "local model", "inference"),
+    }
+    _PROC_UNAVAILABLE = (
+        "is down", "are down", "was down", "blocked", "unavailable",
+        "unreachable", "isn't reachable", "is not reachable", "not reachable",
+        "can't reach", "cannot reach", "offline", "no outbound", "no adapter",
+        "without an adapter", "until adapters are configured", "until the adapter",
+        "until resolved", "route around", "route all human-bound",
+        "deferred dispatch", "hand-deliver", "adapter for human",
+        "adapter isn't", "adapter is not", "not configured", "imaginary adapter",
+    )
+
+    def _reconcile_procedures_against_reality(self, agent: Agent) -> int:
+        """Drop procedures a tested-LIVE capability contradicts (#282).
+
+        identity.md is reconciled by the Living Summary, but procedures.md is
+        read on the execution/escalation path — a phantom 'route human comms
+        internally until the adapter is configured' there made an agent keep
+        escalating after its identity was already corrected. We remove only
+        procedure lines that name a currently-GOOD capability AND assert it is
+        unavailable / must be routed around. Returns the count removed.
+        """
+        import json
+
+        path = self.agents_dir / ".capability_status.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return 0
+        caps = data.get("capabilities") or data
+        if not isinstance(caps, dict):
+            return 0
+        good = {"live", "ok", "up", "healthy", "available", "good"}
+        good_caps = [
+            c for c, info in caps.items()
+            if isinstance(info, dict)
+            and str(info.get("status", "")).lower() in good
+            and c in self._PROC_CAP_TERMS
+        ]
+        if not good_caps:
+            return 0
+        try:
+            proc = agent.read_identity("procedures")
+        except Exception:
+            return 0
+        if not proc:
+            return 0
+        kept: list[str] = []
+        removed = 0
+        for line in proc.splitlines():
+            low = line.lower()
+            if any(u in low for u in self._PROC_UNAVAILABLE) and any(
+                t in low for c in good_caps for t in self._PROC_CAP_TERMS[c]
+            ):
+                removed += 1
+                continue
+            kept.append(line)
+        if removed:
+            agent.write_identity("procedures", "\n".join(kept))
+            logger.info(
+                "Reality reconcile: removed %d phantom procedure(s) for %s",
+                removed, agent.id,
+            )
+        return removed
 
     def _capability_status_context(self, agent: Agent) -> str:
         """Fresh, TESTED status of the load-bearing capabilities, as facts.

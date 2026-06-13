@@ -1453,3 +1453,59 @@ class TestCommitAttribution:
         assert "Fix the thing" in out
         assert "Co-Authored-By" not in out
         assert "Generated with" not in out
+
+
+# ---------------------------------------------------------------------------
+# Procedure reconciliation against tested reality (#282)
+# ---------------------------------------------------------------------------
+
+
+class TestProcedureReconcile:
+    def _fab_with_caps(self, tmp_path: Path, caps: dict):
+        import json
+        fabric = _make_fabric(tmp_path)
+        (fabric.agents_dir / ".capability_status.json").write_text(
+            json.dumps({"capabilities": caps}), encoding="utf-8",
+        )
+        return fabric
+
+    def _agent_with_procs(self, fabric, text: str):
+        agent = fabric.register_agent("proc-1")
+        agent.write_identity("procedures", text)
+        return agent
+
+    PHANTOM = (
+        "Maintain an internal log for operator escalations when outbound "
+        "channels are down, and route all human-bound comms through "
+        "agent-to-agent channels or deferred dispatch until resolved."
+    )
+    GOOD = "Maintain the EOD Monday receipt confirmation as a hard trigger."
+
+    def test_drops_phantom_procedure_when_email_live(self, tmp_path: Path) -> None:
+        fabric = self._fab_with_caps(tmp_path, {"email": {"status": "live"}})
+        agent = self._agent_with_procs(fabric, self.PHANTOM + "\n" + self.GOOD)
+        removed = fabric._reconcile_procedures_against_reality(agent)
+        assert removed == 1
+        out = agent.read_identity("procedures")
+        assert "route all human-bound" not in out
+        assert self.GOOD in out  # legitimate procedure preserved
+
+    def test_keeps_phantom_when_capability_not_good(self, tmp_path: Path) -> None:
+        # If the probe ALSO says email is down, the procedure is TRUE — keep it.
+        fabric = self._fab_with_caps(tmp_path, {"email": {"status": "down"}})
+        agent = self._agent_with_procs(fabric, self.PHANTOM + "\n" + self.GOOD)
+        assert fabric._reconcile_procedures_against_reality(agent) == 0
+        assert "route all human-bound" in agent.read_identity("procedures")
+
+    def test_noop_without_probe(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)  # no capability file
+        agent = self._agent_with_procs(fabric, self.PHANTOM + "\n" + self.GOOD)
+        assert fabric._reconcile_procedures_against_reality(agent) == 0
+
+    def test_unrelated_procedures_untouched(self, tmp_path: Path) -> None:
+        fabric = self._fab_with_caps(tmp_path, {"email": {"status": "live"}})
+        body = "\n".join([self.GOOD, "Escalate budget overruns to the CFO.",
+                          "Review CI failures before merging."])
+        agent = self._agent_with_procs(fabric, body)
+        assert fabric._reconcile_procedures_against_reality(agent) == 0
+        assert agent.read_identity("procedures") == body
