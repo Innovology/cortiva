@@ -1150,6 +1150,17 @@ class Fabric:
                 logger.debug(
                     "Plugin task dispatch failed for %s", agent.id, exc_info=True,
                 )
+            # Repeated-blocker tripwire: a task that keeps ending in exception is
+            # a human problem. Count the signature and force an escalation once
+            # it recurs past the threshold — so the agent stops silently
+            # re-failing on the same wall.
+            if task.status == "exception":
+                try:
+                    self._check_blocker_tripwire(agent, task)
+                except Exception:
+                    logger.debug(
+                        "Blocker tripwire failed for %s", agent.id, exc_info=True,
+                    )
 
     def _record_task_emotions(
         self, agent: Agent, task: Task, familiarity: Any,
@@ -1315,6 +1326,17 @@ class Fabric:
         )
         if task_ctx:
             context = context + "\n\n---\n\n" + task_ctx
+
+        # High-stakes deliberation (#270): for a critical / risk-laden task,
+        # force a System-2 pass — reason through options, what could go wrong,
+        # and the reversibility of each, THEN act — instead of reacting. This is
+        # deliberation by reasoning in the same call, not a separate ML/RL
+        # engine "playing out" actions: the model already holds the world model,
+        # so we make it slow down and think before committing on the calls that
+        # matter. Low-stakes tasks skip it and stay fast.
+        deliberation = self._deliberation_context(task)
+        if deliberation:
+            context = context + "\n\n---\n\n" + deliberation
 
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent.id, context)
@@ -2936,6 +2958,19 @@ class Fabric:
         config_dir.mkdir(parents=True, exist_ok=True)
         env_overrides["CLAUDE_CONFIG_DIR"] = str(config_dir)
 
+        # Commit attribution: when the agent's session makes git commits it must
+        # commit AS the agent — its real name + workforce email — and NEVER add a
+        # co-author. GIT_AUTHOR_*/GIT_COMMITTER_* override repo/global config, so
+        # this holds for every repo in the session including on-demand clones.
+        # The co-author trailer is stripped by the commit-msg hook installed at
+        # provision time (env can't suppress a trailer the model writes).
+        git_name, git_email = self._agent_git_identity(agent)
+        env_overrides["GIT_AUTHOR_NAME"] = git_name
+        env_overrides["GIT_AUTHOR_EMAIL"] = git_email
+        env_overrides["GIT_COMMITTER_NAME"] = git_name
+        env_overrides["GIT_COMMITTER_EMAIL"] = git_email
+        env_overrides.update(self._ensure_git_attribution(agent, cwd))
+
         session_file = cwd / ".claude_session"
         resume_session: str | None = None
         try:
@@ -3065,6 +3100,14 @@ class Fabric:
         config_dir = cwd / ".claude"
         config_dir.mkdir(parents=True, exist_ok=True)
         creds["CLAUDE_CONFIG_DIR"] = str(config_dir)
+
+        # Commit as the agent (real name + workforce email), never a co-author.
+        git_name, git_email = self._agent_git_identity(agent)
+        creds["GIT_AUTHOR_NAME"] = git_name
+        creds["GIT_AUTHOR_EMAIL"] = git_email
+        creds["GIT_COMMITTER_NAME"] = git_name
+        creds["GIT_COMMITTER_EMAIL"] = git_email
+        creds.update(self._ensure_git_attribution(agent, cwd))
 
         session_file = cwd / ".claude_session"
         try:
@@ -3285,6 +3328,13 @@ class Fabric:
     # A directive (from a superior or a company mission) stays salient until
     # handled, then ages out as a backstop so it can't nag forever.
     _DIRECTIVE_TTL_DAYS = 3.0
+
+    # Repeated-blocker tripwire: the same blocker recurring N times in a window
+    # is a human problem, not a retry problem. After this many hits of the same
+    # signature, force an escalation to a human even if the agent didn't emit
+    # one — so a stuck agent stops silently re-failing or working around it.
+    _BLOCKER_TRIP_THRESHOLD = 3
+    _BLOCKER_TTL_HOURS = 24.0
 
     def _rank_weight_for(self, label: str) -> float:
         """How hard a directive should pull, by who it came from."""
@@ -3787,6 +3837,78 @@ class Fabric:
                 pass
         return ""
 
+    def _agent_git_identity(self, agent: Agent) -> tuple[str, str]:
+        """(display name, email) for git attribution. The agent commits AS
+        itself — its real persona name + workforce email — never as a tool and
+        never with a co-author. Email is ``<first>@<domain>`` when the workforce
+        domain is known, else a stable local fallback so commits never fail for
+        want of an identity."""
+        import yaml
+
+        name = ""
+        deploy = agent.directory / "deploy.yaml"
+        if deploy.exists():
+            try:
+                spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
+                        or {}).get("agent", {}) or {}
+                name = (spec.get("name") or "").strip()
+            except Exception:
+                name = ""
+        name = name or agent.id
+        first = name.split()[0].lower() if name else agent.id
+        domain = (self._email_meta().get("domain") or "").strip()
+        email = f"{first}@{domain}" if domain else f"{first}@cortiva.local"
+        return name, email
+
+    def _ensure_git_attribution(self, agent: Agent, cwd: Path) -> dict[str, str]:
+        """Set up commit attribution for the agent's session and return the env
+        that activates it. Idempotent.
+
+        Two layers, so the agent commits AS itself with NO co-author:
+        - GIT_AUTHOR_*/GIT_COMMITTER_* (set by the caller) fix the identity.
+        - A ``commit-msg`` hook strips any ``Co-Authored-By`` / "Generated with"
+          trailer the model adds. We activate it via GIT_CONFIG_COUNT (a config
+          layer on TOP of system/global/local — it does NOT replace global, so
+          the gh credential helper keeps working) pointing core.hooksPath at a
+          workspace hooks dir. A CLAUDE.md note tells the session the policy up
+          front so it rarely writes the trailer in the first place.
+        """
+        try:
+            hooks_dir = cwd / ".githooks"
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+            hook = hooks_dir / "commit-msg"
+            if not hook.exists():
+                hook.write_text(
+                    "#!/bin/sh\n"
+                    "# Cortiva: agents commit as themselves, never with a "
+                    "co-author.\n"
+                    "grep -viE "
+                    "'^(co-authored-by|generated with|🤖)' \"$1\" > \"$1.tmp\" "
+                    "&& mv \"$1.tmp\" \"$1\"\n",
+                    encoding="utf-8",
+                )
+                hook.chmod(0o755)
+            claude_md = cwd / "CLAUDE.md"
+            note = (
+                "## Commit attribution\n\n"
+                "When you commit, commit AS yourself (your name and email are "
+                "already set in the environment). NEVER add a `Co-Authored-By:` "
+                "line or any 'Generated with' trailer — your work is your own.\n"
+            )
+            if not claude_md.exists():
+                claude_md.write_text(note, encoding="utf-8")
+            elif "Commit attribution" not in claude_md.read_text(encoding="utf-8"):
+                with claude_md.open("a", encoding="utf-8") as fh:
+                    fh.write("\n\n" + note)
+            return {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.hooksPath",
+                "GIT_CONFIG_VALUE_0": str(hooks_dir),
+            }
+        except OSError:
+            logger.debug("git attribution setup failed for %s", agent.id, exc_info=True)
+            return {}
+
     # ------------------------------------------------------------------
     # Global Address List (GAL) — colleague directory for the agent
     # ------------------------------------------------------------------
@@ -3980,6 +4102,128 @@ class Fabric:
         "access", "permission", "token", "directory", "install", "deploy key",
         "dns", "billing", "api key", "secret", "onboard", "add me", "grant",
     )
+
+    # Words that mark a task as high-stakes even if its priority is modest —
+    # irreversible / outward-facing / money / people / production actions.
+    _HIGH_STAKES_KEYWORDS = (
+        "delete", "remove", "drop", "irreversible", "production", "prod ",
+        "deploy", "release", "migrate", "refund", "payment", "invoice",
+        "contract", "hire", "fire", "terminate", "reassign", "let go",
+        "publish", "announce", "press", "customer", "client", "legal",
+        "security", "credential", "secret", "rotate key", "shut down",
+        "decommission", "uninstall", "wipe", "merge to main", "force push",
+    )
+
+    def _deliberation_context(self, task: Task) -> str:
+        """A System-2 block for high-stakes tasks — empty for ordinary ones.
+
+        High-stakes = critical priority OR a description that names an
+        irreversible / outward-facing / money / people / production action. For
+        those, the agent must deliberate before it acts: enumerate options, the
+        likely outcome and what could go wrong for each, whether it's
+        reversible, and only then commit (or escalate if it can't be sure). This
+        is how an agent 'plays out' an action — by reasoning, not by a separate
+        prediction engine.
+        """
+        desc = (task.description or "").lower()
+        high_stakes = task.priority >= 2 or any(
+            k in desc for k in self._HIGH_STAKES_KEYWORDS
+        )
+        if not high_stakes:
+            return ""
+        return (
+            "## 🧭 Deliberate before you act — this is a high-stakes task\n\n"
+            "Do NOT jump straight to doing. Think it through first, in your "
+            "reasoning, then act:\n"
+            "1. **Options** — what are the 2–3 ways you could handle this?\n"
+            "2. **Consequences** — for each, what's the likely outcome and what "
+            "could go wrong? Who is affected?\n"
+            "3. **Reversibility** — is it undoable if you're wrong? Irreversible "
+            "actions (deleting, sending to a customer, anything in production, "
+            "money, people decisions) demand the most care.\n"
+            "4. **Decide** — pick the option with the best outcome/risk balance "
+            "and say WHY. If you cannot be confident it's safe, do NOT proceed: "
+            "escalate to a human instead.\n\n"
+            "Then carry out your chosen course and report what you did."
+        )
+
+    def _blocker_signature(self, task: Task) -> str:
+        """A stable, fuzzy key for 'the same blocker'. Prefer the error (the
+        actual failure), fall back to the description; strip noise so trivially
+        different wordings of the same wall still collapse to one signature."""
+        import re
+
+        raw = (getattr(task, "error", "") or task.description or "").lower()
+        raw = re.sub(r"[^a-z0-9 ]+", " ", raw)
+        return " ".join(raw.split())[:120]
+
+    def _check_blocker_tripwire(self, agent: Agent, task: Task) -> None:
+        """Count recurring blocker signatures; force a human escalation once the
+        same one trips the threshold.
+
+        This is the fix for an agent quietly re-failing (or inventing a
+        workaround) on the same wall instead of asking for help. We persist a
+        per-signature counter (TTL-pruned), and when it crosses the threshold we
+        route an escalation to a human — once per tripped signature, so it
+        doesn't spam — even though the agent itself never raised one.
+        """
+        import json
+        from datetime import UTC, datetime
+
+        sig = self._blocker_signature(task)
+        if not sig:
+            return
+        path = agent.directory / "blockers.json"
+        rows: dict[str, dict] = {}
+        if path.exists():
+            try:
+                rows = json.loads(path.read_text(encoding="utf-8")) or {}
+            except (ValueError, OSError):
+                rows = {}
+        now = datetime.now(UTC)
+        # TTL-prune stale signatures so a slow trickle over weeks doesn't trip.
+        fresh: dict[str, dict] = {}
+        for k, v in rows.items():
+            try:
+                seen = datetime.fromisoformat(str(v.get("last_seen")))
+            except (ValueError, TypeError):
+                seen = now
+            if (now - seen).total_seconds() <= self._BLOCKER_TTL_HOURS * 3600:
+                fresh[k] = v
+        rows = fresh
+
+        row = rows.get(sig) or {"count": 0, "tripped": False, "task": task.description}
+        row["count"] = int(row.get("count", 0)) + 1
+        row["last_seen"] = now.isoformat()
+        row["task"] = task.description
+        rows[sig] = row
+
+        newly_tripped = (
+            row["count"] >= self._BLOCKER_TRIP_THRESHOLD and not row.get("tripped")
+        )
+        if newly_tripped:
+            row["tripped"] = True
+        try:
+            path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        except OSError:
+            logger.debug("could not persist blockers", exc_info=True)
+
+        if newly_tripped:
+            detail = (getattr(task, "error", "") or task.description or "").strip()
+            logger.warning(
+                "Blocker tripwire for %s: '%s' hit %sx — forcing escalation",
+                agent.id, sig, row["count"],
+            )
+            try:
+                self._route_escalation(
+                    agent, task.description,
+                    f"I've hit the same blocker {row['count']} times and can't "
+                    f"clear it myself: {detail}. I've tried and it keeps "
+                    f"failing — I need help to unblock this rather than keep "
+                    f"retrying.",
+                )
+            except Exception:
+                logger.exception("Tripwire escalation failed for %s", agent.id)
 
     def _route_escalation(self, agent: Agent, task_desc: str, escalation: str) -> None:
         """Send a blocked agent's escalation to a human who can act on it.

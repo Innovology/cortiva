@@ -434,9 +434,16 @@ class TestTerminalCredentialInjection:
             agent, Task(id="t1", description="Fix the bug"),
         )
 
-        # NoIsolation envelope returns env=None (inherit) — with no
-        # credentials we must not materialise a copy.
-        assert terminal.invoke.call_args.kwargs["env"] is None
+        # The session always carries its own config (private CLAUDE_CONFIG_DIR)
+        # and the agent's git identity for commit attribution (#273), so env is
+        # materialised. What must NOT appear is any DELEGATED credential when the
+        # agent has none — no GH_TOKEN / GITHUB_ORG leaking in.
+        env = terminal.invoke.call_args.kwargs["env"]
+        assert env is not None
+        assert "GH_TOKEN" not in env
+        assert "GITHUB_ORG" not in env
+        # The git identity IS expected (the agent commits as itself).
+        assert "GIT_AUTHOR_NAME" in env
 
     @pytest.mark.asyncio
     async def test_credential_provider_merged_with_file(
@@ -589,9 +596,14 @@ class TestTerminalBeforeRoutineGate:
         task = Task(id="t1", description="Reflect on the quarterly themes")
         await fabric._execute_task(agent, task, [])
 
-        # Not terminal-shaped → routine gate applies as before.
-        assert task.status == "exception"
-        assert task.error == "Routine deferred task"
+        # Not terminal-shaped → the routine gate is consulted (terminal is not
+        # used), but a "defer" must NOT bin the task as an exception: it falls
+        # through to consciousness so the work actually gets done. (This is the
+        # shipped fix for the routine gate silently dropping real work — see
+        # test_fabric_extended.TestRoutineDeferDoesNotKill.) The task has no
+        # deliverable verb, so executing it completes it.
+        assert task.status == "done"
+        assert task.error != "Routine deferred task"
         terminal.invoke.assert_not_called()
 
 

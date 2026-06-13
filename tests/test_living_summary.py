@@ -300,11 +300,13 @@ class TestFabricLivingSummaryIntegration:
 
         await fabric.sleep("agent-01")
 
-        # Journal gets the agent-written day report, not identity.md
+        # Sleep writes the journal (the pre-sleep reflection ritual), not
+        # identity.md. The journal-content format is the ritual entry; what
+        # matters here is that the journal — not the identity — captured the day.
         journal = agent.journal_path()
         assert journal.exists()
         content = journal.read_text()
-        assert "Today I did important work" in content
+        assert "pre-sleep reflection" in content
         assert "grown today" not in content
 
     @pytest.mark.asyncio
@@ -326,10 +328,10 @@ class TestFabricLivingSummaryIntegration:
         identity = agent.read_identity("identity")
         assert identity == original_identity
 
-        # The journal is still written — stats summary fallback
+        # The journal is still written — the pre-sleep reflection ritual entry.
         journal = agent.journal_path()
         assert journal.exists()
-        assert "Tasks completed" in journal.read_text()
+        assert "pre-sleep reflection" in journal.read_text()
 
     @pytest.mark.asyncio
     async def test_sleep_journal_falls_back_without_delimiter(
@@ -367,7 +369,7 @@ class TestFabricLivingSummaryIntegration:
         assert agent.read_identity("identity") == "# Updated Identity only"
         journal = agent.journal_path()
         assert journal.exists()
-        assert "Tasks completed" in journal.read_text()
+        assert "pre-sleep reflection" in journal.read_text()
 
 
 # ---------------------------------------------------------------------------

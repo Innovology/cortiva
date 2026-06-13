@@ -352,7 +352,11 @@ class TestFabricScheduleIntegration:
         with patch.object(fabric, "_replan", new_callable=AsyncMock) as mock_replan:
             with patch.object(fabric.scheduler, "tick", return_value={"agent-01": ["replan"]}):
                 await fabric.heartbeat()
-            mock_replan.assert_called_once_with(agent, [])
+            # The scheduler 'replan' action triggers a replan. (An empty queue
+            # may also trigger a proactive idle reassess — also a _replan — so
+            # we assert the scheduled replan happened, not that it was the only
+            # call.)
+            mock_replan.assert_any_call(agent, [])
 
     @pytest.mark.asyncio
     async def test_heartbeat_ignores_unknown_agent(self, tmp_path) -> None:

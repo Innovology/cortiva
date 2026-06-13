@@ -1292,3 +1292,164 @@ class TestDirectiveSalience:
         # the founder one is a directive; the newsletter is not
         assert "Sailcoach" in ctx
         assert "newsletter" not in ctx.lower()
+
+
+# ---------------------------------------------------------------------------
+# Repeated-blocker tripwire (#271)
+# ---------------------------------------------------------------------------
+
+
+class TestBlockerTripwire:
+    def test_trips_once_at_threshold_then_stays_quiet(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("blk-01")
+        calls: list[tuple[str, str]] = []
+        fabric._route_escalation = (  # type: ignore[method-assign]
+            lambda ag, desc, esc: calls.append((desc, esc))
+        )
+
+        task = Task(id="t1", description="Run the GitHub sweep",
+                    status="exception", error="gh: command not found")
+
+        # Below threshold: no escalation.
+        fabric._check_blocker_tripwire(agent, task)
+        fabric._check_blocker_tripwire(agent, task)
+        assert calls == []
+
+        # Third hit (default threshold 3) trips exactly once.
+        fabric._check_blocker_tripwire(agent, task)
+        assert len(calls) == 1
+        assert "3 times" in calls[0][1]
+
+        # Further hits of the same signature do NOT re-fire (no spam).
+        fabric._check_blocker_tripwire(agent, task)
+        fabric._check_blocker_tripwire(agent, task)
+        assert len(calls) == 1
+
+    def test_distinct_blockers_counted_separately(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        agent = fabric.register_agent("blk-02")
+        calls: list[tuple[str, str]] = []
+        fabric._route_escalation = (  # type: ignore[method-assign]
+            lambda ag, desc, esc: calls.append((desc, esc))
+        )
+
+        a = Task(id="a", description="Task A", status="exception", error="error one")
+        b = Task(id="b", description="Task B", status="exception", error="error two")
+        for _ in range(2):
+            fabric._check_blocker_tripwire(agent, a)
+            fabric._check_blocker_tripwire(agent, b)
+        # Two hits each — neither has tripped yet.
+        assert calls == []
+        fabric._check_blocker_tripwire(agent, a)
+        assert len(calls) == 1  # only A crossed the threshold
+
+    def test_signature_collapses_noise(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        t1 = Task(id="1", description="x", error="gh: command not found!")
+        t2 = Task(id="2", description="x", error="gh command not found")
+        assert fabric._blocker_signature(t1) == fabric._blocker_signature(t2)
+
+
+# ---------------------------------------------------------------------------
+# High-stakes deliberation pass (#270)
+# ---------------------------------------------------------------------------
+
+
+class TestDeliberationPass:
+    def test_low_stakes_task_skips_deliberation(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        task = Task(id="t", description="Tidy up the meeting notes", priority=0)
+        assert fabric._deliberation_context(task) == ""
+
+    def test_critical_priority_triggers_deliberation(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        task = Task(id="t", description="Draft the agenda", priority=2)
+        ctx = fabric._deliberation_context(task)
+        assert "Deliberate before you act" in ctx
+        assert "Reversibility" in ctx
+
+    def test_high_stakes_keyword_triggers_even_at_low_priority(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        task = Task(id="t", description="Delete the stale production database", priority=0)
+        ctx = fabric._deliberation_context(task)
+        assert "high-stakes task" in ctx
+
+
+# ---------------------------------------------------------------------------
+# Commit attribution — agent name + email, no co-author (#273)
+# ---------------------------------------------------------------------------
+
+
+class TestCommitAttribution:
+    def _agent_with_deploy(self, fabric, tmp_path: Path, name: str):
+        agent = fabric.register_agent("dev-1")
+        (agent.directory).mkdir(parents=True, exist_ok=True)
+        (agent.directory / "deploy.yaml").write_text(
+            f"agent:\n  name: {name}\n", encoding="utf-8",
+        )
+        return agent
+
+    def test_identity_uses_name_and_workforce_email(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        fabric._email_meta = lambda: {"domain": "workforce.example.io"}  # type: ignore
+        agent = self._agent_with_deploy(fabric, tmp_path, "Maren Holt")
+        name, email = fabric._agent_git_identity(agent)
+        assert name == "Maren Holt"
+        assert email == "maren@workforce.example.io"
+
+    def test_identity_falls_back_without_domain(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        fabric._email_meta = lambda: {}  # type: ignore
+        agent = self._agent_with_deploy(fabric, tmp_path, "Vera Lin")
+        name, email = fabric._agent_git_identity(agent)
+        assert name == "Vera Lin"
+        assert email.startswith("vera@")
+
+    def test_attribution_sets_hook_and_claude_note(self, tmp_path: Path) -> None:
+        fabric = _make_fabric(tmp_path)
+        fabric._email_meta = lambda: {"domain": "x.io"}  # type: ignore
+        agent = self._agent_with_deploy(fabric, tmp_path, "Sam Doe")
+        cwd = agent.directory / "workspace"
+        cwd.mkdir(parents=True, exist_ok=True)
+
+        env = fabric._ensure_git_attribution(agent, cwd)
+
+        hook = cwd / ".githooks" / "commit-msg"
+        assert hook.exists()
+        assert env["GIT_CONFIG_KEY_0"] == "core.hooksPath"
+        assert env["GIT_CONFIG_VALUE_0"] == str(cwd / ".githooks")
+        claude_md = (cwd / "CLAUDE.md").read_text(encoding="utf-8")
+        assert "Co-Authored-By" in claude_md
+        # Idempotent: a second call doesn't duplicate the note.
+        fabric._ensure_git_attribution(agent, cwd)
+        assert (cwd / "CLAUDE.md").read_text(encoding="utf-8").count(
+            "Commit attribution"
+        ) == 1
+
+    def test_hook_strips_coauthor_trailer(self, tmp_path: Path) -> None:
+        """The installed commit-msg hook actually removes a co-author line."""
+        import subprocess
+
+        fabric = _make_fabric(tmp_path)
+        fabric._email_meta = lambda: {"domain": "x.io"}  # type: ignore
+        agent = self._agent_with_deploy(fabric, tmp_path, "Sam Doe")
+        cwd = agent.directory / "workspace"
+        cwd.mkdir(parents=True, exist_ok=True)
+        fabric._ensure_git_attribution(agent, cwd)
+
+        msg = cwd / "MSG"
+        msg.write_text(
+            "Fix the thing\n\nBody line\n\n"
+            "Co-Authored-By: Claude <noreply@anthropic.com>\n"
+            "🤖 Generated with Claude Code\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["sh", str(cwd / ".githooks" / "commit-msg"), str(msg)],
+            check=True,
+        )
+        out = msg.read_text(encoding="utf-8")
+        assert "Fix the thing" in out
+        assert "Co-Authored-By" not in out
+        assert "Generated with" not in out
