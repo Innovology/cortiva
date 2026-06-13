@@ -1214,3 +1214,75 @@ class TestForcedWakeOverride:
         # A moment after the window has passed → no longer active.
         future = datetime.now(UTC) + timedelta(minutes=46)
         assert fabric._wake_override_active(agent, future) is False
+
+
+# ---------------------------------------------------------------------------
+# Directive salience — authority/mission work persists top-of-mind
+# ---------------------------------------------------------------------------
+
+
+class TestDirectiveSalience:
+    def _setup(self, tmp_path):
+        import json as _json
+        fabric = _make_fabric(tmp_path)
+        # Email config: a founder contact (authority).
+        (fabric.agents_dir).mkdir(parents=True, exist_ok=True)
+        (fabric.agents_dir / ".email_meta.json").write_text(
+            _json.dumps({"domain": "workforce.innovology.io",
+                         "contacts": [{"address": "alex@innovology.io",
+                                       "scope": "founder"}]}),
+            encoding="utf-8",
+        )
+        agent = fabric.register_agent("ceo", consciousness_budget=10)
+        inbox = agent.directory / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "m1.json").write_text(
+            _json.dumps({"from": "alex@innovology.io", "subject": "Sailcoach update?",
+                         "text": "Please send me the sailcoach plan."}),
+            encoding="utf-8",
+        )
+        return fabric, agent
+
+    def test_founder_mail_becomes_persistent_directive(self, tmp_path):
+        fabric, agent = self._setup(tmp_path)
+        # Reading the inbox records it as a directive (and moves the mail to read/).
+        fabric._email_inbox_context(agent)
+        # It now surfaces as top-of-mind...
+        ctx = fabric._directive_salience_context(agent)
+        assert "Top of mind" in ctx
+        assert "Sailcoach" in ctx
+        assert "outrank" in ctx.lower()
+        # ...and PERSISTS on a second cycle even though the inbox is now empty
+        # (this is the fix for read-once burial).
+        assert fabric._email_inbox_context(agent) == ""  # inbox drained
+        ctx2 = fabric._directive_salience_context(agent)
+        assert "Sailcoach" in ctx2
+
+    def test_directive_clears_when_she_emails_the_originator(self, tmp_path):
+        import json as _json, time
+        fabric, agent = self._setup(tmp_path)
+        fabric._email_inbox_context(agent)
+        assert fabric._directive_salience_context(agent) != ""
+        # She replies to the founder → directive resolved.
+        sent = agent.directory / "outbox" / "email" / "sent"
+        sent.mkdir(parents=True, exist_ok=True)
+        f = sent / "reply.json"
+        f.write_text(_json.dumps({"to": "alex@innovology.io",
+                                  "subject": "Re: Sailcoach update?"}), encoding="utf-8")
+        # ensure the sent file's mtime is after the directive opened
+        import os
+        os.utime(f, (time.time() + 5, time.time() + 5))
+        assert fabric._directive_salience_context(agent) == ""
+
+    def test_non_authority_mail_is_not_a_directive(self, tmp_path):
+        import json as _json
+        fabric, agent = self._setup(tmp_path)
+        (agent.directory / "inbox" / "m2.json").write_text(
+            _json.dumps({"from": "random@elsewhere.com", "subject": "newsletter",
+                         "text": "hi"}), encoding="utf-8",
+        )
+        fabric._email_inbox_context(agent)
+        ctx = fabric._directive_salience_context(agent)
+        # the founder one is a directive; the newsletter is not
+        assert "Sailcoach" in ctx
+        assert "newsletter" not in ctx.lower()

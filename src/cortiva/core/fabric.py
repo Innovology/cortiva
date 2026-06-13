@@ -615,6 +615,24 @@ class Fabric:
         if self.channel:
             messages = await self.channel.receive(agent_id)
 
+        # Open directives spike the chemistry (the subconscious 'the boss
+        # asked / this is the mission' arousal) so authority/mission work
+        # dominates today's prioritisation — not just the text salience block.
+        try:
+            opens = self._open_directives(agent)
+            if opens:
+                top = max(opens, key=lambda d: d.get("rank_weight", 0.0))
+                await self.plugin_manager.dispatch_hook(
+                    agent_id, "directive",
+                    {
+                        "rank_weight": top.get("rank_weight", 1.0),
+                        "mission": any(d.get("mission") for d in opens),
+                        "count": len(opens),
+                    },
+                )
+        except Exception:
+            logger.debug("directive arousal hook failed", exc_info=True)
+
         agent.transition(AgentState.PLANNING)
 
         if self.budget_manager:
@@ -682,6 +700,12 @@ class Fabric:
 
         # Build full context: identity + messages + org + plan cascade + daily context
         context = await self.context_builder.build_plan_context(agent, identity, messages)
+
+        # Directives from above / company missions go FIRST — top of mind,
+        # above her own plan (the salience she doesn't choose to feel).
+        directive_ctx = self._directive_salience_context(agent)
+        if directive_ctx:
+            context = context + "\n\n---\n\n" + directive_ctx
 
         if self.org:
             org_text = self.org.org_context_for(agent_id)
@@ -3299,6 +3323,158 @@ class Fabric:
 
         return response.content
 
+    # A directive (from a superior or a company mission) stays salient until
+    # handled, then ages out as a backstop so it can't nag forever.
+    _DIRECTIVE_TTL_DAYS = 3.0
+
+    def _rank_weight_for(self, label: str) -> float:
+        """How hard a directive should pull, by who it came from."""
+        lo = (label or "").lower()
+        if "founder" in lo:
+            return 1.0
+        if "your manager" in lo:
+            return 0.7
+        if "management chain" in lo:
+            return 0.85
+        return 0.5  # human colleague / other authority
+
+    def _record_directives(
+        self, agent: Agent, priority: list[dict], authority: dict[str, str],
+    ) -> None:
+        """Persist authority-sourced mail as durable, open directives.
+
+        Idempotent by (from, subject): re-seeing the same mail doesn't dup it.
+        """
+        import json
+        import re
+        from datetime import UTC, datetime
+
+        def _addr(s: str) -> str:
+            m = re.search(r"[\w.+-]+@[\w.-]+", s or "")
+            return m.group(0).lower() if m else (s or "").strip().lower()
+
+        path = agent.directory / "directives.json"
+        existing: list[dict] = []
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8")) or []
+            except (ValueError, OSError):
+                existing = []
+        seen = {(d.get("from_addr", ""), d.get("subject", "")) for d in existing}
+        now = datetime.now(UTC).isoformat()
+        added = False
+        for m in priority:
+            frm = _addr(m.get("from", ""))
+            subj = str(m.get("subject", "")).strip()
+            key = (frm, subj)
+            if key in seen:
+                continue
+            label = authority.get(frm, "")
+            blob = (subj + " " + str(m.get("text", ""))).lower()
+            mission = ("mission" in blob) or ("top priority" in blob)
+            existing.append({
+                "from_addr": frm,
+                "from": m.get("from", ""),
+                "label": label,
+                "subject": subj,
+                "snippet": (m.get("text") or "").strip().replace("\n", " ")[:240],
+                "rank_weight": self._rank_weight_for(label),
+                "mission": mission,
+                "opened_at": now,
+                "status": "open",
+            })
+            seen.add(key)
+            added = True
+        if added:
+            try:
+                path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            except OSError:
+                logger.debug("could not persist directives", exc_info=True)
+
+    def _open_directives(self, agent: Agent) -> list[dict]:
+        """Open directives, with resolved/expired ones pruned.
+
+        Resolved = the agent has emailed the originator since it opened (she
+        handled it). Expired = older than the TTL. Both are dropped and the
+        file is rewritten so it self-cleans.
+        """
+        import json
+        from datetime import UTC, datetime
+
+        path = agent.directory / "directives.json"
+        if not path.exists():
+            return []
+        try:
+            items = json.loads(path.read_text(encoding="utf-8")) or []
+        except (ValueError, OSError):
+            return []
+        now = datetime.now(UTC)
+        # Addresses the agent has emailed, with the latest time (sent outbox).
+        emailed_at: dict[str, float] = {}
+        for sub in ("email/sent", "email"):
+            d = agent.directory / "outbox" / sub
+            if not d.is_dir():
+                continue
+            for f in d.glob("*.json"):
+                try:
+                    msg = json.loads(f.read_text(encoding="utf-8"))
+                    to = str(msg.get("to", "")).strip().lower()
+                    if to:
+                        emailed_at[to] = max(emailed_at.get(to, 0.0), f.stat().st_mtime)
+                except (ValueError, OSError):
+                    continue
+        still_open: list[dict] = []
+        for d in items:
+            if d.get("status") != "open":
+                continue
+            try:
+                opened = datetime.fromisoformat(str(d.get("opened_at")))
+            except (ValueError, TypeError):
+                opened = now
+            if (now - opened).total_seconds() > self._DIRECTIVE_TTL_DAYS * 86400:
+                continue  # expired backstop
+            frm = d.get("from_addr", "")
+            sent_t = emailed_at.get(frm, 0.0)
+            if sent_t and sent_t >= opened.timestamp():
+                continue  # she replied to the originator → handled
+            still_open.append(d)
+        # Self-clean: rewrite only the open set if we pruned anything.
+        if len(still_open) != len([d for d in items if d.get("status") == "open"]):
+            try:
+                path.write_text(json.dumps(still_open, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+        return still_open
+
+    def _directive_salience_context(self, agent: Agent) -> str:
+        """Top-of-mind block for open directives from above / company missions.
+
+        This is the salience the agent doesn't choose to feel — it sits ABOVE
+        her self-set work and persists every cycle until she handles it or
+        explicitly, consciously decides to defer (she may push back, but it must
+        be a stated decision, never silent omission)."""
+        opens = self._open_directives(agent)
+        if not opens:
+            return ""
+        opens.sort(key=lambda d: (d.get("mission", False), d.get("rank_weight", 0)), reverse=True)
+        lines = [
+            "## ⬆️ Top of mind — directives from above / company missions\n",
+            "These came from a superior or are company missions. They **outrank "
+            "anything you set for yourself.** For EACH one this cycle: action it, "
+            "or state explicitly in your plan why you're deferring and until "
+            "when. You may disagree and push back — but only as a conscious, "
+            "named decision, never by quietly leaving it off your list. Silently "
+            "dropping a superior's ask is the one thing you must not do.\n",
+        ]
+        for d in opens[:8]:
+            tag = " **[COMPANY MISSION]**" if d.get("mission") else ""
+            who = d.get("label") or d.get("from", "")
+            lines.append(
+                f"- **{d.get('subject', '(no subject)')}**{tag} — from _{who}_  \n"
+                f"  {d.get('snippet', '')}"
+            )
+        return "\n".join(lines)
+
     def _email_inbox_context(self, agent: Agent) -> str:
         """Read the agent's delivered email inbox and render it for the wake
         context, then move read mail aside so it surfaces only once.
@@ -3369,6 +3545,16 @@ class Fabric:
 
         priority = [m for m in items if _addr(m.get("from", "")) in authority]
         rest = [m for m in items if _addr(m.get("from", "")) not in authority]
+        # Persist authority-sourced mail as DURABLE directives — so a founder's
+        # ask doesn't vanish from her context the moment this read-once inbox
+        # moves it to read/. They stay top-of-mind (and keep her chemistry
+        # spiked) until she actually handles them. This is the fix for the
+        # sailcoach asks getting seen once then buried.
+        if priority:
+            try:
+                self._record_directives(agent, priority, authority)
+            except Exception:
+                logger.debug("directive record failed", exc_info=True)
         # GitHub notifications are feedback on the agent's OWN work — comments
         # on their PRs/issues, review requests, CI. They were landing in the
         # "ignore as you judge" bucket and piling up unread, so feedback loops
@@ -4062,6 +4248,11 @@ class Fabric:
         inbox_ctx = self._email_inbox_context(agent)
         if inbox_ctx:
             context = context + "\n\n---\n\n" + inbox_ctx
+
+        # Open directives stay top-of-mind on every reassess, not just at wake.
+        directive_ctx = self._directive_salience_context(agent)
+        if directive_ctx:
+            context = context + "\n\n---\n\n" + directive_ctx
 
         # Fresh tested capability status — so a reassess that's about to escalate
         # or work around a "blocker" sees what's actually live first.
