@@ -39,6 +39,30 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_S = 180.0
 _BINARY = "claude"
 
+# Where ``claude`` is commonly installed. Needed because the fabric/node runs
+# under launchd with a minimal PATH that omits /opt/homebrew/bin, so a bare
+# ``claude`` (or shutil.which) doesn't resolve even though it's installed — the
+# same non-interactive-PATH gap that bit install.sh.
+_CLAUDE_SEARCH = (
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+    os.path.expanduser("~/.claude/local/claude"),
+    os.path.expanduser("~/.npm-global/bin/claude"),
+    "/opt/homebrew/opt/node/bin/claude",
+)
+
+
+def _resolve_claude() -> str | None:
+    """Full path to the ``claude`` binary, searching PATH then known install
+    locations. Returns None only if it genuinely isn't installed."""
+    found = shutil.which(_BINARY)
+    if found:
+        return found
+    for path in _CLAUDE_SEARCH:
+        if os.path.exists(path):
+            return path
+    return None
+
 
 class DeepThinkError(RuntimeError):
     """Raised when the deep-think subshell fails or its preconditions
@@ -85,7 +109,7 @@ def deep_think(
 
     _check_preconditions()
 
-    cmd: list[str] = [_BINARY, "-p", prompt]
+    cmd: list[str] = [_resolve_claude() or _BINARY, "-p", prompt]
     if extra_args:
         cmd.extend(extra_args)
 
@@ -142,7 +166,21 @@ def _claude_env() -> dict[str, str]:
     """
     from cortiva.core.claude_auth import claude_oauth_env
 
-    return claude_oauth_env()
+    env = claude_oauth_env()
+    # Ensure the dirs where claude (and the node it shells out to) live are on
+    # PATH — the launchd/non-interactive env omits /opt/homebrew/bin, which both
+    # breaks resolution and stops claude finding node at runtime.
+    extra_paths = ["/opt/homebrew/bin", "/usr/local/bin"]
+    resolved = _resolve_claude()
+    if resolved:
+        extra_paths.insert(0, os.path.dirname(resolved))
+    current = env.get("PATH", "")
+    parts = current.split(os.pathsep) if current else []
+    for p in extra_paths:
+        if p and p not in parts:
+            parts.append(p)
+    env["PATH"] = os.pathsep.join(parts)
+    return env
 
 
 def _check_preconditions() -> None:
@@ -157,10 +195,10 @@ def _check_preconditions() -> None:
     CLI itself fails with a clear "not authenticated" message that
     surfaces through our subprocess error path.
     """
-    if shutil.which(_BINARY) is None:
+    if _resolve_claude() is None:
         raise DeepThinkError(
-            f"`{_BINARY}` binary not found on PATH. Install with: "
-            "brew install --cask claude-code  (macOS) "
+            f"`{_BINARY}` binary not found on PATH or known install locations. "
+            "Install with: brew install --cask claude-code  (macOS) "
             "or  npm install -g @anthropic-ai/claude-code  (Linux).",
         )
 
