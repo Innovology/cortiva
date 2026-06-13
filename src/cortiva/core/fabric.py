@@ -49,6 +49,7 @@ from cortiva.core.hooks import HookRouter
 from cortiva.core.ipc import FabricServer
 from cortiva.core.isolation import NoIsolation
 from cortiva.core.living_summary import (
+    DAY_REPORT_DELIMITER,
     LivingSummaryRegenerator,
     split_identity_and_day_report,
 )
@@ -837,9 +838,23 @@ class Fabric:
         try:
             from cortiva.skills.claude_code_deep_think.wrapper import deep_think
 
+            # claude -p is an agentic CLI: without this it returns commentary
+            # ("I've drafted the new identity, needs your approval…") or tries to
+            # act, instead of emitting the document. Constrain it to return ONLY
+            # the rewritten identity + day report, as plain text.
+            constrained = (
+                prompt
+                + "\n\n---\n\n## OUTPUT FORMAT (strict)\n"
+                "Return ONLY the rewritten identity.md content, then a line with "
+                f"exactly `{DAY_REPORT_DELIMITER}`, then the day report. No "
+                "preamble, no explanation, no commentary, and do NOT ask for "
+                "approval. Do NOT use any tools or write any files — just output "
+                "the text directly."
+            )
             res = await asyncio.to_thread(
                 lambda: deep_think(
-                    prompt, timeout_s=240.0, extra_args=["--model", "opus"],
+                    constrained, timeout_s=240.0,
+                    extra_args=["--model", "opus", "--max-turns", "1"],
                 )
             )
             return res.text
