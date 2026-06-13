@@ -129,72 +129,10 @@ def _resolve_msg_email(
     return None
 
 
-def _parse_plan(plan_text: str) -> TaskQueue:
-    """Parse plan markdown into a TaskQueue.
-
-    Recognises checkbox lists (``- [ ]`` / ``- [x]``), numbered lists
-    (``1.``), and plain bullet lists (``- ``).  Priority markers like
-    ``**[CRITICAL]**`` and ``**[HIGH]**`` are extracted.
-    """
-    tasks: list[Task] = []
-    task_id = 0
-
-    for line in plan_text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-
-        # Match checkbox, numbered, or bullet list items
-        # Checkbox: - [ ] or - [x] or - [X] or * [ ] etc.
-        checkbox_match = re.match(
-            r"^[-*]\s*\[([ xX])\]\s*(.*)", stripped
-        )
-        # Numbered: 1. or 1)
-        numbered_match = re.match(r"^\d+[.)]\s+(.*)", stripped)
-        # Plain bullet: - or *
-        bullet_match = re.match(r"^[-*]\s+(.*)", stripped)
-
-        description: str | None = None
-        done = False
-
-        if checkbox_match:
-            done = checkbox_match.group(1).lower() == "x"
-            description = checkbox_match.group(2).strip()
-        elif numbered_match:
-            description = numbered_match.group(1).strip()
-        elif bullet_match:
-            # Avoid matching header-like lines (e.g. "# Heading")
-            candidate = bullet_match.group(1).strip()
-            if candidate and not candidate.startswith("#"):
-                description = candidate
-
-        if not description:
-            continue
-
-        # Extract priority markers
-        priority = 0
-        priority_pattern = r"\*\*\[(\w+)\]\*\*\s*"
-        priority_match = re.search(priority_pattern, description)
-        if priority_match:
-            marker = priority_match.group(1).upper()
-            if marker == "CRITICAL":
-                priority = 2
-            elif marker == "HIGH":
-                priority = 1
-            description = re.sub(priority_pattern, "", description).strip()
-
-        if not description:
-            continue
-
-        task_id += 1
-        tasks.append(Task(
-            id=f"task-{task_id}",
-            description=description,
-            status="done" if done else "pending",
-            priority=priority,
-        ))
-
-    return TaskQueue(tasks=tasks)
+# NOTE: ``_parse_plan`` lives in ``cortiva.core.agent`` (imported above) and is
+# re-exported here for backwards compatibility. There was previously a SECOND,
+# divergent copy defined in this module that shadowed the import — it silently
+# missed the subtask/done-gating logic (#267). Keep exactly one implementation.
 
 
 class Fabric:
@@ -4350,22 +4288,31 @@ class Fabric:
         if agent.task_queue is None:
             return
 
-        lines = [f"# {agent.id} — Plan\n"]
-        for task in agent.task_queue.tasks:
+        def _render(task: Any, indent: int = 0) -> None:
             check = "x" if task.status == "done" else " "
             priority_prefix = ""
             if task.priority == 2:
                 priority_prefix = "**[CRITICAL]** "
             elif task.priority == 1:
                 priority_prefix = "**[HIGH]** "
-
             status_suffix = ""
             if task.status == "skipped":
                 status_suffix = " *(skipped)*"
+            elif task.status == "acknowledged":
+                status_suffix = " *(acknowledged — not done)*"
             elif task.status == "exception":
                 status_suffix = f" *(exception: {task.error})*"
+            pad = "  " * indent
+            lines.append(
+                f"{pad}- [{check}] {priority_prefix}{task.description}{status_suffix}"
+            )
+            # Subtasks render indented so they round-trip through _parse_plan.
+            for st in getattr(task, "subtasks", []) or []:
+                _render(st, indent + 1)
 
-            lines.append(f"- [{check}] {priority_prefix}{task.description}{status_suffix}")
+        lines = [f"# {agent.id} — Plan\n"]
+        for task in agent.task_queue.tasks:
+            _render(task)
 
         if agent.task_queue.exceptions:
             lines.append("")

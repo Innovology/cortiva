@@ -431,6 +431,118 @@ class TestTaskQueue:
 
 
 # ---------------------------------------------------------------------------
+# Subtasks + done-gating (#267): a parent isn't done until its leaves are.
+# ---------------------------------------------------------------------------
+
+class TestSubtasksAndDoneGating:
+    def test_indented_bullets_become_subtasks(self) -> None:
+        plan = (
+            "# Plan\n\n"
+            "- [ ] **[CRITICAL]** Founder directive: SailCoach launch\n"
+            "  - [ ] Collate staff allocation & progress\n"
+            "  - [ ] Reply to the founder\n"
+            "- [ ] Run 1-1 cadence\n"
+        )
+        tq = _parse_plan(plan)
+        assert len(tq.tasks) == 2  # only top-level tasks at the root
+        directive = tq.tasks[0]
+        assert directive.priority == 2
+        assert len(directive.subtasks) == 2
+        assert directive.subtasks[0].description == "Collate staff allocation & progress"
+        assert directive.subtasks[1].description == "Reply to the founder"
+        assert tq.tasks[1].description == "Run 1-1 cadence"
+        assert tq.tasks[1].subtasks == []
+
+    def test_next_pending_returns_workable_leaves(self) -> None:
+        plan = (
+            "- [ ] Parent with subtasks\n"
+            "  - [ ] First leaf\n"
+            "  - [ ] Second leaf\n"
+            "- [ ] **[HIGH]** Standalone leaf\n"
+        )
+        tq = _parse_plan(plan)
+        nxt = tq.next_pending()
+        assert nxt is not None
+        # standalone HIGH outranks the normal-priority subtask leaf
+        assert nxt.description == "Standalone leaf"
+
+    def test_next_pending_never_returns_a_parent(self) -> None:
+        tq = TaskQueue(tasks=[
+            Task(id="p", description="Parent", priority=2, subtasks=[
+                Task(id="s1", description="leaf", priority=0),
+            ]),
+        ])
+        nxt = tq.next_pending()
+        assert nxt is not None
+        assert nxt.id == "s1"  # the parent (priority 2) is never worked directly
+
+    def test_complete_parent_with_open_subtasks_only_acknowledges(self) -> None:
+        agent = Agent(id="a1", directory=Path("/tmp/a1"))
+        parent = Task(id="p", description="Directive", subtasks=[
+            Task(id="s1", description="act", status="pending"),
+            Task(id="s2", description="reply", status="pending"),
+        ])
+        agent.task_queue = TaskQueue(tasks=[parent])
+        agent.complete_task(parent, "read it")
+        # Marking intent as completion is downgraded to acknowledged, NOT done.
+        assert parent.status == "acknowledged"
+        assert parent.is_done() is False
+
+    def test_parent_done_once_all_subtasks_resolved(self) -> None:
+        agent = Agent(id="a1", directory=Path("/tmp/a1"))
+        s1 = Task(id="s1", description="act", status="done")
+        s2 = Task(id="s2", description="reply", status="done")
+        parent = Task(id="p", description="Directive", subtasks=[s1, s2])
+        agent.task_queue = TaskQueue(tasks=[parent])
+        agent.complete_task(parent, "delivered")
+        assert parent.status == "done"
+        assert parent.is_done() is True
+
+    def test_all_done_respects_open_subtasks(self) -> None:
+        parent = Task(id="p", description="Directive", status="done", subtasks=[
+            Task(id="s1", description="act", status="done"),
+            Task(id="s2", description="reply", status="pending"),
+        ])
+        tq = TaskQueue(tasks=[parent])
+        # Parent says done, but a leaf is open → the queue is NOT all done.
+        assert tq.all_done() is False
+        parent.subtasks[1].status = "done"
+        assert tq.all_done() is True
+
+    def test_acknowledged_parent_round_trips_through_plan(self) -> None:
+        from cortiva.core.fabric import Fabric
+
+        plan = (
+            "- [ ] Directive\n"
+            "  - [ ] act\n"
+            "  - [ ] reply\n"
+        )
+        tq = _parse_plan(plan)
+        agent = Agent(id="a1", directory=Path("/tmp/a1"))
+        agent.task_queue = tq
+        agent.complete_task(tq.tasks[0], "started")
+        assert tq.tasks[0].status == "acknowledged"
+
+        # Render → reparse: subtasks survive the round-trip.
+        fabric = Fabric.__new__(Fabric)
+        lines: list[str] = []
+
+        def _render(task, indent=0):  # type: ignore[no-untyped-def]
+            check = "x" if task.status == "done" else " "
+            suffix = " *(acknowledged — not done)*" if task.status == "acknowledged" else ""
+            pad = "  " * indent
+            lines.append(f"{pad}- [{check}] {task.description}{suffix}")
+            for st in task.subtasks:
+                _render(st, indent + 1)
+
+        for t in tq.tasks:
+            _render(t)
+        reparsed = _parse_plan("\n".join(lines))
+        assert len(reparsed.tasks) == 1
+        assert len(reparsed.tasks[0].subtasks) == 2
+
+
+# ---------------------------------------------------------------------------
 # Cycle tests
 # ---------------------------------------------------------------------------
 
@@ -467,8 +579,12 @@ class TestCycle:
             task.status = "done"
 
         result = await fabric.cycle("worker-01")
-        assert result["action"] == "idle"
-        assert result["all_tasks_complete"] is True
+        # Clearing the queue no longer means "done for the day": the cycle runs
+        # a throttled proactive reassess instead of executing a stale task, so
+        # the action is a plain idle OR a reassessed_idle (which may pull in
+        # fresh work). Either way, no already-done task is re-executed.
+        assert result["action"] in ("idle", "reassessed_idle")
+        assert result["task"] is None
 
     @pytest.mark.asyncio
     async def test_budget_exhaustion_defers(self, tmp_path: Path) -> None:
@@ -556,13 +672,16 @@ class TestFullCycle:
         initial_task_count = len(agent.task_queue.tasks)
         assert initial_task_count > 0
 
-        # Execute cycles until all tasks are complete
+        # Execute cycles until the initial list is worked through. A proactive
+        # reassess may replan and pull in fresh work (a capable colleague who's
+        # cleared their plate looks for the next valuable thing), so we no longer
+        # assert the queue stays empty forever — only that real work got done.
         for _ in range(initial_task_count + 2):  # safety margin
             result = await fabric.cycle("cycle-01")
             if result["all_tasks_complete"]:
                 break
 
-        assert agent.task_queue.all_done()
+        assert agent.tasks_completed_today > 0
 
         # Sleep: reflection written, state back to SLEEPING
         agent = await fabric.sleep("cycle-01")

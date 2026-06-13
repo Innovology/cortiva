@@ -20,13 +20,33 @@ from typing import Any
 
 @dataclass
 class Task:
-    """A single unit of work in an agent's plan."""
+    """A single unit of work in an agent's plan.
+
+    A task may hold ``subtasks``. A parent is NOT complete until every subtask
+    is — 'acknowledged' (read it, started on it) is a real, distinct state, but
+    it is NOT 'done'. This is the fix for marking intent as completion (ticking
+    "reply to the founder" done before the reply is actually sent).
+    """
     id: str
-    description: str
-    status: str = "pending"   # pending | in_progress | done | skipped | exception
+    description: str = ""
+    # pending | acknowledged | in_progress | done | skipped | exception
+    #   acknowledged = read & owned, work not finished (NOT done)
+    status: str = "pending"
     priority: int = 0         # 0=normal, 1=high, 2=critical
     outcome: str = ""
     error: str = ""
+    subtasks: list[Task] = field(default_factory=list)
+
+    def can_complete(self) -> bool:
+        """A task may only be marked done once every subtask is resolved
+        (done or skipped). Open subtasks block the parent."""
+        return all(
+            st.status in ("done", "skipped") for st in self.subtasks
+        )
+
+    def is_done(self) -> bool:
+        """Truly complete: marked done AND no subtask left open."""
+        return self.status == "done" and self.can_complete()
 
 
 @dataclass
@@ -37,16 +57,28 @@ class TaskQueue:
     replan_count: int = 0
 
     def next_pending(self) -> Task | None:
-        """Return highest-priority pending task, or None."""
-        pending = [t for t in self.tasks if t.status == "pending"]
-        if not pending:
+        """Highest-priority pending WORK unit. A parent that has subtasks is
+        not worked directly (its work IS its subtasks) — so workable = pending
+        leaf tasks (top-level tasks with no subtasks) + pending subtasks."""
+        workable: list[Task] = []
+        for t in self.tasks:
+            if t.subtasks:
+                workable.extend(st for st in t.subtasks if st.status == "pending")
+            elif t.status == "pending":
+                workable.append(t)
+        if not workable:
             return None
-        pending.sort(key=lambda t: t.priority, reverse=True)
-        return pending[0]
+        workable.sort(key=lambda t: t.priority, reverse=True)
+        return workable[0]
 
     def all_done(self) -> bool:
-        """True when no tasks are pending or in_progress."""
-        return all(t.status not in ("pending", "in_progress") for t in self.tasks)
+        """True when no unit (task OR subtask) is still open. A parent marked
+        'done' with open subtasks does NOT count — its leaves gate it."""
+        def _open(t: Task) -> bool:
+            if t.status in ("pending", "in_progress", "acknowledged"):
+                return True
+            return any(_open(st) for st in t.subtasks)
+        return not any(_open(t) for t in self.tasks)
 
     def completion_summary(self) -> dict[str, int]:
         """Count tasks by status."""
@@ -66,11 +98,13 @@ def _parse_plan(plan_text: str) -> TaskQueue:
     """
     tasks: list[Task] = []
     task_id = 0
+    last_top: Task | None = None  # most recent top-level task, for subtasks
 
     for line in plan_text.splitlines():
-        stripped = line.strip()
-        if not stripped:
+        if not line.strip():
             continue
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
 
         checkbox_match = re.match(r"^[-*]\s*\[([ xX])\]\s*(.*)", stripped)
         numbered_match = re.match(r"^\d+[.)]\s+(.*)", stripped)
@@ -107,12 +141,20 @@ def _parse_plan(plan_text: str) -> TaskQueue:
             continue
 
         task_id += 1
-        tasks.append(Task(
+        task = Task(
             id=f"task-{task_id}",
             description=description,
             status="done" if done else "pending",
             priority=priority,
-        ))
+        )
+        # Indented bullets attach as subtasks of the last top-level task — so
+        # a directive can decompose into acknowledge → act → reply, and the
+        # parent can't be 'done' until every leaf is.
+        if indent >= 2 and last_top is not None:
+            last_top.subtasks.append(task)
+        else:
+            tasks.append(task)
+            last_top = task
 
     return TaskQueue(tasks=tasks)
 
@@ -481,7 +523,14 @@ class Agent:
         return self.task_queue.next_pending()
 
     def complete_task(self, task: Task, outcome: str) -> None:
-        """Mark a task as completed."""
+        """Mark a task complete — but a parent with open subtasks can only be
+        ACKNOWLEDGED, never done. The work isn't finished until every leaf is
+        (e.g. you can't 'complete' a directive while 'reply to founder' is open).
+        Done only counts as delivered work; acknowledged does not."""
+        if not task.can_complete():
+            task.status = "acknowledged"
+            task.outcome = outcome
+            return
         task.status = "done"
         task.outcome = outcome
         self.tasks_completed_today += 1
