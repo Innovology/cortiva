@@ -1246,13 +1246,21 @@ class Fabric:
             # delegation/comms tasks, who then completed 0 tasks and felt it).
             # "defer" now falls through to consciousness like "escalate":
             # if it isn't confidently routine, the agent actually does it.
-            if action == "procedural":
+            # A procedural match only short-circuits for tasks with NO
+            # deliverable. The routine layer produces text only — it can't send
+            # the email or open the PR — so letting it "complete" a task that
+            # names a deliverable is exactly the mark-done-without-doing bug
+            # (#269). Deliverable tasks fall through to consciousness, which can
+            # actually emit the side-effect.
+            if action == "procedural" and not any(
+                v in task.description.lower() for v in self._DELIVERABLE_VERBS
+            ):
                 task.status = "done"
                 task.outcome = routine_assessment.get("result", "Completed procedurally")
                 agent.tasks_completed_today += 1
                 return
-            # "defer" and "escalate" both fall through to consciousness —
-            # the work gets done, never dropped.
+            # "defer" and "escalate" (and procedural-but-deliverable) all fall
+            # through to consciousness — the work gets done, never dropped.
 
         # Consciousness execution (budget-permitting)
         task_priority = (
@@ -1360,16 +1368,29 @@ class Fabric:
             suffix = suffix or ReflectionSuffix()
             apply_tool_calls_to_suffix(suffix, response.tool_calls)
 
-        task.status = "done"
-        if suffix and suffix.outcome:
-            task.outcome = suffix.outcome
-        else:
-            task.outcome = reflection.clean_content
-        agent.tasks_completed_today += 1
-
-        # Process structured reflection metadata / tool calls if present
+        outcome = (
+            suffix.outcome if suffix and suffix.outcome else reflection.clean_content
+        )
+        # Process structured reflection metadata / tool calls FIRST, so any
+        # side-effects (email/document/message/escalation) are emitted before
+        # we judge whether the task was actually delivered.
         if suffix:
             await self._process_reflection(agent, task, suffix)
+
+        # #267 + #269: "done" means delivered. A parent with open subtasks can
+        # only be acknowledged; and a task that NAMES a deliverable (reply,
+        # send, publish, ship, commit, document) is only done if a matching
+        # side-effect actually went out this turn. Otherwise it's acknowledged —
+        # worked on, not finished. This is the fix for ticking "reply to the
+        # founder" done with no email ever sent.
+        task.outcome = outcome
+        if not task.can_complete():
+            task.status = "acknowledged"
+        elif not self._task_delivered(task, suffix):
+            task.status = "acknowledged"
+        else:
+            task.status = "done"
+            agent.tasks_completed_today += 1
 
         # Store as memory
         await self.memory.store(
@@ -3384,6 +3405,44 @@ class Fabric:
                 pass
         return still_open
 
+    # Verbs that name a deliverable — a side-effect in the world, not just an
+    # internal thought. If a task says it, "done" requires the side-effect.
+    _DELIVERABLE_VERBS = (
+        "reply", "respond", "email", "send", "write to", "report to",
+        "publish", "circulate", "distribute", "share with", "announce",
+        "submit", "deliver", "ship", "release", "commit", "open a pr",
+        "raise a pr", "merge", "file an issue", "document", "draft and send",
+        "notify", "inform", "update the team", "get back to",
+    )
+
+    def _task_delivered(self, task: Task, suffix: Any) -> bool:
+        """True if completing this task is honest.
+
+        A task whose description names a deliverable (reply / send / publish /
+        commit / document …) is only delivered when a matching side-effect
+        actually went out this turn — an email, a document, a peer message, an
+        escalation, or a completed assignment. A task that names no deliverable
+        (thinking, reviewing, deciding) is delivered by being executed.
+
+        Terminal/hands-on tasks never reach this path (they return earlier from
+        the terminal executor), so we don't second-guess code work here.
+        """
+        desc = (task.description or "").lower()
+        requires = any(v in desc for v in self._DELIVERABLE_VERBS)
+        if not requires:
+            return True
+        if suffix is None:
+            return False
+        # Did a real outward artifact get emitted this turn?
+        return bool(
+            getattr(suffix, "email", None)
+            or getattr(suffix, "document", None)
+            or getattr(suffix, "messages", None)
+            or getattr(suffix, "escalation", None)
+            or getattr(suffix, "complete_assignment", None)
+            or getattr(suffix, "delegate", None)
+        )
+
     def _directive_salience_context(self, agent: Agent) -> str:
         """Top-of-mind block for open directives from above / company missions.
 
@@ -3403,13 +3462,34 @@ class Fabric:
             "when. You may disagree and push back — but only as a conscious, "
             "named decision, never by quietly leaving it off your list. Silently "
             "dropping a superior's ask is the one thing you must not do.\n",
+            "**How to put each directive in your plan — decompose it, don't "
+            "tick it.** A directive is a parent task with SUB-TASKS (indent them "
+            "two spaces under the parent). Reading it is not doing it; the parent "
+            "is not done until every sub-task is. At minimum give it:\n"
+            "  1. acknowledge & understand what's actually being asked,\n"
+            "  2. do the work (collate / build / decide — the substance),\n"
+            "  3. **reply to the person who sent it** — this leaf is REQUIRED on "
+            "every directive. You have not handled a directive until you have "
+            "replied to its originator with the outcome. Closing the loop with "
+            "the human is the deliverable, not an afterthought.\n",
+            "Example:\n"
+            "```\n"
+            "- [ ] **[CRITICAL]** <their ask>\n"
+            "  - [ ] Acknowledge & scope what's being asked\n"
+            "  - [ ] <the substantive work>\n"
+            "  - [ ] Reply to <originator> with the outcome\n"
+            "```\n",
         ]
         for d in opens[:8]:
             tag = " **[COMPANY MISSION]**" if d.get("mission") else ""
             who = d.get("label") or d.get("from", "")
+            # Name the originator + address so the required reply leaf is
+            # concrete — "reply to whom?" can never be the excuse.
+            originator = d.get("from") or d.get("from_addr") or who
             lines.append(
                 f"- **{d.get('subject', '(no subject)')}**{tag} — from _{who}_  \n"
-                f"  {d.get('snippet', '')}"
+                f"  {d.get('snippet', '')}  \n"
+                f"  ↳ required closing leaf: **Reply to {originator}** with the outcome."
             )
         return "\n".join(lines)
 

@@ -543,6 +543,47 @@ class TestSubtasksAndDoneGating:
 
 
 # ---------------------------------------------------------------------------
+# Done = delivered (#269): a task naming a deliverable isn't done without one.
+# ---------------------------------------------------------------------------
+
+class TestDoneMeansDelivered:
+    def _fabric(self):  # type: ignore[no-untyped-def]
+        from cortiva.core.fabric import Fabric
+        return Fabric.__new__(Fabric)
+
+    def test_non_deliverable_task_is_delivered_by_execution(self) -> None:
+        fab = self._fabric()
+        task = Task(id="t", description="Review the latest CI failures")
+        # No deliverable verb → executing it is enough; no side-effect needed.
+        assert fab._task_delivered(task, None) is True
+
+    def test_deliverable_task_without_sideeffect_is_not_delivered(self) -> None:
+        from cortiva.core.reflection import ReflectionSuffix
+
+        fab = self._fabric()
+        task = Task(id="t", description="Reply to the founder with the SailCoach update")
+        # Said "reply" but emitted nothing → not delivered.
+        assert fab._task_delivered(task, None) is False
+        assert fab._task_delivered(task, ReflectionSuffix()) is False
+
+    def test_deliverable_task_with_email_is_delivered(self) -> None:
+        from cortiva.core.reflection import ReflectionSuffix
+
+        fab = self._fabric()
+        task = Task(id="t", description="Reply to the founder with the update")
+        suffix = ReflectionSuffix(email={"to": "founder@x", "subject": "y", "body": "z"})
+        assert fab._task_delivered(task, suffix) is True
+
+    def test_deliverable_task_with_peer_message_is_delivered(self) -> None:
+        from cortiva.core.reflection import ReflectionSuffix
+
+        fab = self._fabric()
+        task = Task(id="t", description="Notify the team of the new cadence")
+        suffix = ReflectionSuffix(messages=[{"to": "cpo", "content": "heads up"}])
+        assert fab._task_delivered(task, suffix) is True
+
+
+# ---------------------------------------------------------------------------
 # Cycle tests
 # ---------------------------------------------------------------------------
 

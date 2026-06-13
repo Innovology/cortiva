@@ -757,7 +757,13 @@ class TestRoutineDeferDoesNotKill:
 
         await fabric.cycle("d-1")
 
-        assert task.status == "done", "defer killed the task instead of doing it"
+        # The task reached consciousness rather than being binned: it's either
+        # done, or 'acknowledged' (worked on — this one names a deliverable
+        # ("send") that the mock didn't actually emit, so done=delivered (#269)
+        # holds it at acknowledged). Critically, it is NOT an exception.
+        assert task.status in ("done", "acknowledged"), (
+            "defer killed the task instead of doing it"
+        )
         assert task not in agent.task_queue.exceptions
 
 
