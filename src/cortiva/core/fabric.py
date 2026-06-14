@@ -93,6 +93,17 @@ _REACH_PROTOCOL = (
 )
 
 
+def _human_remaining(hours: float) -> str:
+    """A short human read of time-to-deadline: '3h left', '2d left',
+    'overdue by 5h'. ``inf`` (no deadline) → 'no deadline'."""
+    if hours == float("inf"):
+        return "no deadline"
+    overdue = hours < 0
+    h = abs(hours)
+    span = f"{h / 24:.0f}d" if h >= 24 else (f"{h:.0f}h" if h >= 1 else f"{h * 60:.0f}m")
+    return f"overdue by {span}" if overdue else f"{span} left"
+
+
 def _is_github_email(from_field: str) -> bool:
     """True when an email is a GitHub notification (sender on github.com).
 
@@ -571,6 +582,10 @@ class Fabric:
         except Exception:
             logger.debug("directive arousal hook failed", exc_info=True)
 
+        # Commitment pressure also spikes the chemistry at wake — the deadline
+        # weight she carries from yesterday's promises, felt before she plans.
+        await self._dispatch_commitment_arousal(agent)
+
         agent.transition(AgentState.PLANNING)
 
         if self.budget_manager:
@@ -644,6 +659,17 @@ class Fabric:
         directive_ctx = self._directive_salience_context(agent)
         if directive_ctx:
             context = context + "\n\n---\n\n" + directive_ctx
+
+        # The agent's own commitments — promises she's made, with their
+        # deadlines and how pressing each is right now.
+        commit_ctx = self._commitment_salience_context(agent)
+        if commit_ctx:
+            context = context + "\n\n---\n\n" + commit_ctx
+
+        # For a manager: reports whose own promises are slipping (her focus).
+        reports_ctx = self._reports_commitment_context(agent)
+        if reports_ctx:
+            context = context + "\n\n---\n\n" + reports_ctx
 
         if self.org:
             org_text = self.org.org_context_for(agent_id)
@@ -1409,6 +1435,13 @@ class Fabric:
         cap_email = self._email_capability_context(agent)
         if cap_email:
             context = context + "\n\n---\n\n" + cap_email
+
+        # Commitments at execution time too — the act of delivering (or
+        # choosing coffee, or escalating) happens here, so the deadline a
+        # promise carries must be in the room at the moment of acting.
+        commit_ctx = self._commitment_salience_context(agent)
+        if commit_ctx:
+            context = context + "\n\n---\n\n" + commit_ctx
 
         # High-stakes deliberation (#270): for a critical / risk-laden task,
         # force a System-2 pass — reason through options, what could go wrong,
@@ -2757,6 +2790,19 @@ class Fabric:
         if suffix.email and isinstance(suffix.email, dict):
             self._queue_outbound_email(agent, suffix.email)
 
+        # Register a promise to the commitments ledger — tracked to delivery,
+        # its deadline-vs-work pressure driving chemistry until discharged.
+        if suffix.register_commitment and isinstance(suffix.register_commitment, dict):
+            self._handle_register_commitment(agent, suffix.register_commitment)
+
+        # Update / discharge a tracked commitment.
+        if suffix.update_commitment and isinstance(suffix.update_commitment, dict):
+            self._handle_update_commitment(agent, suffix.update_commitment)
+
+        # Drink a coffee — deliberate overtime; holds wind-down off ~45 min.
+        if suffix.drink_coffee is not None:
+            await self._handle_drink_coffee(agent)
+
         # Save a document to the company store — queued to the agent's
         # outbox; the node hands it to HQ (MinIO + metadata).
         if suffix.document and isinstance(suffix.document, dict):
@@ -3625,6 +3671,238 @@ class Fabric:
                 f"  ↳ required closing leaf: **Reply to {originator}** with the outcome."
             )
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Commitments ledger — promises the agent MADE, tracked to delivery,
+    # with a work-vs-time pressure that drives chemistry (rising cortisol)
+    # as a deadline nears. The sibling of the directive register, but it
+    # resolves only on actual delivery — never on a mere reply.
+    # ------------------------------------------------------------------
+
+    def _commitment_rank_weight(self, agent: Agent, to: str) -> float:
+        """How hard a commitment should pull, by who it's owed to: a promise
+        to the founder weighs more than one to a peer."""
+        import re
+
+        def _addr(s: str) -> str:
+            m = re.search(r"[\w.+-]+@[\w.-]+", s or "")
+            return m.group(0).lower() if m else (s or "").strip().lower()
+
+        want = _addr(to)
+        if not want:
+            return 0.5
+        for c in (self._email_meta().get("contacts") or []):
+            if _addr(str(c.get("address") or "")) == want:
+                return 1.0  # owed to the founder
+        if self.org is not None:
+            mgr_id = self.org.manager_of(agent.id)
+            if mgr_id:
+                cards = {c["id"]: c for c in self._load_directory_cards()}
+                card = cards.get(mgr_id) or {}
+                if _addr(str(card.get("email") or "")) == want or mgr_id.lower() in want:
+                    return 0.85  # owed to your manager
+        return 0.5  # owed to a peer / colleague
+
+    def _handle_register_commitment(self, agent: Agent, payload: dict) -> None:
+        from cortiva.core import commitments as _cm
+
+        to = str(payload.get("to") or "").strip()
+        what = str(payload.get("what") or "").strip()
+        if not (to and what):
+            return
+        try:
+            c = _cm.register(
+                agent.directory, to=to, what=what, due=payload.get("due"),
+                effort_hours=payload.get("effort_hours", 1.0),
+                subtasks=list(payload.get("subtasks") or []),
+            )
+            logger.info(
+                "Agent %s registered commitment to %s due %s (~%.1fh): %s",
+                agent.id, to, c.due_at, c.effort_hours, what[:60],
+            )
+            self._emit("commitment.registered", agent_id=agent.id, to=to, due=c.due_at)
+        except Exception:
+            logger.exception("register_commitment failed for %s", agent.id)
+
+    def _handle_update_commitment(self, agent: Agent, payload: dict) -> None:
+        from cortiva.core import commitments as _cm
+
+        try:
+            c = _cm.update(
+                agent.directory,
+                commitment_id=str(payload.get("commitment_id") or ""),
+                progress=payload.get("progress"),
+                delivered=payload.get("delivered"),
+                subtasks_done=list(payload.get("subtasks_done") or []) or None,
+                effort_hours=payload.get("effort_hours"),
+                artifact=str(payload.get("artifact") or ""),
+            )
+            if c is None:
+                logger.info("update_commitment: no match for %s", agent.id)
+                return
+            logger.info(
+                "Agent %s updated commitment %s -> status=%s progress=%.2f",
+                agent.id, c.id[:8], c.status, _cm.progress_of(c),
+            )
+            if c.status == "delivered":
+                self._emit("commitment.delivered", agent_id=agent.id, to=c.to)
+        except Exception:
+            logger.exception("update_commitment failed for %s", agent.id)
+
+    async def _handle_drink_coffee(self, agent: Agent) -> None:
+        """The agent chose to pull overtime. Route to the cognition plugin,
+        which holds sleep-pressure-driven wind-down off for ~45 minutes."""
+        try:
+            await self.plugin_manager.dispatch_hook(agent.id, "coffee", {})
+            logger.info(
+                "Agent %s drank a coffee — overtime; wind-down held ~45m", agent.id,
+            )
+            self._emit("agent.coffee", agent_id=agent.id)
+        except Exception:
+            logger.debug("coffee hook failed", exc_info=True)
+
+    async def _dispatch_commitment_arousal(self, agent: Agent) -> None:
+        """Feed the agent's aggregate commitment pressure into chemistry — the
+        cortisol that rises as a deadline nears with work still owed. Read-only;
+        idempotent (the plugin raises alertness to a floor, never stacks)."""
+        try:
+            from cortiva.core import commitments as _cm
+            items = _cm.load(agent.directory)
+            if not items:
+                return
+            summary = _cm.summarise(items)
+            pressure = float(summary.get("pressure", 0.0) or 0.0)
+            if pressure <= 0.0:
+                return
+            rank = self._commitment_rank_weight(agent, summary.get("top_to", ""))
+            await self.plugin_manager.dispatch_hook(
+                agent.id, "commitment",
+                {
+                    "pressure": pressure,
+                    "rank_weight": rank,
+                    "at_risk": summary.get("at_risk", 0),
+                    "overdue": summary.get("overdue", 0),
+                },
+            )
+        except Exception:
+            logger.debug("commitment arousal hook failed", exc_info=True)
+
+    def _escalate_at_risk_commitments(self, agent: Agent) -> None:
+        """For each open commitment that can't land at a normal pace (U≥1) or is
+        overdue, raise it to a human — once per commitment. Also archives
+        long-overdue undelivered promises as missed (self-cleaning ledger)."""
+        from cortiva.core import commitments as _cm
+
+        items = _cm.load(agent.directory)
+        if not items:
+            return
+        before = json.dumps([c.to_dict() for c in items], sort_keys=True)
+        _cm.prune(items)
+        now = datetime.now(UTC)
+        for c in items:
+            if c.status != "open" or c.escalated_at:
+                continue
+            u = _cm.required_utilisation(c, now)
+            if u < _cm.AT_RISK_UTILISATION and not _cm.is_overdue(c, now):
+                continue
+            worked = c.effort_hours * _cm.progress_of(c)
+            esc = (
+                f"A commitment I made is at risk and I can't land it at a normal "
+                f"pace. \"{c.what}\" — promised to {c.to}, due {c.due_at}. About "
+                f"{worked:.1f}h of ~{c.effort_hours:.1f}h is done and the time "
+                f"left can't absorb the rest. I need help, a re-scope, or a new "
+                f"deadline."
+            )
+            try:
+                self._route_escalation(agent, c.what, esc)
+                c.escalated_at = now.isoformat()
+            except Exception:
+                logger.exception("commitment escalation failed for %s", agent.id)
+        after = json.dumps([c.to_dict() for c in items], sort_keys=True)
+        if after != before:
+            _cm.save(agent.directory, items)
+
+    def _commitment_salience_context(self, agent: Agent) -> str:
+        """Top-of-mind block for the agent's own open commitments, sorted by
+        how pressing each is (required utilisation). Injected at plan, replan,
+        and execution so the deadline a promise carries is never out of sight."""
+        from cortiva.core import commitments as _cm
+
+        items = _cm.load(agent.directory)
+        opens = [c for c in items if c.status == "open"]
+        if not opens:
+            return ""
+        now = datetime.now(UTC)
+        opens.sort(key=lambda c: _cm.required_utilisation(c, now), reverse=True)
+        lines = [
+            "## ⏳ Your commitments — promises you've made, tracked to delivery\n",
+            "These are deadlines YOU committed to. A commitment is NOT done "
+            "until you actually deliver it and mark it delivered "
+            "(`update_commitment` with delivered=true) — replying that you'll "
+            "do it is not doing it. The more work is left versus the time "
+            "remaining, the more it weighs on you; that pressure is real and "
+            "yours to discharge. Work the most pressing first. Log progress as "
+            "you go so a half-done job doesn't read as a crisis. If one truly "
+            "can't land, re-scope or escalate it NOW — never let it slip "
+            "silently. Need to push through tonight? `drink_coffee`.\n",
+        ]
+        for c in opens[:8]:
+            u = _cm.required_utilisation(c, now)
+            rem_h = _cm.time_remaining_hours(c, now)
+            prog = _cm.progress_of(c)
+            if _cm.is_overdue(c, now):
+                heat = "🔴 OVERDUE"
+            elif u >= _cm.AT_RISK_UTILISATION:
+                heat = f"🔴 at risk — needs {u * 100:.0f}% of your remaining time"
+            elif u >= 0.5:
+                heat = f"🟠 tight — needs {u * 100:.0f}% of your remaining time"
+            elif u > 0:
+                heat = f"🟢 on track — ~{u * 100:.0f}% of your time"
+            else:
+                heat = "🟢 on track"
+            lines.append(
+                f"- **{c.what}** — to {c.to}; due {c.due_at} "
+                f"({_human_remaining(rem_h)}); {prog * 100:.0f}% done of "
+                f"~{c.effort_hours:.1f}h — {heat}  \n  id `{c.id[:8]}`"
+            )
+        return "\n".join(lines)
+
+    def _reports_commitment_context(self, agent: Agent) -> str:
+        """For a manager: their reports' at-risk / overdue commitments, so a
+        slipping promise gets management focus rather than sliding quietly."""
+        if self.org is None:
+            return ""
+        reports = self.org.subordinates_of(agent.id)
+        if not reports:
+            return ""
+        from cortiva.core import commitments as _cm
+
+        now = datetime.now(UTC)
+        rows: list[str] = []
+        for rid in reports:
+            try:
+                ra = self.get_agent(rid)
+                items = _cm.load(ra.directory)
+            except Exception:
+                continue
+            for c in items:
+                if c.status != "open":
+                    continue
+                u = _cm.required_utilisation(c, now)
+                if u < _cm.AT_RISK_UTILISATION and not _cm.is_overdue(c, now):
+                    continue
+                state = "🔴 OVERDUE" if _cm.is_overdue(c, now) else f"🔴 at risk (U={u:.1f})"
+                rows.append(
+                    f"- **{rid}** — \"{c.what}\" to {c.to}, due {c.due_at}: {state}"
+                )
+        if not rows:
+            return ""
+        return (
+            "## ⚠️ Your team's at-risk commitments\n"
+            "Reports of yours are behind on promises they made. This is yours "
+            "to help unblock, re-scope, or chase — don't let it slide.\n"
+            + "\n".join(rows[:12])
+        )
 
     def _email_inbox_context(self, agent: Agent) -> str:
         """Read the agent's delivered email inbox and render it for the wake
@@ -4720,6 +4998,15 @@ class Fabric:
         if directive_ctx:
             context = context + "\n\n---\n\n" + directive_ctx
 
+        # Commitments stay top-of-mind on every reassess too — their pressure
+        # shifts as the clock runs down, so a reassess must see the current heat.
+        commit_ctx = self._commitment_salience_context(agent)
+        if commit_ctx:
+            context = context + "\n\n---\n\n" + commit_ctx
+        reports_ctx = self._reports_commitment_context(agent)
+        if reports_ctx:
+            context = context + "\n\n---\n\n" + reports_ctx
+
         # Fresh tested capability status — so a reassess that's about to escalate
         # or work around a "blocker" sees what's actually live first.
         capstat = self._capability_status_context(agent)
@@ -4906,6 +5193,19 @@ class Fabric:
                     await self.sleep(agent_id)
                 except Exception as e:
                     logger.error("Catch-up sleep failed for %s: %s", agent_id, e)
+
+        # Commitment pressure: each beat, re-feel every awake agent's deadline
+        # load (rising cortisol as a promise nears) and escalate any that can't
+        # land at a normal pace / are overdue. This is the ramp the founder
+        # asked for — pressure that grows with proximity, not a one-shot at due.
+        for agent_id, agent in list(self.agents.items()):
+            if agent.state not in (AgentState.EXECUTING, AgentState.REPLANNING, AgentState.PLANNING):
+                continue
+            try:
+                await self._dispatch_commitment_arousal(agent)
+                self._escalate_at_risk_commitments(agent)
+            except Exception:
+                logger.debug("commitment heartbeat pass failed for %s", agent_id, exc_info=True)
 
         # Exhaustion wind-down: let the BRAIN end the day, not just the rota.
         # An agent the cognitive stack judges spent (high sleep pressure) clocks

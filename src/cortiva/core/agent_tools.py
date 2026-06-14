@@ -210,6 +210,129 @@ SEND_EMAIL_TOOL: dict[str, Any] = {
     },
 }
 
+REGISTER_COMMITMENT_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "register_commitment",
+        "description": (
+            "Register a promise you've made to someone, with a deadline, so it "
+            "is TRACKED until you actually deliver it — not forgotten the "
+            "moment you reply. Call this whenever you commit to a deliverable "
+            "by a date ('the readout by EOD Thursday', 'the 20 bug-fixes by "
+            "Friday'). Size it honestly: give your best estimate of the total "
+            "effort in hours and, where you can, break it into subtasks — that "
+            "is what lets the system feel the right pressure (a 10-minute task "
+            "due next week is calm; twenty bug-fixes due Friday is not). The "
+            "closer the deadline gets with work still owed, the more this will "
+            "weigh on you — which is the point. Replying that you'll do "
+            "something is NOT the same as registering it; register it so you "
+            "(and your manager) can see it through."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Who you owe this to (their email or name).",
+                },
+                "what": {
+                    "type": "string",
+                    "description": "The deliverable, in your own words.",
+                },
+                "due": {
+                    "type": "string",
+                    "description": (
+                        "The deadline as an ISO date (YYYY-MM-DD, treated as "
+                        "end-of-day) or datetime (YYYY-MM-DDTHH:MM)."
+                    ),
+                },
+                "effort_hours": {
+                    "type": "number",
+                    "description": "Your honest estimate of the total work, in hours.",
+                },
+                "subtasks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional breakdown into steps; progress is then tracked "
+                        "objectively as you complete them."
+                    ),
+                },
+            },
+            "required": ["to", "what", "due", "effort_hours"],
+        },
+    },
+}
+
+UPDATE_COMMITMENT_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "update_commitment",
+        "description": (
+            "Update one of your tracked commitments — log progress, tick off "
+            "subtasks, re-estimate the effort, push the deadline, or mark it "
+            "DELIVERED. Marking it delivered is the only thing that closes a "
+            "commitment, and you should only do it once the work has actually "
+            "gone out (attach the proof in 'artifact' where you can). Keeping "
+            "progress current is what keeps the pressure honest — log work as "
+            "you do it so a half-done job doesn't read as a panic."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "commitment_id": {
+                    "type": "string",
+                    "description": (
+                        "Which commitment (its id). Omit to update your most "
+                        "pressing open one."
+                    ),
+                },
+                "progress": {
+                    "type": "number",
+                    "description": "Fraction complete, 0.0–1.0 (if not using subtasks).",
+                },
+                "subtasks_done": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Descriptions of subtasks you've now completed.",
+                },
+                "effort_hours": {
+                    "type": "number",
+                    "description": "A revised estimate of the total effort, if it changed.",
+                },
+                "delivered": {
+                    "type": "boolean",
+                    "description": "true ONLY once the deliverable has actually gone out.",
+                },
+                "artifact": {
+                    "type": "string",
+                    "description": "Optional proof of delivery (URL, doc id, commit).",
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+DRINK_COFFEE_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "drink_coffee",
+        "description": (
+            "Drink a coffee to push through. It holds your sleep pressure at "
+            "bay for about 45 minutes so you can keep working past the point "
+            "you'd normally wind down — for a deadline crunch, an overrun, a "
+            "commitment you're determined to land tonight. You can have as many "
+            "as you need; each buys you roughly another 45 minutes. It masks "
+            "the tiredness, it doesn't remove it — when the caffeine wears off "
+            "and you finally stop, the rest you've been holding off will hit. "
+            "Use it deliberately when the work genuinely warrants the overtime."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+# Tool name -> the ReflectionSuffix field it populates.
 _TOOL_TO_SUFFIX_FIELD = {
     "optimize_schedule": "optimize_schedule",
     "rebalance_nodes": "rebalance_nodes",
@@ -218,6 +341,9 @@ _TOOL_TO_SUFFIX_FIELD = {
     "culture_health": "culture_health",
     "efficiency_review": "efficiency_review",
     "send_email": "email",
+    "register_commitment": "register_commitment",
+    "update_commitment": "update_commitment",
+    "drink_coffee": "drink_coffee",
 }
 
 
@@ -241,7 +367,14 @@ def tools_for_agent(
     # making it a validated tool call (not a coaxed prose suffix) is what stops
     # an agent DRAFTING a reply but never dispatching it (the 'acknowledged but
     # not sent' gap). Offered unconditionally.
-    tools: list[dict[str, Any]] = [SEND_EMAIL_TOOL]
+    # Commitment tracking + coffee are universal too — every agent makes
+    # promises with deadlines, and every agent can choose to pull overtime.
+    tools: list[dict[str, Any]] = [
+        SEND_EMAIL_TOOL,
+        REGISTER_COMMITMENT_TOOL,
+        UPDATE_COMMITMENT_TOOL,
+        DRINK_COFFEE_TOOL,
+    ]
     if agent_id in scheduling_authorised:
         tools.append(OPTIMIZE_SCHEDULE_TOOL)
         tools.append(REBALANCE_NODES_TOOL)

@@ -19,11 +19,17 @@ class TestToolsForAgent:
         tools = tools_for_agent("ar-scheduler", scheduling_authorised={"ar-scheduler"})
         assert any(t["function"]["name"] == "optimize_schedule" for t in tools)
 
-    def test_unauthorised_agent_gets_only_email(self) -> None:
+    def test_unauthorised_agent_gets_only_universal_tools(self) -> None:
         # Authority-scoped tools (rota, etc.) are withheld, but every agent gets
-        # send_email — it's the universal way to reach a human.
+        # the universal ones: email (reach a human), commitment tracking, and
+        # coffee (pull overtime).
         tools = tools_for_agent("dev-1", scheduling_authorised={"ar-scheduler"})
-        assert [t["function"]["name"] for t in tools] == ["send_email"]
+        assert [t["function"]["name"] for t in tools] == [
+            "send_email",
+            "register_commitment",
+            "update_commitment",
+            "drink_coffee",
+        ]
 
     def test_schema_shape_is_valid_openai_function(self) -> None:
         fn = OPTIMIZE_SCHEDULE_TOOL["function"]

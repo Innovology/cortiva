@@ -103,6 +103,24 @@ class ReflectionSuffix:
     Holds everyone else fixed and re-times just the target (or the worst
     hotspot's role); ``apply`` enacts that single-role change. The
     steady-state tweak — one role at a time, repeatedly."""
+    register_commitment: dict[str, Any] | None = None
+    """A promise the agent is making, to be TRACKED to delivery: ``{"to":
+    "<who>", "what": "...", "due": "<ISO date/datetime>", "effort_hours":
+    <float>, "subtasks": [..]?}``. The runtime appends it to the agent's
+    ``commitments.json`` ledger; from then on its deadline-vs-work pressure
+    drives the agent's neurochemistry (rising cortisol as it nears) until
+    delivered. Every agent can register commitments."""
+    update_commitment: dict[str, Any] | None = None
+    """An update to a tracked commitment: ``{"commitment_id": "<id>"?,
+    "progress": <0-1>?, "subtasks_done": [..]?, "effort_hours": <float>?,
+    "delivered": <bool>?, "artifact": "<proof>"?}``. ``delivered=true`` is the
+    only thing that discharges a commitment (and should follow the work
+    actually going out). Omitting the id targets the most pressing open one."""
+    drink_coffee: dict[str, Any] | None = None
+    """A deliberate choice to pull overtime: hold sleep pressure at bay for
+    ~45 minutes so the agent can keep working past its normal wind-down. The
+    payload is empty (``{}``); repeatable. The caffeine masks tiredness, it
+    doesn't relieve it — sleep pressure keeps accruing underneath."""
     rebalance_nodes: dict[str, Any] | None = None
     """A request to plan a reshuffle of agents between compute nodes from
     the infra team's metrics: ``{"ram_headroom_gb": ..., "max_moves": ...,
