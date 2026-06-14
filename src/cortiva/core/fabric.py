@@ -671,6 +671,12 @@ class Fabric:
         if reports_ctx:
             context = context + "\n\n---\n\n" + reports_ctx
 
+        # Things she's waiting on that are now due + silent — chase them.
+        self._resolve_expectations_from_inbox(agent)
+        expect_ctx = self._expectation_salience_context(agent)
+        if expect_ctx:
+            context = context + "\n\n---\n\n" + expect_ctx
+
         if self.org:
             org_text = self.org.org_context_for(agent_id)
             if org_text:
@@ -3909,6 +3915,89 @@ class Fabric:
             + "\n".join(rows[:12])
         )
 
+    # ------------------------------------------------------------------
+    # Expectations — things the agent is WAITING ON from others. The mirror
+    # of commitments: not cortisol, a chase. Surfaced + felt only once due
+    # and silent; resolved when the awaited thing lands in the inbox.
+    # ------------------------------------------------------------------
+
+    def _resolve_expectations_from_inbox(self, agent: Agent) -> None:
+        """Auto-resolve expectations whose sender has since written, and drop
+        stale ones. We build the sender→latest-inbound map here (inbox file
+        access lives in the fabric) and hand it to the pure ledger logic."""
+        import json
+        import re
+
+        def _addr(s: str) -> str:
+            m = re.search(r"[\w.+-]+@[\w.-]+", s or "")
+            return m.group(0).lower() if m else (s or "").strip().lower()
+
+        try:
+            from cortiva.core import expectations as _ex
+            seen: dict[str, float] = {}
+            for sub in ("inbox", "inbox/read"):
+                d = agent.directory / sub
+                if not d.is_dir():
+                    continue
+                for f in d.glob("*.json"):
+                    try:
+                        m = json.loads(f.read_text(encoding="utf-8"))
+                        frm = _addr(m.get("from", ""))
+                        if frm:
+                            seen[frm] = max(seen.get(frm, 0.0), f.stat().st_mtime)
+                    except (ValueError, OSError):
+                        continue
+            _ex.resolve_from_inbox(agent.directory, senders_seen=seen)
+        except Exception:
+            logger.debug("expectation inbox-resolve failed for %s", agent.id, exc_info=True)
+
+    async def _dispatch_expectation_chase(self, agent: Agent) -> None:
+        """Feed 'something I'm owed is due and silent' into chemistry as mild
+        frustration (a chase), not cortisol. Read-only + idempotent."""
+        try:
+            from cortiva.core import expectations as _ex
+            items = _ex.load(agent.directory)
+            if not items:
+                return
+            summary = _ex.summarise(items)
+            pressure = float(summary.get("chase_pressure", 0.0) or 0.0)
+            if pressure <= 0.0:
+                return
+            await self.plugin_manager.dispatch_hook(
+                agent.id, "expectation",
+                {"pressure": pressure, "to_chase": summary.get("to_chase", 0)},
+            )
+        except Exception:
+            logger.debug("expectation chase hook failed", exc_info=True)
+
+    def _expectation_salience_context(self, agent: Agent) -> str:
+        """Top-of-mind block for what the agent is waiting on — surfacing only
+        the ones worth chasing (due/overdue + silent), so it nudges a follow-up
+        without nagging about things that aren't due yet."""
+        from cortiva.core import expectations as _ex
+
+        items = _ex.load(agent.directory)
+        now = datetime.now(UTC)
+        chasing = [e for e in items if _ex.should_chase(e, now)]
+        if not chasing:
+            return ""
+        chasing.sort(key=lambda e: _ex.hours_to_due(e, now))
+        lines = [
+            "## 👀 Waiting on others — chase the silent ones\n",
+            "These are things OTHERS owe YOU that are now due (or overdue) and "
+            "you've heard nothing. This isn't your work to do — it's yours to "
+            "CHASE: a short, direct follow-up to the person, or escalate if it's "
+            "blocking you. Don't just wait. When it arrives, it clears itself.\n",
+        ]
+        for e in chasing[:8]:
+            h = _ex.hours_to_due(e, now)
+            when = _human_remaining(h)
+            tag = "🔴 overdue" if _ex.is_overdue(e, now) else "🟠 due now"
+            lines.append(
+                f"- **{e.what}** — owed by {e.sender}; due {e.due_at} ({when}) — {tag}"
+            )
+        return "\n".join(lines)
+
     def _email_inbox_context(self, agent: Agent) -> str:
         """Read the agent's delivered email inbox and render it for the wake
         context, then move read mail aside so it surfaces only once.
@@ -5011,6 +5100,10 @@ class Fabric:
         reports_ctx = self._reports_commitment_context(agent)
         if reports_ctx:
             context = context + "\n\n---\n\n" + reports_ctx
+        self._resolve_expectations_from_inbox(agent)
+        expect_ctx = self._expectation_salience_context(agent)
+        if expect_ctx:
+            context = context + "\n\n---\n\n" + expect_ctx
 
         # Fresh tested capability status — so a reassess that's about to escalate
         # or work around a "blocker" sees what's actually live first.
@@ -5209,6 +5302,10 @@ class Fabric:
             try:
                 await self._dispatch_commitment_arousal(agent)
                 self._escalate_at_risk_commitments(agent)
+                # Expectations: resolve any that arrived, then feel the chase
+                # of those now due + silent (mild frustration, not cortisol).
+                self._resolve_expectations_from_inbox(agent)
+                await self._dispatch_expectation_chase(agent)
             except Exception:
                 logger.debug("commitment heartbeat pass failed for %s", agent_id, exc_info=True)
 
