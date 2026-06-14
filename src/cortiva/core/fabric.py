@@ -3831,7 +3831,10 @@ class Fabric:
         items = _cm.load(agent.directory)
         opens = [c for c in items if c.status == "open"]
         if not opens:
-            return ""
+            # No open commitments yet — still show the standing nudge so the
+            # agent registers the FIRST promise it makes (the block can't
+            # prompt registration of a commitment that doesn't exist yet).
+            return _cm.REGISTER_NUDGE
         now = datetime.now(UTC)
         opens.sort(key=lambda c: _cm.required_utilisation(c, now), reverse=True)
         lines = [
@@ -3844,7 +3847,9 @@ class Fabric:
             "yours to discharge. Work the most pressing first. Log progress as "
             "you go so a half-done job doesn't read as a crisis. If one truly "
             "can't land, re-scope or escalate it NOW — never let it slip "
-            "silently. Need to push through tonight? `drink_coffee`.\n",
+            "silently. Need to push through tonight? `drink_coffee`. And "
+            "register any NEW promise you make this cycle with "
+            "`register_commitment` so it joins this list.\n",
         ]
         for c in opens[:8]:
             u = _cm.required_utilisation(c, now)

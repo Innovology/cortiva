@@ -39,6 +39,21 @@ from typing import Any
 
 COMMITMENTS_FILENAME = "commitments.json"
 
+# Always-on nudge shown even when the ledger is empty, so an agent registers
+# the FIRST promise (the salience block can't prompt registration of a
+# commitment that doesn't exist yet — the chicken-and-egg gap).
+REGISTER_NUDGE = (
+    "## ⏳ Commitments — track every promise you make\n"
+    "Whenever you commit to a deliverable by a date — in an email, a reply, a "
+    "plan ('the readout by Thursday', 'I'll cut scope by Friday', 'fix these "
+    "by EOD') — **register it with `register_commitment`** (who it's for, what, "
+    "the due date, your honest effort estimate, ideally a subtask breakdown). A "
+    "promise you don't register is one the company can't see and you'll feel no "
+    "deadline for. Registering it is what makes it real: it's tracked to "
+    "delivery, its pressure rises as the deadline nears, and it's only done "
+    "when you mark it delivered — not when you reply saying you'll do it."
+)
+
 # A commitment is treated as overdue the instant its deadline passes; once it
 # has been overdue this long AND is still undelivered, it's archived as missed
 # (honest record — a promise that was never kept), so the ledger self-cleans.
