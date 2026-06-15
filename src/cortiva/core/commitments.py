@@ -69,6 +69,13 @@ _TIME_FLOOR_HOURS = 0.25
 # threshold for overtime + escalation.
 AT_RISK_UTILISATION = 1.0
 
+# Count-load: carrying many open promises is its own pressure (the "too many
+# balls in the air" cortisol), independent of any single deadline. Below the
+# comfort line it adds nothing; it ramps to full across the span above it.
+_COUNT_COMFORT = 4
+_COUNT_SPAN = 11.0     # comfort+span = ~15 open -> full count-load
+_COUNT_WEIGHT = 0.4    # how much count-load can add to felt pressure [0,1]
+
 
 @dataclass
 class Commitment:
@@ -83,11 +90,14 @@ class Commitment:
     subtasks: list[dict[str, Any]] = field(default_factory=list)
     """``[{"desc": str, "done": bool}, ...]`` — when present, progress is
     derived from these (objective) rather than the self-reported float."""
-    status: str = "open"       # open | delivered | missed
+    status: str = "open"       # open | delivered | missed | withdrawn
     created_at: str = ""
     delivered_at: str = ""
     artifact: str = ""         # optional proof link (URL / doc id / commit)
     escalated_at: str = ""     # set once we've escalated it (idempotent)
+    original_due: str = ""     # the FIRST deadline committed to (kept across reschedules)
+    reschedule_count: int = 0
+    last_reschedule_by: str = ""  # "counterparty" (legit relaxation) | "owner" (self-push)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +113,9 @@ class Commitment:
             "delivered_at": self.delivered_at,
             "artifact": self.artifact,
             "escalated_at": self.escalated_at,
+            "original_due": self.original_due,
+            "reschedule_count": self.reschedule_count,
+            "last_reschedule_by": self.last_reschedule_by,
         }
 
     @classmethod
@@ -120,6 +133,9 @@ class Commitment:
             delivered_at=str(d.get("delivered_at") or ""),
             artifact=str(d.get("artifact") or ""),
             escalated_at=str(d.get("escalated_at") or ""),
+            original_due=str(d.get("original_due") or ""),
+            reschedule_count=int(d.get("reschedule_count") or 0),
+            last_reschedule_by=str(d.get("last_reschedule_by") or ""),
         )
 
 
@@ -233,20 +249,30 @@ def required_utilisation(c: Commitment, now: datetime | None = None) -> float:
     return work / rem
 
 
+def count_load(commitments: list[Commitment]) -> float:
+    """Pressure from the sheer NUMBER of open promises in [0,1] — the
+    'too many balls in the air' load, independent of any single deadline.
+    Zero up to the comfort line, ramping to full across the span above it."""
+    n_open = sum(1 for c in commitments if c.status == "open")
+    return _clamp01((n_open - _COUNT_COMFORT) / _COUNT_SPAN)
+
+
 def felt_pressure(commitments: list[Commitment], now: datetime | None = None) -> float:
     """Aggregate neuro pressure in [0,1] across all open commitments.
 
-    The scariest single deadline dominates (max U), plus a damped contribution
-    from everything else (many concurrent promises are their own load). A lone
-    impossible deadline and a pile of merely-tight ones both read as high.
+    Two sources, blended: the scariest single deadline (max U + a damped tail
+    of the rest), AND the count-load of carrying a big stack at all. So a lone
+    impossible deadline reads high, a pile of merely-tight ones reads high, and
+    just holding many open promises (even if none is urgent yet) carries real
+    background pressure that nudges the agent to deliver/decline rather than
+    keep taking on more.
     """
     us = sorted((required_utilisation(c, now) for c in commitments), reverse=True)
     us = [u for u in us if u > 0.0]
-    if not us:
-        return 0.0
-    top = us[0]
-    rest = sum(us[1:])
-    return _clamp01(min(top, 1.0) + 0.25 * min(rest, 1.0))
+    deadline_term = 0.0
+    if us:
+        deadline_term = min(us[0], 1.0) + 0.25 * min(sum(us[1:]), 1.0)
+    return _clamp01(deadline_term + _COUNT_WEIGHT * count_load(commitments))
 
 
 def summarise(commitments: list[Commitment], now: datetime | None = None) -> dict[str, Any]:
@@ -349,6 +375,7 @@ def register(
         effort_hours=_safe_float(effort_hours, 1.0),
         subtasks=[{"desc": str(s), "done": False} for s in (subtasks or [])],
         created_at=_now(now).isoformat(),
+        original_due=due_iso,
     )
     commitments.append(c)
     save(agent_dir, commitments)
@@ -361,17 +388,26 @@ def update(
     commitment_id: str = "",
     progress: Any = None,
     delivered: Any = None,
+    withdrawn: Any = None,
     subtasks_done: list[str] | None = None,
     effort_hours: Any = None,
     artifact: str = "",
     due: Any = None,
+    reschedule_by: str = "owner",
     now: datetime | None = None,
 ) -> Commitment | None:
-    """Update a commitment by id (or, if no id, the single open one / the most
-    pressing open one). Returns the updated commitment, or None if not found.
+    """Update a commitment by id (or, if no id, the most pressing open one).
+    Returns the updated commitment, or None if not found.
 
-    ``delivered=True`` is the ONLY thing that discharges a commitment — and it
-    is the deliberate, separate act the directive register lacked.
+    - ``delivered=True`` is the ONLY thing that marks a commitment DONE.
+    - ``withdrawn=True`` closes it because the requester pulled it (e.g. "no
+      rush, the meeting moved") — a clean, no-penalty close, NOT a failure and
+      never an escalation.
+    - ``due`` reschedules it; ``reschedule_by`` records who moved it:
+      "counterparty" = the person it's owed to relaxed it (legitimate, no
+      scar) vs "owner" = the agent pushed its own deadline (the suspect case;
+      we keep ``original_due`` and bump ``reschedule_count`` so chronic
+      slippage is visible).
     """
     commitments = load(agent_dir)
     target = _resolve(commitments, commitment_id, now)
@@ -390,8 +426,18 @@ def update(
         target.artifact = str(artifact)
     if due is not None:
         new_due = parse_due(due)
-        if new_due:
+        if new_due and new_due != target.due_at:
+            if not target.original_due:
+                target.original_due = target.due_at
             target.due_at = new_due
+            target.reschedule_count += 1
+            target.last_reschedule_by = (
+                "counterparty" if str(reschedule_by).lower().startswith("counter") else "owner"
+            )
+            # A moved deadline re-opens the escalation gate — a fresh clock.
+            target.escalated_at = ""
+    if withdrawn:
+        target.status = "withdrawn"
     if delivered:
         target.status = "delivered"
         target.delivered_at = _now(now).isoformat()

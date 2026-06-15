@@ -53,10 +53,12 @@ class Expectation:
     sender: str = ""        # who owes it to the agent (email or name)
     what: str = ""          # what's awaited
     due_at: str = ""        # ISO 8601
-    status: str = "open"    # open | received | dropped
+    status: str = "open"    # open | received | dropped | withdrawn
     created_at: str = ""
     received_at: str = ""
     chased_at: str = ""     # last time we surfaced a chase (idempotent nudges)
+    original_due: str = ""
+    reschedule_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +70,8 @@ class Expectation:
             "created_at": self.created_at,
             "received_at": self.received_at,
             "chased_at": self.chased_at,
+            "original_due": self.original_due,
+            "reschedule_count": self.reschedule_count,
         }
 
     @classmethod
@@ -81,6 +85,8 @@ class Expectation:
             created_at=str(d.get("created_at") or ""),
             received_at=str(d.get("received_at") or ""),
             chased_at=str(d.get("chased_at") or ""),
+            original_due=str(d.get("original_due") or ""),
+            reschedule_count=int(d.get("reschedule_count") or 0),
         )
 
 
@@ -227,10 +233,52 @@ def register(
         what=str(what or "").strip(),
         due_at=due_iso,
         created_at=_now(now).isoformat(),
+        original_due=due_iso,
     )
     items.append(e)
     save(agent_dir, items)
     return e
+
+
+def update(
+    agent_dir: Path,
+    *,
+    expectation_id: str = "",
+    due: Any = None,
+    withdrawn: Any = None,
+    received: Any = None,
+    now: datetime | None = None,
+) -> Expectation | None:
+    """Update an expectation by id: reschedule (``due``), or close it as
+    ``withdrawn`` (the ask was pulled) / ``received`` (it arrived). Returns the
+    updated expectation or None. Reschedule keeps ``original_due`` + bumps the
+    count so a chronically-slipping promise from someone else is visible."""
+    items = load(agent_dir)
+    target = None
+    cid = (expectation_id or "").strip()
+    for e in items:
+        if cid and (e.id == cid or e.id.startswith(cid)):
+            target = e
+            break
+    if target is None and not cid:
+        opens = [e for e in items if e.status == "open"]
+        target = opens[0] if opens else None
+    if target is None:
+        return None
+    if due is not None:
+        new_due = parse_due(due)
+        if new_due and new_due != target.due_at:
+            if not target.original_due:
+                target.original_due = target.due_at
+            target.due_at = new_due
+            target.reschedule_count += 1
+    if withdrawn:
+        target.status = "withdrawn"
+    if received:
+        target.status = "received"
+        target.received_at = _now(now).isoformat()
+    save(agent_dir, items)
+    return target
 
 
 def mark_received(agent_dir: Path, expectation_id: str, now: datetime | None = None) -> Expectation | None:

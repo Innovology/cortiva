@@ -76,6 +76,18 @@ def test_stale_overdue_dropped(tmp_path) -> None:
     assert ex.load(tmp_path)[0].status == "dropped"
 
 
+def test_reschedule_and_withdraw(tmp_path) -> None:
+    e = ex.register(tmp_path, sender="marcus@x", what="scope cut", due="2026-06-16")
+    assert e.original_due.startswith("2026-06-16")
+    ex.update(tmp_path, expectation_id=e.id, due="2026-07-16")
+    g = ex.load(tmp_path)[0]
+    assert g.due_at.startswith("2026-07-16") and g.original_due.startswith("2026-06-16")
+    assert g.reschedule_count == 1
+    # requester withdrew it → clean close, no longer chased
+    ex.update(tmp_path, expectation_id=e.id, withdrawn=True)
+    assert ex.load(tmp_path)[0].status == "withdrawn"
+
+
 def test_summarise(tmp_path) -> None:
     now = datetime(2026, 6, 14, 9, 0, tzinfo=UTC)
     ex.register(tmp_path, sender="marcus@x", what="late one", due=(now - timedelta(hours=3)).isoformat(), now=now)

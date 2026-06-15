@@ -172,3 +172,65 @@ def test_register_commitment_schema_requires_core_fields() -> None:
     from cortiva.core.agent_tools import REGISTER_COMMITMENT_TOOL
     req = REGISTER_COMMITMENT_TOOL["function"]["parameters"]["required"]
     assert set(req) == {"to", "what", "due", "effort_hours"}
+
+
+# --- count-load, reschedule, withdraw (the reconciliation hardening) --------
+
+
+def test_count_load_grows_with_number_of_open_commitments() -> None:
+    now = datetime(2026, 6, 14, 9, 0, tzinfo=UTC)
+    far = (now + timedelta(days=30)).isoformat()
+    def stack(n):
+        return [cm.Commitment(id=str(i), what="x", due_at=far, effort_hours=1) for i in range(n)]
+    # All far-future + tiny → ~no deadline pressure, but the PILE itself bites.
+    assert cm.count_load(stack(3)) == 0.0     # under the comfort line: count adds nothing
+    assert cm.count_load(stack(20)) == 1.0    # well over → full count-load
+    p_few = cm.felt_pressure(stack(3), now)
+    p_many = cm.felt_pressure(stack(12), now)
+    p_huge = cm.felt_pressure(stack(20), now)
+    assert p_few < p_many < p_huge            # pressure grows with the count
+    assert p_huge >= 0.4                       # a big stack is real pressure on its own
+
+
+def test_reschedule_keeps_original_due_and_counts(tmp_path) -> None:
+    c = cm.register(tmp_path, to="a@x", what="job", due="2026-06-18", effort_hours=4)
+    assert c.original_due.startswith("2026-06-18")
+    # owner pushes their own deadline → tracked as a scar
+    cm.update(tmp_path, commitment_id=c.id, due="2026-06-25", reschedule_by="owner")
+    g = cm.load(tmp_path)[0]
+    assert g.due_at.startswith("2026-06-25")
+    assert g.original_due.startswith("2026-06-18")   # original preserved
+    assert g.reschedule_count == 1
+    assert g.last_reschedule_by == "owner"
+
+
+def test_reschedule_by_counterparty_is_legit(tmp_path) -> None:
+    c = cm.register(tmp_path, to="maren@x", what="deck", due="2026-06-19", effort_hours=2)
+    cm.update(tmp_path, commitment_id=c.id, due="2026-07-20", reschedule_by="counterparty")
+    g = cm.load(tmp_path)[0]
+    assert g.last_reschedule_by == "counterparty"   # Maren relaxed it — no scar on the agent
+
+
+def test_reschedule_drops_pressure(tmp_path) -> None:
+    now = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
+    # 10h of work due in 2h = panic.
+    c = cm.register(tmp_path, to="a@x", what="big", due=(now + timedelta(hours=2)).isoformat(),
+                    effort_hours=10, now=now)
+    assert cm.required_utilisation(cm.load(tmp_path)[0], now) >= cm.AT_RISK_UTILISATION
+    # requester bumps it a month → pressure collapses.
+    cm.update(tmp_path, commitment_id=c.id, due=(now + timedelta(days=30)).isoformat(),
+              reschedule_by="counterparty")
+    assert cm.required_utilisation(cm.load(tmp_path)[0], now) < 0.05
+
+
+def test_withdraw_is_clean_close_not_failure(tmp_path) -> None:
+    now = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
+    c = cm.register(tmp_path, to="a@x", what="pulled", due=(now - timedelta(hours=5)).isoformat(),
+                    effort_hours=3, now=now)
+    # overdue → would be at-risk, but the requester withdrew it.
+    cm.update(tmp_path, commitment_id=c.id, withdrawn=True)
+    g = cm.load(tmp_path)[0]
+    assert g.status == "withdrawn"
+    assert cm.required_utilisation(g, now) == 0.0      # no pressure
+    assert not cm.is_overdue(g, now)                    # not a failure
+    assert cm.summarise(cm.load(tmp_path), now)["open"] == 0
