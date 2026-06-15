@@ -191,10 +191,19 @@ class OpenAICompatibleAdapter:
             create_kwargs["tools"] = tools
             create_kwargs["tool_choice"] = "auto"
 
+        import asyncio
         import time
 
         _start = time.monotonic()
-        response = client.chat.completions.create(**create_kwargs)
+        # The OpenAI client is SYNCHRONOUS — calling it directly here blocked
+        # the entire fabric event loop for the whole inference (10-30s on a
+        # 35B local model). While agents cycled, the fabric's IPC server
+        # (status / agent.wake) never got a turn, so wakes hung and HQ 500'd —
+        # the "alive but mute" fabric. Offload to a thread so the loop keeps
+        # serving IPC and interleaving other work during inference.
+        response = await asyncio.to_thread(
+            lambda: client.chat.completions.create(**create_kwargs)
+        )
         latency_ms = (time.monotonic() - _start) * 1000.0
 
         choice = response.choices[0]
