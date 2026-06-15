@@ -4420,6 +4420,11 @@ class Fabric:
             except Exception:
                 name = ""
         name = name or agent.id
+        # Strip any role/parenthetical suffix that crept into the name field —
+        # e.g. deploy.yaml carrying "Samantha (CTO @ Innovology]" (note the
+        # stray bracket). The git author should be the person, not their title.
+        import re as _re
+        name = _re.sub(r"\s*[\(\[\{<].*$", "", name).strip() or agent.id
         first = name.split()[0].lower() if name else agent.id
         domain = (self._email_meta().get("domain") or "").strip()
         email = f"{first}@{domain}" if domain else f"{first}@cortiva.local"
@@ -4429,16 +4434,41 @@ class Fabric:
         """Set up commit attribution for the agent's session and return the env
         that activates it. Idempotent.
 
-        Two layers, so the agent commits AS itself with NO co-author:
+        Defence in depth, so the agent commits AS itself with NO co-author even
+        when a commit is made by Claude Code's own flow (a sub-process that may
+        not inherit the session's GIT_* env):
         - GIT_AUTHOR_*/GIT_COMMITTER_* (set by the caller) fix the identity.
-        - A ``commit-msg`` hook strips any ``Co-Authored-By`` / "Generated with"
-          trailer the model adds. We activate it via GIT_CONFIG_COUNT (a config
-          layer on TOP of system/global/local — it does NOT replace global, so
-          the gh credential helper keeps working) pointing core.hooksPath at a
-          workspace hooks dir. A CLAUDE.md note tells the session the policy up
-          front so it rarely writes the trailer in the first place.
+        - GIT_CONFIG_COUNT ALSO sets user.name/user.email as a config layer on
+          TOP of system/global/local (does NOT replace global, so the gh
+          credential helper keeps working) — so the identity holds even if the
+          GIT_AUTHOR_* env doesn't reach the committing process.
+        - ``includeCoAuthoredBy: false`` in the session's Claude settings stops
+          Claude Code adding the "Co-Authored-By: Claude" trailer at the source
+          (the real fix — the prior commit-msg hook only caught it when its env
+          was inherited, which Claude's own commit flow didn't always do).
+        - A ``commit-msg`` hook is still installed as a backstop, and a CLAUDE.md
+          note states the policy up front.
         """
         try:
+            git_name, git_email = self._agent_git_identity(agent)
+            # Stop Claude Code emitting the co-author trailer at the source.
+            try:
+                import json as _json
+                cfg_dir = cwd / ".claude"
+                cfg_dir.mkdir(parents=True, exist_ok=True)
+                sfile = cfg_dir / "settings.json"
+                settings = {}
+                if sfile.exists():
+                    try:
+                        settings = _json.loads(sfile.read_text(encoding="utf-8")) or {}
+                    except (ValueError, OSError):
+                        settings = {}
+                if settings.get("includeCoAuthoredBy") is not False:
+                    settings["includeCoAuthoredBy"] = False
+                    sfile.write_text(_json.dumps(settings, indent=2), encoding="utf-8")
+            except OSError:
+                logger.debug("could not write claude settings for %s", agent.id)
+
             hooks_dir = cwd / ".githooks"
             hooks_dir.mkdir(parents=True, exist_ok=True)
             hook = hooks_dir / "commit-msg"
@@ -4466,9 +4496,15 @@ class Fabric:
                 with claude_md.open("a", encoding="utf-8") as fh:
                     fh.write("\n\n" + note)
             return {
-                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_COUNT": "3",
                 "GIT_CONFIG_KEY_0": "core.hooksPath",
                 "GIT_CONFIG_VALUE_0": str(hooks_dir),
+                # Identity as a config layer too (not only GIT_AUTHOR_* env), so
+                # it holds even when a committing sub-process drops the env.
+                "GIT_CONFIG_KEY_1": "user.name",
+                "GIT_CONFIG_VALUE_1": git_name,
+                "GIT_CONFIG_KEY_2": "user.email",
+                "GIT_CONFIG_VALUE_2": git_email,
             }
         except OSError:
             logger.debug("git attribution setup failed for %s", agent.id, exc_info=True)
