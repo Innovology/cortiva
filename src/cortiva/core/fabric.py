@@ -700,6 +700,11 @@ class Fabric:
         capstat = self._capability_status_context(agent)
         if capstat:
             context = context + "\n\n---\n\n" + capstat
+        # Grounded work: only claim work you could actually fetch the data for;
+        # a gap is a request to your manager, never an invented result.
+        ground_ctx = self._grounded_work_context(agent)
+        if ground_ctx:
+            context = context + "\n\n---\n\n" + ground_ctx
         # Inject the agent's email inbox (delivered by the node from HQ).
         cap_ctx = self._email_capability_context(agent)
         if cap_ctx:
@@ -1441,6 +1446,11 @@ class Fabric:
         cap_email = self._email_capability_context(agent)
         if cap_email:
             context = context + "\n\n---\n\n" + cap_email
+        # Grounded work at execution too — the moment fabrication happens is
+        # when the agent writes up what it "did"; the rule must be in the room.
+        ground_ctx = self._grounded_work_context(agent)
+        if ground_ctx:
+            context = context + "\n\n---\n\n" + ground_ctx
 
         # Commitments at execution time too — the act of delivering (or
         # choosing coffee, or escalating) happens here, so the deadline a
@@ -4327,6 +4337,52 @@ class Fabric:
             "real thing once."
         )
         return "\n".join(lines)
+
+    def _grounded_work_context(self, agent: Agent) -> str:
+        """Domain-work grounding — belief-testing (#93) extended from infra to
+        the WORK itself.
+
+        The cure for an agent with a role but no data confabulating the
+        activity (a finance agent 'reconciling invoices' it has never seen).
+        The truth isn't fed by the node — the agent surveys the tools it
+        ACTUALLY has and reasons: *what data do I need → can any tool I hold
+        fetch it?* If not, it hasn't done that work and must say so and ASK its
+        manager for the access — never invent the result. The missing-access
+        request IS the valuable output (it's the roadmap of what to wire next).
+        """
+        try:
+            from cortiva.core.agent_tools import tools_for_agent
+            tools = tools_for_agent(
+                agent.id,
+                scheduling_authorised=getattr(self, "scheduling_authorised", set()),
+                culture_authorised=getattr(self, "culture_authorised", set()),
+                performance_authorised=getattr(self, "performance_authorised", set()),
+            )
+            names = [t.get("function", {}).get("name", "") for t in tools]
+            names = [n for n in names if n]
+        except Exception:
+            names = ["send_email"]
+        tool_list = ", ".join(f"`{n}`" for n in names) or "`send_email`"
+        return (
+            "## Grounded work — you can only do what you can actually reach\n"
+            "Your work is REAL only when it acts on real data you fetched with "
+            "a tool you actually have. Writing that you reviewed the invoices, "
+            "reconciled the statement, processed the payment, ran the analysis "
+            "or checked the numbers is FALSE unless you retrieved that data "
+            "through a real tool in THIS session. Never report work on data you "
+            "could not actually retrieve.\n\n"
+            f"The tools you actually have are: {tool_list}.\n\n"
+            "So before doing domain work, reason it out: *what data do I need, "
+            "and does any tool I hold fetch it?* If no tool of yours can reach "
+            "it, then you do NOT have that data and you have NOT done that work "
+            "— do not fill the gap with a plausible account of what you 'would' "
+            "have found. Instead, name precisely what you're missing (the "
+            "system or data you need — e.g. access to the accounting system, "
+            "the invoice store, the bank feed) and **escalate that access "
+            "request to your manager.** A precise request for the access you "
+            "lack is real, valuable work and exactly what's needed. Inventing "
+            "the result is the one thing you must never do."
+        )
 
     def _email_capability_context(self, agent: Agent) -> str:
         """Standing email context injected each wake (if email is set up):
