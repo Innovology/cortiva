@@ -223,6 +223,29 @@ def test_reschedule_drops_pressure(tmp_path) -> None:
     assert cm.required_utilisation(cm.load(tmp_path)[0], now) < 0.05
 
 
+def test_update_subtasks_artifact_effort_and_prefix_id(tmp_path) -> None:
+    c = cm.register(tmp_path, to="a@x", what="job", due="2026-06-20", effort_hours=4,
+                    subtasks=["one", "two"])
+    # tick a subtask, re-estimate, attach proof — addressed by an id PREFIX
+    cm.update(tmp_path, commitment_id=c.id[:6], subtasks_done=["one"],
+              effort_hours=6, artifact="https://proof")
+    g = cm.load(tmp_path)[0]
+    assert cm.progress_of(g) == 0.5 and g.effort_hours == 6 and g.artifact == "https://proof"
+
+
+def test_update_no_id_picks_most_pressing(tmp_path) -> None:
+    now = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
+    cm.register(tmp_path, to="a@x", what="relaxed", due="2026-12-31", effort_hours=1, now=now)
+    hot = cm.register(tmp_path, to="b@x", what="urgent",
+                      due=(now + timedelta(hours=1)).isoformat(), effort_hours=10, now=now)
+    cm.update(tmp_path, progress=0.5, now=now)   # no id → most pressing
+    assert {c.id: c for c in cm.load(tmp_path)}[hot.id].progress == 0.5
+
+
+def test_update_missing_returns_none(tmp_path) -> None:
+    assert cm.update(tmp_path, commitment_id="nope") is None  # empty ledger
+
+
 def test_withdraw_is_clean_close_not_failure(tmp_path) -> None:
     now = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
     c = cm.register(tmp_path, to="a@x", what="pulled", due=(now - timedelta(hours=5)).isoformat(),

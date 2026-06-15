@@ -88,6 +88,21 @@ def test_reschedule_and_withdraw(tmp_path) -> None:
     assert ex.load(tmp_path)[0].status == "withdrawn"
 
 
+def test_update_received_no_id_and_missing(tmp_path) -> None:
+    ex.register(tmp_path, sender="a@x", what="thing", due="2026-06-20")
+    # no id → the single open one; mark it received
+    ex.update(tmp_path, received=True)
+    assert ex.load(tmp_path)[0].status == "received"
+    # nothing open / unknown id → None
+    assert ex.update(tmp_path, expectation_id="nope") is None
+
+
+def test_mark_received_helper(tmp_path) -> None:
+    e = ex.register(tmp_path, sender="a@x", what="thing", due="2026-06-20")
+    assert ex.mark_received(tmp_path, e.id[:6]) is not None   # prefix id
+    assert ex.load(tmp_path)[0].status == "received"
+
+
 def test_summarise(tmp_path) -> None:
     now = datetime(2026, 6, 14, 9, 0, tzinfo=UTC)
     ex.register(tmp_path, sender="marcus@x", what="late one", due=(now - timedelta(hours=3)).isoformat(), now=now)

@@ -3804,6 +3804,7 @@ class Fabric:
             return
         before = json.dumps([c.to_dict() for c in items], sort_keys=True)
         _cm.prune(items)
+        from datetime import UTC, datetime
         now = datetime.now(UTC)
         for c in items:
             if c.status != "open" or c.escalated_at:
@@ -3841,6 +3842,7 @@ class Fabric:
             # agent registers the FIRST promise it makes (the block can't
             # prompt registration of a commitment that doesn't exist yet).
             return _cm.REGISTER_NUDGE
+        from datetime import UTC, datetime
         now = datetime.now(UTC)
         opens.sort(key=lambda c: _cm.required_utilisation(c, now), reverse=True)
         lines = [
@@ -3886,6 +3888,8 @@ class Fabric:
         reports = self.org.subordinates_of(agent.id)
         if not reports:
             return ""
+        from datetime import UTC, datetime
+
         from cortiva.core import commitments as _cm
 
         now = datetime.now(UTC)
@@ -3974,6 +3978,8 @@ class Fabric:
         """Top-of-mind block for what the agent is waiting on — surfacing only
         the ones worth chasing (due/overdue + silent), so it nudges a follow-up
         without nagging about things that aren't due yet."""
+        from datetime import UTC, datetime
+
         from cortiva.core import expectations as _ex
 
         items = _ex.load(agent.directory)
