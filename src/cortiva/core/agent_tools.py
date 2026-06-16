@@ -356,6 +356,16 @@ REFOCUS_AGENT_TOOL = {
                     "type": "string",
                     "description": "Their new priority / product, stated plainly.",
                 },
+                "products": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional product slug(s) to STRUCTURALLY re-pin them to "
+                        "(e.g. ['sailcoach']) — this rewrites their durable "
+                        "product focus, not just today's priority. Omit to leave "
+                        "the structural pin and only redirect their attention."
+                    ),
+                },
                 "reason": {
                     "type": "string",
                     "description": "Why — the decision driving the change.",

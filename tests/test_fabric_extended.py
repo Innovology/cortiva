@@ -1486,3 +1486,28 @@ class TestRefocusAgent:
         eng = fabric.agents["eng"]  # product agent: not AR, doesn't manage ar-lead
         fabric._handle_refocus_agent(eng, {"agent_id": "ar-lead", "focus": "X"})
         assert not (fabric.agents_dir / "ar-lead" / "directives.json").exists()
+
+    def test_refocus_writes_structural_relay(self, tmp_path: Path) -> None:
+        import json
+        fabric = self._fab(tmp_path)
+        ar = fabric.agents["ar-lead"]
+        fabric._handle_refocus_agent(
+            ar, {"agent_id": "eng", "focus": "SailCoach", "products": ["sailcoach"]},
+        )
+        relays = list((fabric.agents_dir / "ar-lead" / "outbox" / "refocus").glob("*.json"))
+        assert len(relays) == 1
+        spec = json.loads(relays[0].read_text())
+        assert spec["agent_id"] == "eng"
+        assert spec["products"] == ["sailcoach"]
+
+    def test_cross_node_refocus_relays_without_local_directive(self, tmp_path: Path) -> None:
+        # Target isn't on this node — no local directive possible, but the
+        # structural relay to HQ still fires (HQ re-pins it wherever it runs).
+        fabric = self._fab(tmp_path)
+        ar = fabric.agents["ar-lead"]
+        fabric._handle_refocus_agent(
+            ar, {"agent_id": "remote-agent", "focus": "SailCoach", "products": ["sailcoach"]},
+        )
+        assert not (fabric.agents_dir / "remote-agent").is_dir()
+        relays = list((fabric.agents_dir / "ar-lead" / "outbox" / "refocus").glob("*.json"))
+        assert len(relays) == 1

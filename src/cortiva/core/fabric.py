@@ -3800,11 +3800,10 @@ class Fabric:
         target = str(payload.get("agent_id") or "").strip()
         focus = str(payload.get("focus") or "").strip()
         reason = str(payload.get("reason") or "").strip()
+        products = [
+            str(p).strip() for p in (payload.get("products") or []) if str(p).strip()
+        ]
         if not (target and focus):
-            return
-        target_dir = self.agents_dir / target
-        if not target_dir.is_dir():
-            logger.info("refocus_agent: unknown target %s (from %s)", target, agent.id)
             return
         if not self._can_refocus(agent.id, target):
             logger.info(
@@ -3812,49 +3811,78 @@ class Fabric:
             )
             return
 
-        subj = f"Refocus: your priority is now {focus}"
-        snippet = (
-            f"{reason} (re-tasked by {agent.id})" if reason
-            else f"Re-tasked by {agent.id}."
-        )
-        commitment_id = ""
-        try:
-            from cortiva.core import commitments as _cm
-            c = _cm.register(
-                target_dir,
-                to=agent.id,
-                what=f"Pivot to the new priority: {focus}",
-                due=(datetime.now(UTC) + timedelta(days=2)).isoformat(),
-                effort_hours=4.0,
+        # BEHAVIOURAL pivot — land an owed directive in the target's register.
+        # Only possible when the target is on THIS node (same agents_dir); a
+        # cross-node target is reached purely through the structural relay below.
+        target_dir = self.agents_dir / target
+        if target_dir.is_dir():
+            subj = f"Refocus: your priority is now {focus}"
+            snippet = (
+                f"{reason} (re-tasked by {agent.id})" if reason
+                else f"Re-tasked by {agent.id}."
             )
-            commitment_id = c.id
-        except Exception:
-            logger.debug("refocus→commitment register failed", exc_info=True)
-
-        path = target_dir / "directives.json"
-        try:
-            existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-        except (ValueError, OSError):
-            existing = []
-        if not any(
-            d.get("subject") == subj and d.get("status") == "open" for d in existing
-        ):
-            existing.append({
-                "from_addr": agent.id,
-                "from": agent.id,
-                "label": "management mandate",
-                "subject": subj,
-                "snippet": snippet[:240],
-                "rank_weight": 0.95,
-                "mission": False,
-                "opened_at": datetime.now(UTC).isoformat(),
-                "status": "open",
-                "commitment_id": commitment_id,
-            })
+            commitment_id = ""
             try:
-                path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-            except OSError:
-                logger.debug("could not write target directives", exc_info=True)
+                from cortiva.core import commitments as _cm
+                c = _cm.register(
+                    target_dir,
+                    to=agent.id,
+                    what=f"Pivot to the new priority: {focus}",
+                    due=(datetime.now(UTC) + timedelta(days=2)).isoformat(),
+                    effort_hours=4.0,
+                )
+                commitment_id = c.id
+            except Exception:
+                logger.debug("refocus→commitment register failed", exc_info=True)
+            path = target_dir / "directives.json"
+            try:
+                existing = (
+                    json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+                )
+            except (ValueError, OSError):
+                existing = []
+            if not any(
+                d.get("subject") == subj and d.get("status") == "open" for d in existing
+            ):
+                existing.append({
+                    "from_addr": agent.id,
+                    "from": agent.id,
+                    "label": "management mandate",
+                    "subject": subj,
+                    "snippet": snippet[:240],
+                    "rank_weight": 0.95,
+                    "mission": False,
+                    "opened_at": datetime.now(UTC).isoformat(),
+                    "status": "open",
+                    "commitment_id": commitment_id,
+                })
+                try:
+                    path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+                except OSError:
+                    logger.debug("could not write target directives", exc_info=True)
+
+        # STRUCTURAL re-pin — relay to HQ via the caller's outbox (the same path
+        # documents take). HQ rewrites the target's product focus and re-derives
+        # its focus identity on whatever node it runs on. Always fired: it works
+        # cross-node and keeps the durable products record in sync with the
+        # behavioural pivot.
+        try:
+            import uuid as _uuid
+            rdir = agent.directory / "outbox" / "refocus"
+            rdir.mkdir(parents=True, exist_ok=True)
+            (rdir / f"{_uuid.uuid4().hex}.json").write_text(
+                json.dumps({
+                    "by": agent.id,
+                    "agent_id": target,
+                    "focus": focus,
+                    "reason": reason,
+                    "products": products,
+                }),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.debug("refocus relay write failed", exc_info=True)
+
         self._emit(
             "agent.refocused", agent_id=target, by=agent.id, focus=focus, reason=reason,
         )
