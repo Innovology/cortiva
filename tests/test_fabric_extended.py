@@ -1191,20 +1191,34 @@ class TestDirectiveSalience:
         ctx2 = fabric._directive_salience_context(agent)
         assert "Sailcoach" in ctx2
 
-    def test_directive_clears_when_she_emails_the_originator(self, tmp_path):
-        import json as _json, time
+    def test_directive_clears_only_when_its_commitment_is_delivered(self, tmp_path):
+        import json as _json, os, time
         fabric, agent = self._setup(tmp_path)
         fabric._email_inbox_context(agent)
         assert fabric._directive_salience_context(agent) != ""
-        # She replies to the founder → directive resolved.
+
+        # A bare reply to the originator must NOT clear it any more — that was
+        # the laundering bug (an unrelated reply dismissed the directive).
         sent = agent.directory / "outbox" / "email" / "sent"
         sent.mkdir(parents=True, exist_ok=True)
         f = sent / "reply.json"
         f.write_text(_json.dumps({"to": "alex@innovology.io",
-                                  "subject": "Re: Sailcoach update?"}), encoding="utf-8")
-        # ensure the sent file's mtime is after the directive opened
-        import os
+                                  "subject": "Re: something unrelated"}), encoding="utf-8")
         os.utime(f, (time.time() + 5, time.time() + 5))
+        assert fabric._directive_salience_context(agent) != ""  # still owed
+
+        # Recording the directive registered a linked commitment; delivering
+        # THAT (the work actually done) is what clears the directive.
+        directives = _json.loads((agent.directory / "directives.json").read_text())
+        cid = directives[0]["commitment_id"]
+        assert cid
+        comm_path = agent.directory / "commitments.json"
+        comms = _json.loads(comm_path.read_text())
+        assert any(c["id"] == cid for c in comms)
+        for c in comms:
+            if c["id"] == cid:
+                c["status"] = "delivered"
+        comm_path.write_text(_json.dumps(comms))
         assert fabric._directive_salience_context(agent) == ""
 
     def test_non_authority_mail_is_not_a_directive(self, tmp_path):
@@ -1428,3 +1442,47 @@ class TestEscalationRealityVeto:
             "Outbound email channel unavailable until the adapter is configured.",
         )
         assert sent == []  # phantom escalation never emailed
+
+
+# ---------------------------------------------------------------------------
+# refocus_agent — the org's executable re-task lever (authority-gated)
+# ---------------------------------------------------------------------------
+
+
+class TestRefocusAgent:
+    def _fab(self, tmp_path: Path):
+        fabric = _make_fabric(tmp_path)
+        ad = tmp_path / "agents"
+        _write_deploy(ad, "ceo", name="Maren", department="exec", reports_to="")
+        _write_deploy(ad, "ar-lead", name="Noor", department="ar", reports_to="ceo")
+        _write_deploy(ad, "eng", name="Jess", department="product", reports_to="ceo")
+        fabric.discover_agents()
+        return fabric
+
+    def test_ar_refocus_lands_owed_commitment(self, tmp_path: Path) -> None:
+        import json
+        fabric = self._fab(tmp_path)
+        ar = fabric.agents["ar-lead"]
+        fabric._handle_refocus_agent(
+            ar, {"agent_id": "eng", "focus": "SailCoach", "reason": "founder priority"},
+        )
+        d = json.loads((fabric.agents_dir / "eng" / "directives.json").read_text())
+        assert any("SailCoach" in x["subject"] for x in d)
+        cid = d[0]["commitment_id"]
+        assert cid
+        comms = json.loads((fabric.agents_dir / "eng" / "commitments.json").read_text())
+        assert any(c["id"] == cid for c in comms)
+
+    def test_manager_can_refocus_report(self, tmp_path: Path) -> None:
+        import json
+        fabric = self._fab(tmp_path)
+        ceo = fabric.agents["ceo"]
+        fabric._handle_refocus_agent(ceo, {"agent_id": "eng", "focus": "SailCoach"})
+        d = json.loads((fabric.agents_dir / "eng" / "directives.json").read_text())
+        assert any("SailCoach" in x["subject"] for x in d)
+
+    def test_unauthorised_refocus_rejected(self, tmp_path: Path) -> None:
+        fabric = self._fab(tmp_path)
+        eng = fabric.agents["eng"]  # product agent: not AR, doesn't manage ar-lead
+        fabric._handle_refocus_agent(eng, {"agent_id": "ar-lead", "focus": "X"})
+        assert not (fabric.agents_dir / "ar-lead" / "directives.json").exists()

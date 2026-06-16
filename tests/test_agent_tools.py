@@ -29,6 +29,9 @@ class TestToolsForAgent:
             "register_commitment",
             "update_commitment",
             "drink_coffee",
+            # refocus_agent is offered to everyone but authority-gated in the
+            # handler (a non-AR/non-manager caller's refocus is rejected).
+            "refocus_agent",
         ]
 
     def test_schema_shape_is_valid_openai_function(self) -> None:

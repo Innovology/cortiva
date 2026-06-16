@@ -120,6 +120,15 @@ class ReflectionSuffix:
     ~45 minutes so the agent can keep working past its normal wind-down. The
     payload is empty (``{}``); repeatable. The caffeine masks tiredness, it
     doesn't relieve it — sleep pressure keeps accruing underneath."""
+    refocus_agent: dict[str, Any] | None = None
+    """Re-task another agent — the org's lever to actually MOVE work, not just
+    ask people to try harder: ``{"agent_id": "<who>", "focus": "<the new
+    priority / product>", "reason": "<why>"}``. The runtime lands an
+    authority-weighted directive (an owed, delivery-gated commitment) in that
+    agent's register so they pivot. AUTHORITY-GATED: only honoured for the
+    target's management chain or the AR/resourcing/people department — this is
+    how a CEO's 'stop X, do Y' gets executed through the org (Maren → AR →
+    refocus the product team)."""
     rebalance_nodes: dict[str, Any] | None = None
     """A request to plan a reshuffle of agents between compute nodes from
     the infra team's metrics: ``{"ram_headroom_gb": ..., "max_moves": ...,

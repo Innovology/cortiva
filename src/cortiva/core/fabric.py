@@ -2788,6 +2788,11 @@ class Fabric:
         if suffix.update_commitment and isinstance(suffix.update_commitment, dict):
             self._handle_update_commitment(agent, suffix.update_commitment)
 
+        # Re-task another agent — the org's executable lever for a priority
+        # change. Authority-gated in the handler.
+        if suffix.refocus_agent and isinstance(suffix.refocus_agent, dict):
+            self._handle_refocus_agent(agent, suffix.refocus_agent)
+
         # Drink a coffee — deliberate overtime; holds wind-down off ~45 min.
         if suffix.drink_coffee is not None:
             await self._handle_drink_coffee(agent)
@@ -3496,6 +3501,26 @@ class Fabric:
             label = authority.get(frm, "")
             blob = (subj + " " + str(m.get("text", ""))).lower()
             mission = ("mission" in blob) or ("top priority" in blob)
+            # A directive is a deliverable the agent OWES — so it becomes a
+            # tracked commitment: pressure builds, and it resolves ONLY when
+            # that commitment is delivered (the org actually moved), never when
+            # the agent merely replies. This is what stops a directive being
+            # laundered out by an unrelated reply to the same person.
+            commitment_id = ""
+            try:
+                from datetime import timedelta
+
+                from cortiva.core import commitments as _cm
+                c = _cm.register(
+                    agent.directory,
+                    to=m.get("from", "") or frm,
+                    what=f"Action the directive: {subj}",
+                    due=(datetime.now(UTC) + timedelta(days=2)).isoformat(),
+                    effort_hours=2.0,
+                )
+                commitment_id = c.id
+            except Exception:
+                logger.debug("directive→commitment register failed", exc_info=True)
             existing.append({
                 "from_addr": frm,
                 "from": m.get("from", ""),
@@ -3506,6 +3531,7 @@ class Fabric:
                 "mission": mission,
                 "opened_at": now,
                 "status": "open",
+                "commitment_id": commitment_id,
             })
             seen.add(key)
             added = True
@@ -3516,11 +3542,15 @@ class Fabric:
                 logger.debug("could not persist directives", exc_info=True)
 
     def _open_directives(self, agent: Agent) -> list[dict]:
-        """Open directives, with resolved/expired ones pruned.
+        """Open directives, with handled/expired ones pruned.
 
-        Resolved = the agent has emailed the originator since it opened (she
-        handled it). Expired = older than the TTL. Both are dropped and the
-        file is rewritten so it self-cleans.
+        Handled = the directive's linked COMMITMENT was delivered (or
+        withdrawn) — the work actually got done. This replaced 'the agent
+        emailed the originator since it opened', which laundered a directive
+        out the instant she replied to that person about ANYTHING (a reply
+        about an unrelated thread silently dismissed the founder's
+        'stop MarketMesh' order). Expired = older than the TTL backstop. Both
+        are dropped; the file self-cleans.
         """
         import json
         from datetime import UTC, datetime
@@ -3533,20 +3563,14 @@ class Fabric:
         except (ValueError, OSError):
             return []
         now = datetime.now(UTC)
-        # Addresses the agent has emailed, with the latest time (sent outbox).
-        emailed_at: dict[str, float] = {}
-        for sub in ("email/sent", "email"):
-            d = agent.directory / "outbox" / sub
-            if not d.is_dir():
-                continue
-            for f in d.glob("*.json"):
-                try:
-                    msg = json.loads(f.read_text(encoding="utf-8"))
-                    to = str(msg.get("to", "")).strip().lower()
-                    if to:
-                        emailed_at[to] = max(emailed_at.get(to, 0.0), f.stat().st_mtime)
-                except (ValueError, OSError):
-                    continue
+        # A directive is handled only when its linked commitment is delivered/
+        # withdrawn — never on a bare reply.
+        comm_status: dict[str, str] = {}
+        try:
+            from cortiva.core import commitments as _cm
+            comm_status = {c.id: c.status for c in _cm.load(agent.directory)}
+        except Exception:
+            comm_status = {}
         still_open: list[dict] = []
         for d in items:
             if d.get("status") != "open":
@@ -3557,10 +3581,9 @@ class Fabric:
                 opened = now
             if (now - opened).total_seconds() > self._DIRECTIVE_TTL_DAYS * 86400:
                 continue  # expired backstop
-            frm = d.get("from_addr", "")
-            sent_t = emailed_at.get(frm, 0.0)
-            if sent_t and sent_t >= opened.timestamp():
-                continue  # she replied to the originator → handled
+            cid = str(d.get("commitment_id") or "")
+            if cid and comm_status.get(cid) in ("delivered", "withdrawn"):
+                continue  # the owed work was delivered → directive handled
             still_open.append(d)
         # Self-clean: rewrite only the open set if we pruned anything.
         if len(still_open) != len([d for d in items if d.get("status") == "open"]):
@@ -3627,21 +3650,29 @@ class Fabric:
             "when. You may disagree and push back — but only as a conscious, "
             "named decision, never by quietly leaving it off your list. Silently "
             "dropping a superior's ask is the one thing you must not do.\n",
-            "**How to put each directive in your plan — decompose it, don't "
-            "tick it.** A directive is a parent task with SUB-TASKS (indent them "
-            "two spaces under the parent). Reading it is not doing it; the parent "
-            "is not done until every sub-task is. At minimum give it:\n"
-            "  1. acknowledge & understand what's actually being asked,\n"
-            "  2. do the work (collate / build / decide — the substance),\n"
-            "  3. **reply to the person who sent it** — this leaf is REQUIRED on "
-            "every directive. You have not handled a directive until you have "
-            "replied to its originator with the outcome. Closing the loop with "
-            "the human is the deliverable, not an afterthought.\n",
-            "Example:\n"
+            "**Each directive is now a COMMITMENT you OWE** — it's tracked in "
+            "your commitments ledger and the pressure builds until it's "
+            "delivered. It does **NOT** close when you reply 'I'll do it' or "
+            "even 'done' — only when the commitment is marked **delivered**, "
+            "i.e. the work actually happened. A reply to the sender does not "
+            "close it.\n",
+            "**If the work isn't yours to do directly, EXECUTE IT BY "
+            "DELEGATING — through your authority.** A strategic order (re-"
+            "prioritise the org, stop product X, ship Y) is delivered by you "
+            "*cascading* it: email the owner who can act (the department head, "
+            "the AR/resourcing lead, the engineer) with the explicit "
+            "instruction — that lands the same kind of owed directive on THEM. "
+            "If a structural change is needed (an agent's product/focus must "
+            "move), direct the AR team to **refocus** them; don't just ask "
+            "people to try harder. Track it to done, then reply to the "
+            "originator with the *outcome* (not an acknowledgement).\n",
+            "Decompose each into a parent task with SUB-TASKS:\n"
             "```\n"
             "- [ ] **[CRITICAL]** <their ask>\n"
-            "  - [ ] Acknowledge & scope what's being asked\n"
-            "  - [ ] <the substantive work>\n"
+            "  - [ ] Scope what's being asked + who owns the work\n"
+            "  - [ ] Delegate to the owner(s) with explicit instruction\n"
+            "        (and direct AR to refocus agents if their product must move)\n"
+            "  - [ ] Track to delivery; mark the commitment delivered\n"
             "  - [ ] Reply to <originator> with the outcome\n"
             "```\n",
         ]
@@ -3654,7 +3685,9 @@ class Fabric:
             lines.append(
                 f"- **{d.get('subject', '(no subject)')}**{tag} — from _{who}_  \n"
                 f"  {d.get('snippet', '')}  \n"
-                f"  ↳ required closing leaf: **Reply to {originator}** with the outcome."
+                f"  ↳ owed commitment — delegate to the owner, deliver it, THEN "
+                f"reply to {originator} with the outcome. It stays open until "
+                f"delivered."
             )
         return "\n".join(lines)
 
@@ -3734,6 +3767,98 @@ class Fabric:
                 self._emit("commitment.delivered", agent_id=agent.id, to=c.to)
         except Exception:
             logger.exception("update_commitment failed for %s", agent.id)
+
+    def _can_refocus(self, caller: str, target: str) -> bool:
+        """Authority to re-task another agent: you manage them (directly or up
+        the chain), or you're in the AR / resourcing / people department —
+        the org's designated workforce-allocation function."""
+        if self.org is None or caller == target:
+            return False
+        cur = target
+        for _ in range(12):  # walk up the management chain
+            mgr = self.org.manager_of(cur)
+            if not mgr:
+                break
+            if mgr == caller:
+                return True
+            cur = mgr
+        dept = self.org.department_of(caller)
+        name = (getattr(dept, "name", "") or "").strip().lower() if dept else ""
+        if name in ("ar", "agent resourcing", "resourcing"):
+            return True
+        return any(k in name for k in ("resourc", "people", "workforce", "talent", "culture"))
+
+    def _handle_refocus_agent(self, agent: Agent, payload: dict) -> None:
+        """The org's executable re-task lever: redirect another agent onto a
+        new priority. Lands an authority-weighted directive + linked commitment
+        in the TARGET's register so they actually pivot — turning a leadership
+        'stop X, do Y' decision into a tracked, owed deliverable for the team
+        that does the work. Authority-gated."""
+        import json
+        from datetime import UTC, datetime, timedelta
+
+        target = str(payload.get("agent_id") or "").strip()
+        focus = str(payload.get("focus") or "").strip()
+        reason = str(payload.get("reason") or "").strip()
+        if not (target and focus):
+            return
+        target_dir = self.agents_dir / target
+        if not target_dir.is_dir():
+            logger.info("refocus_agent: unknown target %s (from %s)", target, agent.id)
+            return
+        if not self._can_refocus(agent.id, target):
+            logger.info(
+                "refocus_agent REJECTED: %s lacks authority over %s", agent.id, target,
+            )
+            return
+
+        subj = f"Refocus: your priority is now {focus}"
+        snippet = (
+            f"{reason} (re-tasked by {agent.id})" if reason
+            else f"Re-tasked by {agent.id}."
+        )
+        commitment_id = ""
+        try:
+            from cortiva.core import commitments as _cm
+            c = _cm.register(
+                target_dir,
+                to=agent.id,
+                what=f"Pivot to the new priority: {focus}",
+                due=(datetime.now(UTC) + timedelta(days=2)).isoformat(),
+                effort_hours=4.0,
+            )
+            commitment_id = c.id
+        except Exception:
+            logger.debug("refocus→commitment register failed", exc_info=True)
+
+        path = target_dir / "directives.json"
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        except (ValueError, OSError):
+            existing = []
+        if not any(
+            d.get("subject") == subj and d.get("status") == "open" for d in existing
+        ):
+            existing.append({
+                "from_addr": agent.id,
+                "from": agent.id,
+                "label": "management mandate",
+                "subject": subj,
+                "snippet": snippet[:240],
+                "rank_weight": 0.95,
+                "mission": False,
+                "opened_at": datetime.now(UTC).isoformat(),
+                "status": "open",
+                "commitment_id": commitment_id,
+            })
+            try:
+                path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            except OSError:
+                logger.debug("could not write target directives", exc_info=True)
+        self._emit(
+            "agent.refocused", agent_id=target, by=agent.id, focus=focus, reason=reason,
+        )
+        logger.info("refocus_agent: %s re-tasked %s → %s", agent.id, target, focus)
 
     async def _handle_drink_coffee(self, agent: Agent) -> None:
         """The agent chose to pull overtime. Route to the cognition plugin,

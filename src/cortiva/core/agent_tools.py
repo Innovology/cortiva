@@ -332,6 +332,40 @@ DRINK_COFFEE_TOOL: dict[str, Any] = {
     },
 }
 
+REFOCUS_AGENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "refocus_agent",
+        "description": (
+            "Re-task another agent — the org's lever to actually MOVE work when "
+            "priorities change, not just ask people to try harder. Lands an "
+            "authority-weighted directive in that agent's register so they "
+            "pivot to the new priority (it becomes an owed, delivery-gated "
+            "commitment for them). This is how a leadership decision to stop one "
+            "product and prioritise another gets EXECUTED through the org. "
+            "Authority-gated: only honoured if you manage the target (directly "
+            "or up the chain) or you are in the AR / resourcing / people "
+            "department — otherwise it's rejected. Use it to redirect a team off "
+            "a deprioritised product onto the new one."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Who to re-task."},
+                "focus": {
+                    "type": "string",
+                    "description": "Their new priority / product, stated plainly.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why — the decision driving the change.",
+                },
+            },
+            "required": ["agent_id", "focus"],
+        },
+    },
+}
+
 # Tool name -> the ReflectionSuffix field it populates.
 _TOOL_TO_SUFFIX_FIELD = {
     "optimize_schedule": "optimize_schedule",
@@ -344,6 +378,7 @@ _TOOL_TO_SUFFIX_FIELD = {
     "register_commitment": "register_commitment",
     "update_commitment": "update_commitment",
     "drink_coffee": "drink_coffee",
+    "refocus_agent": "refocus_agent",
 }
 
 
@@ -374,6 +409,10 @@ def tools_for_agent(
         REGISTER_COMMITMENT_TOOL,
         UPDATE_COMMITMENT_TOOL,
         DRINK_COFFEE_TOOL,
+        # Offered to everyone; the handler enforces the authority gate (manages
+        # the target, or AR/resourcing/people dept) — a non-authorised caller's
+        # refocus is rejected, so offering it broadly is safe.
+        REFOCUS_AGENT_TOOL,
     ]
     if agent_id in scheduling_authorised:
         tools.append(OPTIMIZE_SCHEDULE_TOOL)
