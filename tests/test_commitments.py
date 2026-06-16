@@ -257,3 +257,83 @@ def test_withdraw_is_clean_close_not_failure(tmp_path) -> None:
     assert cm.required_utilisation(g, now) == 0.0      # no pressure
     assert not cm.is_overdue(g, now)                    # not a failure
     assert cm.summarise(cm.load(tmp_path), now)["open"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Verify-before-trust: a 'delivered' claim only closes the commitment when a
+# real artifact backs it. The agent can't confabulate its way to done.
+# ---------------------------------------------------------------------------
+
+
+def _write_sent_email(agent_dir, to, subject="hi", when=None):
+    """Drop a fake 'sent' email into the agent's outbox/email/sent/ folder."""
+    import json
+    sent = agent_dir / "outbox" / "email" / "sent"
+    sent.mkdir(parents=True, exist_ok=True)
+    payload = {"to": to, "subject": subject, "body": "...",
+               "queued_at": (when or datetime.now(UTC)).isoformat()}
+    p = sent / f"{subject.replace(' ', '_')}.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    return p
+
+
+def test_delivered_without_evidence_stays_open(tmp_path) -> None:
+    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20",
+                    effort_hours=2)
+    g = cm.update(tmp_path, commitment_id=c.id, delivered=True, require_evidence=True)
+    # No email, no artifact → it did NOT close.
+    assert g.status == "open"
+    assert g.claimed_delivered_at != ""
+    assert "no artifact" in g.verification.lower() or "claimed delivered" in g.verification.lower()
+    assert cm.load(tmp_path)[0].status == "open"   # persisted as still owed
+
+
+def test_delivered_with_artifact_reference_closes(tmp_path) -> None:
+    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20",
+                    effort_hours=2)
+    g = cm.update(tmp_path, commitment_id=c.id, delivered=True,
+                  artifact="https://github.com/Innovology/x/pull/42",
+                  require_evidence=True)
+    assert g.status == "delivered"
+    assert g.delivered_at != "" and g.claimed_delivered_at == ""
+
+
+def test_delivered_with_sent_email_closes(tmp_path) -> None:
+    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20",
+                    effort_hours=2)
+    _write_sent_email(tmp_path, "alex@x.io", subject="The org chart")
+    g = cm.update(tmp_path, commitment_id=c.id, delivered=True, require_evidence=True)
+    assert g.status == "delivered"
+    assert "email" in g.verification.lower()
+
+
+def test_evidence_requires_email_after_commitment_made(tmp_path) -> None:
+    now = datetime(2026, 6, 16, 9, 0, tzinfo=UTC)
+    # An email to alex sent BEFORE the commitment was made is not THIS delivery.
+    _write_sent_email(tmp_path, "alex@x.io", subject="earlier note",
+                      when=now - timedelta(days=2))
+    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20",
+                    effort_hours=2, now=now)
+    g = cm.update(tmp_path, commitment_id=c.id, delivered=True, require_evidence=True)
+    assert g.status == "open"          # the stale email doesn't count
+
+
+def test_require_evidence_off_preserves_legacy_behaviour(tmp_path) -> None:
+    c = cm.register(tmp_path, to="a@x", what="job", due="2026-06-20", effort_hours=2)
+    g = cm.update(tmp_path, commitment_id=c.id, delivered=True)  # default off
+    assert g.status == "delivered"
+
+
+def test_dedup_ignores_due_so_org_chart_registers_once(tmp_path) -> None:
+    # The org-chart-11x bug: same promise, a different due each cycle. With
+    # dedup on (to, what) regardless of due, it stays a SINGLE commitment whose
+    # deadline is rescheduled — never duplicated.
+    cm.register(tmp_path, to="alex@x.io", what="Action the directive: org chart",
+                due="2026-06-18")
+    cm.register(tmp_path, to="alex@x.io", what="action the directive  org chart.",
+                due="2026-06-19")
+    cm.register(tmp_path, to="ALEX@X.IO", what="Action the directive: Org Chart",
+                due="2026-06-20")
+    items = cm.load(tmp_path)
+    assert len(items) == 1
+    assert items[0].due_at[:10] == "2026-06-20"   # rescheduled to the latest

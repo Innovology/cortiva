@@ -94,6 +94,8 @@ class Commitment:
     created_at: str = ""
     delivered_at: str = ""
     artifact: str = ""         # optional proof link (URL / doc id / commit)
+    claimed_delivered_at: str = ""  # agent SAID delivered but no artifact found yet
+    verification: str = ""     # last reality-test result (evidence, or why unproven)
     escalated_at: str = ""     # set once we've escalated it (idempotent)
     original_due: str = ""     # the FIRST deadline committed to (kept across reschedules)
     reschedule_count: int = 0
@@ -112,6 +114,8 @@ class Commitment:
             "created_at": self.created_at,
             "delivered_at": self.delivered_at,
             "artifact": self.artifact,
+            "claimed_delivered_at": self.claimed_delivered_at,
+            "verification": self.verification,
             "escalated_at": self.escalated_at,
             "original_due": self.original_due,
             "reschedule_count": self.reschedule_count,
@@ -132,6 +136,8 @@ class Commitment:
             created_at=str(d.get("created_at") or ""),
             delivered_at=str(d.get("delivered_at") or ""),
             artifact=str(d.get("artifact") or ""),
+            claimed_delivered_at=str(d.get("claimed_delivered_at") or ""),
+            verification=str(d.get("verification") or ""),
             escalated_at=str(d.get("escalated_at") or ""),
             original_due=str(d.get("original_due") or ""),
             reschedule_count=int(d.get("reschedule_count") or 0),
@@ -157,6 +163,14 @@ def _clamp01(v: float) -> float:
 
 def _now(now: datetime | None = None) -> datetime:
     return now or datetime.now(UTC)
+
+
+def _norm(s: str) -> str:
+    """Normalise a 'to' / 'what' for dedup: lowercased, punctuation-stripped,
+    whitespace-collapsed — so 'Action the directive: Org chart' and 'action the
+    directive  org chart.' collapse to the same key."""
+    s = re.sub(r"[^a-z0-9 ]+", " ", (s or "").lower())
+    return " ".join(s.split())
 
 
 def parse_due(value: Any) -> str:
@@ -192,6 +206,110 @@ def _due_dt(c: Commitment) -> datetime | None:
         return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Delivery evidence — the "test before you trust" gate
+#
+# A commitment is only DONE when something real went out into the world; an
+# agent's say-so ("I delivered the org chart") is a self-report it can — and
+# does — confabulate. So before we let "delivered" stand, we test reality: is
+# there a real artifact backing the claim? Evidence is either an explicit
+# artifact reference that looks like a real link / PR / commit / document, or
+# a real email in the agent's own SENT record, addressed to the very person
+# the commitment is owed to, sent AFTER the commitment was made. No evidence →
+# the claim doesn't close it; it's surfaced back so the agent actually delivers.
+# ---------------------------------------------------------------------------
+
+# A reference is "real" if it carries a locator: a URL, a GitHub PR/issue, a
+# commit sha, or a document filename. Bare prose ("done", "sent it", "see
+# above") is NOT an artifact — that's exactly the confabulation we're guarding.
+_ARTIFACT_RE = re.compile(
+    r"https?://|github\.com|gitlab\.com|/pull/|/issues/|#\d{1,6}\b|"
+    r"\b[0-9a-f]{7,40}\b|\b\S+\.(?:pdf|md|docx?|xlsx?|csv|pptx?|txt|json)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_artifact(s: str) -> bool:
+    s = (s or "").strip()
+    return len(s) >= 6 and bool(_ARTIFACT_RE.search(s))
+
+
+def _addr(s: str) -> str:
+    m = re.search(r"[\w.+-]+@[\w.-]+", s or "")
+    return m.group(0).lower() if m else (s or "").strip().lower()
+
+
+def _sent_email_evidence(agent_dir: Path, c: Commitment) -> str:
+    """Look for a real sent email to this commitment's counterparty, posted
+    after the commitment was made. Returns a short human description, or ''.
+
+    The node moves successfully-sent mail from ``outbox/email/`` to
+    ``outbox/email/sent/`` (and failures to ``failed/``). We only count the
+    SENT folder — a draft still sitting in the outbox, or one that bounced to
+    failed/, is not delivery. The match is by recipient address OR a loose name
+    match (commitments are often owed "to Alex" rather than to an address)."""
+    sent = Path(agent_dir) / "outbox" / "email" / "sent"
+    if not sent.is_dir():
+        return ""
+    to_addr = _addr(c.to)
+    to_name = (c.to or "").strip().lower().split("@")[0].split()[0] if c.to else ""
+    try:
+        made = datetime.fromisoformat(c.created_at) if c.created_at else None
+        if made and made.tzinfo is None:
+            made = made.replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        made = None
+    for p in sorted(sent.glob("*.json")):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        recips = " ".join(
+            str(d.get(k) or "") for k in ("to", "cc")
+        ).lower()
+        if to_addr and to_addr in recips:
+            hit = True
+        elif to_name and len(to_name) >= 3 and to_name in recips:
+            hit = True
+        else:
+            hit = False
+        if not hit:
+            continue
+        # Posted after the commitment was made? (best-effort — file mtime is the
+        # backstop when the payload carries no parseable timestamp).
+        when = None
+        try:
+            when = datetime.fromisoformat(str(d.get("queued_at") or d.get("sent_at") or ""))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=UTC)
+        except (ValueError, TypeError):
+            try:
+                when = datetime.fromtimestamp(p.stat().st_mtime, tz=UTC)
+            except OSError:
+                when = None
+        if made and when and when < made:
+            continue  # an older email to the same person isn't THIS delivery
+        subj = str(d.get("subject") or "").strip()
+        return f"email to {c.to}" + (f" — \"{subj[:60]}\"" if subj else "")
+    return ""
+
+
+def delivery_evidence(agent_dir: Path, c: Commitment) -> tuple[bool, str]:
+    """Test reality for a 'delivered' claim. Returns (has_evidence, description).
+
+    Evidence is (a) an explicit artifact reference that looks like a real
+    locator (URL / PR / commit / document), or (b) a real sent email to the
+    counterparty after the commitment was made. No evidence → the agent SAID
+    done but nothing went out."""
+    art = (c.artifact or "").strip()
+    if _looks_like_artifact(art):
+        return True, f"artifact: {art}"
+    ev = _sent_email_evidence(agent_dir, c)
+    if ev:
+        return True, ev
+    return False, ""
 
 
 # ---------------------------------------------------------------------------
@@ -358,15 +476,34 @@ def register(
     subtasks: list[str] | None = None,
     now: datetime | None = None,
 ) -> Commitment:
-    """Create + persist a new commitment. Idempotent on (to, what, due): the
-    same promise re-registered doesn't duplicate (an agent re-stating its plan
-    each cycle must not spawn copies)."""
+    """Create + persist a new commitment.
+
+    Dedup is on (to, what) for any OPEN commitment, REGARDLESS of due — the org
+    chart got registered 11× because the model re-stated the same promise with
+    a slightly different deadline each cycle and the old (to, what, due) key let
+    every variant through. The same promise to the same person is the same
+    commitment; re-registering it just reschedules the existing one (keeping its
+    id, progress, created_at), it never spawns a copy.
+
+    Dates are NOT silently rewritten — a stated deadline is the agent's word and
+    the ledger surfaces it honestly (overdue reads as overdue). The agent's
+    *clock* is grounded at the reasoning surface instead (the salience block and
+    the reconcile prompt both stamp the real 'now'), so it states the right date
+    in the first place rather than having one imposed after the fact."""
     commitments = load(agent_dir)
+    now_dt = _now(now)
     due_iso = parse_due(due)
-    key = (str(to).strip().lower(), str(what).strip().lower(), due_iso)
+    to_n = _norm(to)
+    what_n = _norm(what)
     for c in commitments:
-        if (c.to.strip().lower(), c.what.strip().lower(), c.due_at) == key and c.status == "open":
-            return c  # already tracking this exact promise
+        if c.status == "open" and _norm(c.to) == to_n and _norm(c.what) == what_n:
+            # Same promise — reschedule the existing one rather than duplicate.
+            if due_iso and due_iso != c.due_at:
+                if not c.original_due:
+                    c.original_due = c.due_at
+                c.due_at = due_iso
+            save(agent_dir, commitments)
+            return c
     c = Commitment(
         id=uuid.uuid4().hex,
         to=str(to or "").strip(),
@@ -374,7 +511,7 @@ def register(
         due_at=due_iso,
         effort_hours=_safe_float(effort_hours, 1.0),
         subtasks=[{"desc": str(s), "done": False} for s in (subtasks or [])],
-        created_at=_now(now).isoformat(),
+        created_at=now_dt.isoformat(),
         original_due=due_iso,
     )
     commitments.append(c)
@@ -394,12 +531,18 @@ def update(
     artifact: str = "",
     due: Any = None,
     reschedule_by: str = "owner",
+    require_evidence: bool = False,
+    agent_dir_for_evidence: Path | None = None,
     now: datetime | None = None,
 ) -> Commitment | None:
     """Update a commitment by id (or, if no id, the most pressing open one).
     Returns the updated commitment, or None if not found.
 
-    - ``delivered=True`` is the ONLY thing that marks a commitment DONE.
+    - ``delivered=True`` is the ONLY thing that marks a commitment DONE — and
+      when ``require_evidence`` is set, it only closes the commitment if reality
+      backs the claim (a real artifact reference or a sent email to the
+      counterparty). Without evidence it stays OPEN with a ``verification`` note
+      so the agent is told "you said done but nothing went out".
     - ``withdrawn=True`` closes it because the requester pulled it (e.g. "no
       rush, the meeting moved") — a clean, no-penalty close, NOT a failure and
       never an escalation.
@@ -439,10 +582,31 @@ def update(
     if withdrawn:
         target.status = "withdrawn"
     if delivered:
-        target.status = "delivered"
-        target.delivered_at = _now(now).isoformat()
-        if not target.subtasks and target.progress < 1.0:
-            target.progress = 1.0
+        # Verify-before-trust: a 'delivered' claim only closes the commitment
+        # if reality backs it — a real artifact reference or a real sent email
+        # to the counterparty. Without evidence we DON'T close it; we record
+        # that the agent claimed delivery and why it isn't proven, so the next
+        # cycle surfaces "you said done but nothing went out" and the agent
+        # actually delivers. (require_evidence is off by default so the pure
+        # unit-tested math path is unchanged; the fabric handler turns it on.)
+        ev_dir = agent_dir_for_evidence or agent_dir
+        has_ev, desc = (
+            delivery_evidence(ev_dir, target) if require_evidence else (True, "")
+        )
+        if has_ev:
+            target.status = "delivered"
+            target.delivered_at = _now(now).isoformat()
+            target.claimed_delivered_at = ""
+            target.verification = desc or "delivered"
+            if not target.subtasks and target.progress < 1.0:
+                target.progress = 1.0
+        else:
+            # Stays OPEN. Record the unverified claim for the salience block.
+            target.claimed_delivered_at = _now(now).isoformat()
+            target.verification = (
+                "claimed delivered but NO artifact found — no sent email to "
+                f"{target.to or 'the recipient'} and no document/PR/link attached"
+            )
     save(agent_dir, commitments)
     return target
 

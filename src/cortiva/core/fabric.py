@@ -3746,6 +3746,7 @@ class Fabric:
     def _handle_update_commitment(self, agent: Agent, payload: dict) -> None:
         from cortiva.core import commitments as _cm
 
+        claimed_delivered = bool(payload.get("delivered"))
         try:
             c = _cm.update(
                 agent.directory,
@@ -3755,6 +3756,10 @@ class Fabric:
                 subtasks_done=list(payload.get("subtasks_done") or []) or None,
                 effort_hours=payload.get("effort_hours"),
                 artifact=str(payload.get("artifact") or ""),
+                # Verify-before-trust: a 'delivered' claim must be backed by a
+                # real artifact (sent email / PR / document), or it doesn't
+                # close. The agent can't confabulate its way to done.
+                require_evidence=True,
             )
             if c is None:
                 logger.info("update_commitment: no match for %s", agent.id)
@@ -3764,7 +3769,24 @@ class Fabric:
                 agent.id, c.id[:8], c.status, _cm.progress_of(c),
             )
             if c.status == "delivered":
-                self._emit("commitment.delivered", agent_id=agent.id, to=c.to)
+                self._emit(
+                    "commitment.delivered", agent_id=agent.id, to=c.to,
+                    verification=c.verification,
+                )
+            elif claimed_delivered and c.claimed_delivered_at:
+                # The agent SAID delivered but reality didn't back it. Log it
+                # loudly — the salience block surfaces it back next cycle so the
+                # agent actually sends the deliverable instead of believing it
+                # already did.
+                logger.warning(
+                    "Agent %s claimed commitment %s delivered but NO artifact "
+                    "found — kept open. %s",
+                    agent.id, c.id[:8], c.verification,
+                )
+                self._emit(
+                    "commitment.unverified", agent_id=agent.id, to=c.to,
+                    what=c.what, reason=c.verification,
+                )
         except Exception:
             logger.exception("update_commitment failed for %s", agent.id)
 
@@ -3980,6 +4002,8 @@ class Fabric:
         opens.sort(key=lambda c: _cm.required_utilisation(c, now), reverse=True)
         lines = [
             "## ⏳ Your commitments — promises you've made, tracked to delivery\n",
+            f"**Right now it is {now.strftime('%A %Y-%m-%d %H:%M')} UTC.** Reason "
+            "about every deadline from THIS clock — not from memory, which drifts.\n",
             "These are deadlines YOU committed to. A commitment is NOT done "
             "until you actually deliver it and mark it delivered "
             "(`update_commitment` with delivered=true) — replying that you'll "
@@ -3991,6 +4015,13 @@ class Fabric:
             "silently. Need to push through tonight? `drink_coffee`. And "
             "register any NEW promise you make this cycle with "
             "`register_commitment` so it joins this list.\n",
+            "**Test before you trust.** Before you believe a commitment is "
+            "delivered, CHECK: did a real artifact actually go out — an email in "
+            "your sent record, a document, a PR? Marking it delivered without one "
+            "won't close it; the system checks the artifact, not your say-so. "
+            "Each item below shows what reality says. A ⚠️ means you (or a past "
+            "you) called it done but nothing was found — so it's still owed: "
+            "send the real thing now, then mark it delivered.\n",
         ]
         for c in opens[:8]:
             u = _cm.required_utilisation(c, now)
@@ -4006,10 +4037,28 @@ class Fabric:
                 heat = f"🟢 on track — ~{u * 100:.0f}% of your time"
             else:
                 heat = "🟢 on track"
+            # Reality test, surfaced inline. Claimed-but-unverified is the loud
+            # case — the agent believes it's done and it isn't.
+            reality = ""
+            if c.claimed_delivered_at:
+                reality = (
+                    "  \n  ⚠️ **You marked this delivered but NO artifact was "
+                    "found** — no sent email to "
+                    f"{c.to or 'the recipient'}, no document/PR. It is STILL "
+                    "OWED. Actually deliver it (send the email / produce the "
+                    "doc), then mark delivered."
+                )
+            else:
+                has_ev, desc = _cm.delivery_evidence(agent.directory, c)
+                if has_ev:
+                    reality = (
+                        f"  \n  ✅ a real artifact exists ({desc}) — if this "
+                        "commitment is done, mark it delivered to close it."
+                    )
             lines.append(
                 f"- **{c.what}** — to {c.to}; due {c.due_at} "
                 f"({_human_remaining(rem_h)}); {prog * 100:.0f}% done of "
-                f"~{c.effort_hours:.1f}h — {heat}  \n  id `{c.id[:8]}`"
+                f"~{c.effort_hours:.1f}h — {heat}  \n  id `{c.id[:8]}`{reality}"
             )
         return "\n".join(lines)
 
