@@ -20,7 +20,6 @@ from cortiva.adapters.memory.inmemory import InMemoryAdapter
 from cortiva.adapters.protocols import ConsciousResponse, Priority
 from cortiva.core.fabric import Fabric
 
-
 # ---------------------------------------------------------------------------
 # Step 1: Create a mock ConsciousnessAdapter
 # ---------------------------------------------------------------------------
@@ -98,9 +97,7 @@ def bootstrap_agent(agents_dir: Path, agent_id: str) -> Path:
     (identity_dir / "identity.md").write_text(
         f"# {agent_id}\n\nA demo agent exploring the Cortiva lifecycle.\n"
     )
-    (identity_dir / "soul.md").write_text(
-        f"# {agent_id} — Soul\n\nCurious, methodical, concise.\n"
-    )
+    (identity_dir / "soul.md").write_text(f"# {agent_id} — Soul\n\nCurious, methodical, concise.\n")
     (today_dir / "plan.md").write_text(
         f"# {agent_id} — Plan\n\nNo plan yet. Awaiting first wake cycle.\n"
     )
