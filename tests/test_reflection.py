@@ -28,7 +28,6 @@ class TestParseReflectionSuffix:
             "outcome": "Filed the report",
             "learned": "CSV exports need UTF-8 BOM for Excel",
             "prediction_error": "Expected 10 rows, got 50",
-            "procedure_update": "- Always add BOM header to CSV exports",
             "messages": [{"to": "manager-01", "content": "Report ready"}],
             "escalation": "Need access to prod database",
         }
@@ -40,7 +39,6 @@ class TestParseReflectionSuffix:
         assert result.suffix.outcome == "Filed the report"
         assert result.suffix.learned == "CSV exports need UTF-8 BOM for Excel"
         assert result.suffix.prediction_error == "Expected 10 rows, got 50"
-        assert result.suffix.procedure_update == "- Always add BOM header to CSV exports"
         assert len(result.suffix.messages) == 1
         assert result.suffix.messages[0]["to"] == "manager-01"
         assert result.suffix.escalation == "Need access to prod database"
@@ -77,7 +75,6 @@ class TestParseReflectionSuffix:
         assert result.suffix.learned == "Only a learning, nothing else"
         assert result.suffix.outcome is None
         assert result.suffix.prediction_error is None
-        assert result.suffix.procedure_update is None
         assert result.suffix.messages == []
         assert result.suffix.escalation is None
 
@@ -201,18 +198,6 @@ class TestFabricReflectionIntegration:
         assert len(learning_memories) == 1
         assert learning_memories[0].content == "Always validate CSV encoding"
         assert learning_memories[0].importance == 8.0
-
-    @pytest.mark.asyncio
-    async def test_procedure_appended(self, tmp_path: Path) -> None:
-        suffix = {"procedure_update": "- Step 9: Verify BOM header"}
-        fabric = self._make_fabric(tmp_path, suffix_data=suffix)
-        fabric.register_agent("worker-01")
-        agent = await fabric.wake("worker-01")
-
-        await fabric.cycle("worker-01")
-
-        procedures = agent.read_identity("procedures")
-        assert "- Step 9: Verify BOM header" in procedures
 
     @pytest.mark.asyncio
     async def test_messages_sent_via_channel(self, tmp_path: Path) -> None:

@@ -309,64 +309,6 @@ class TestRoutineConfig:
 
 
 # ---------------------------------------------------------------------------
-# Integration: fabric uses routine adapter
-# ---------------------------------------------------------------------------
-
-class TestFabricRoutineIntegration:
-    @pytest.mark.asyncio
-    async def test_cycle_uses_routine_for_procedural_match(self, tmp_path) -> None:
-        from cortiva.adapters.memory.inmemory import InMemoryAdapter
-        from cortiva.adapters.protocols import ConsciousResponse
-        from cortiva.core.fabric import Fabric
-
-        mock_consciousness = AsyncMock()
-        mock_consciousness.think = AsyncMock(return_value=ConsciousResponse(
-            content=(
-                "# Plan\n\n"
-                "- [ ] Verify invoice amounts against purchase order and post to general ledger\n"
-                "- [ ] Review weekly report\n"
-            ),
-            tokens_in=50, tokens_out=25, model="mock",
-        ))
-        mock_consciousness.reflect = AsyncMock(return_value=ConsciousResponse(
-            content="Good day.", tokens_in=50, tokens_out=25, model="mock",
-        ))
-
-        routine = SimpleRoutineAdapter(confidence_threshold=0.15, defer_threshold=0.05)
-
-        fabric = Fabric(
-            agents_dir=tmp_path / "agents",
-            memory=InMemoryAdapter(),
-            consciousness=mock_consciousness,
-            routine=routine,
-        )
-        agent = fabric.register_agent("bookkeep-01")
-
-        # Write procedures that match invoice tasks
-        agent.write_identity("procedures", PROCEDURES_MD)
-
-        await fabric.wake("bookkeep-01")
-
-        # Reset mock call count after planning
-        initial_think_calls = mock_consciousness.think.call_count
-
-        # Run a cycle — the invoice task should match procedurally
-        result = await fabric.cycle("bookkeep-01")
-
-        # The routine adapter should have handled it procedurally
-        # (no additional consciousness call beyond planning)
-        assert result["action"] == "executed_task"
-        assert agent.tasks_completed_today >= 1
-
-        # Check if consciousness was NOT called for this task
-        # (procedural match means 0 new think calls)
-        new_think_calls = mock_consciousness.think.call_count - initial_think_calls
-        assert new_think_calls == 0, (
-            f"Expected 0 consciousness calls for procedural task, got {new_think_calls}"
-        )
-
-
-# ---------------------------------------------------------------------------
 # Mock helper for config tests
 # ---------------------------------------------------------------------------
 

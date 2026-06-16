@@ -73,13 +73,14 @@ class TestSkillInstall:
             skills_text="## Test Knowledge\nContext.",
         )
         modified = install_skill(agent_dir, skill)
-        assert "identity/procedures.md" in modified
+        # Skill knowledge + tool-usage guidance both land in skills.md now.
+        assert "identity/procedures.md" not in modified
         assert "identity/skills.md" in modified
         assert "identity/skills_manifest.json" in modified
 
-        procs = (agent_dir / "identity" / "procedures.md").read_text()
-        assert "Do the thing" in procs
-        assert "skill:test-skill" in procs
+        sk = (agent_dir / "identity" / "skills.md").read_text()
+        assert "Do the thing" in sk
+        assert "skill:test-skill" in sk
 
     def test_install_with_mcp(self, tmp_path: Path) -> None:
         agent_dir = self._make_agent(tmp_path)
@@ -122,11 +123,11 @@ class TestSkillInstall:
         assert "test-skill" in installed_skills(agent_dir)
 
         modified = uninstall_skill(agent_dir, "test-skill")
-        assert "identity/procedures.md" in modified
+        assert "identity/skills.md" in modified
         assert "test-skill" not in installed_skills(agent_dir)
 
-        procs = (agent_dir / "identity" / "procedures.md").read_text()
-        assert "Do the thing" not in procs
+        sk = (agent_dir / "identity" / "skills.md").read_text()
+        assert "Do the thing" not in sk
 
     def test_uninstall_nonexistent_raises(self, tmp_path: Path) -> None:
         agent_dir = self._make_agent(tmp_path)
@@ -215,7 +216,7 @@ class TestDirectorySkills:
         registry = SkillRegistry()
         assert registry.load_skill_dirs(tmp_path) == 0
 
-    def test_github_workflow_installs_procedures(self, tmp_path: Path) -> None:
+    def test_github_workflow_installs_into_skills(self, tmp_path: Path) -> None:
         registry = SkillRegistry()
         registry.load_bundled()
         skill = registry.get("github_workflow")
@@ -225,6 +226,7 @@ class TestDirectorySkills:
         (agent_dir / "identity").mkdir(parents=True)
         install_skill(agent_dir, skill)
 
-        procedures = (agent_dir / "identity" / "procedures.md").read_text()
-        assert "gh issue create" in procedures
+        # Skill tool-usage guidance lands in skills.md, not a procedures rulebook.
+        knowledge = (agent_dir / "identity" / "skills.md").read_text()
+        assert "gh issue create" in knowledge
         assert "github_workflow" in installed_skills(agent_dir)

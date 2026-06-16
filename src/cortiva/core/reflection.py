@@ -27,7 +27,6 @@ class ReflectionSuffix:
     outcome: str | None = None
     learned: str | None = None
     prediction_error: str | None = None
-    procedure_update: str | None = None
     messages: list[dict[str, str]] = field(default_factory=list)
     escalation: str | None = None
     delegate: list[dict[str, Any]] = field(default_factory=list)
@@ -178,7 +177,6 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
         outcome=data.get("outcome"),
         learned=data.get("learned"),
         prediction_error=data.get("prediction_error"),
-        procedure_update=data.get("procedure_update"),
         messages=messages,
         escalation=data.get("escalation"),
         delegate=delegate,

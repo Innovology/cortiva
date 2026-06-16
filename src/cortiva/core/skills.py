@@ -184,17 +184,15 @@ def install_skill(agent_dir: Path, skill: Skill) -> list[str]:
 
     modified: list[str] = []
 
-    # Append procedures
-    if skill.procedures:
+    # Skill knowledge — both the domain knowledge and the how-to-use-the-tool
+    # guidance — lands in skills.md. Agents have Role & Responsibilities +
+    # skills, not a self-accreting procedures rulebook (removed 2026-06-16).
+    skill_knowledge = "\n\n".join(
+        s for s in (skill.skills_text, skill.procedures) if s and s.strip()
+    )
+    if skill_knowledge:
         _append_to_identity_file(
-            agent_dir, "procedures", skill.name, skill.procedures,
-        )
-        modified.append("identity/procedures.md")
-
-    # Append skills knowledge
-    if skill.skills_text:
-        _append_to_identity_file(
-            agent_dir, "skills", skill.name, skill.skills_text,
+            agent_dir, "skills", skill.name, skill_knowledge,
         )
         modified.append("identity/skills.md")
 
@@ -233,11 +231,7 @@ def uninstall_skill(agent_dir: Path, skill_name: str) -> list[str]:
 
     modified: list[str] = []
 
-    # Remove from procedures
-    if _remove_from_identity_file(agent_dir, "procedures", skill_name):
-        modified.append("identity/procedures.md")
-
-    # Remove from skills
+    # Remove from skills (skill knowledge + tool-usage guidance both live here).
     if _remove_from_identity_file(agent_dir, "skills", skill_name):
         modified.append("identity/skills.md")
 

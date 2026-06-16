@@ -107,7 +107,6 @@ class ContextBuilder:
         """Context for wake/planning phase."""
         identity_text = _identity_to_context(identity)
         responsibilities = identity.get("responsibilities", "")
-        procedures = identity.get("procedures", "")
         previous_plan = identity.get("plan", "")
         date_text = f"## Date\n\n{datetime.utcnow().strftime('%A, %Y-%m-%d')}"
         messages_text = _format_messages(messages)
@@ -119,7 +118,6 @@ class ContextBuilder:
         sections: list[tuple[int, str]] = [
             (100, identity_text),
             (95, f"## Responsibilities\n\n{responsibilities}" if responsibilities.strip() else ""),
-            (90, f"## Procedures\n\n{procedures}" if procedures.strip() else ""),
             (80, f"## Previous Plan\n\n{previous_plan}" if previous_plan.strip() else ""),
             (70, date_text),
             (60, messages_text),

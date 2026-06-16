@@ -26,7 +26,6 @@ exact delimiter line shown below. The suffix must be valid JSON.
   "outcome": "One-sentence summary of what you accomplished",
   "learned": "Key insight or lesson from this task (stored as a memory)",
   "prediction_error": "What surprised you or differed from expectations",
-  "procedure_update": "New or revised procedure step to add to your procedures",
   "messages": [{"to": "agent-id", "content": "message body"}],
   "escalation": "Issue requiring human or supervisor attention"
 }

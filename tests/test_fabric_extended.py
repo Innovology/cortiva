@@ -171,17 +171,6 @@ class TestProcessReflection:
         assert any("raw SQL" in m.content for m in memories)
 
     @pytest.mark.asyncio
-    async def test_procedure_update_appended(self, tmp_path: Path) -> None:
-        fabric, agent, task = self._setup(tmp_path)
-        agent.write_identity("procedures", "# Procedures\n\n- Step 1\n")
-        suffix = ReflectionSuffix(procedure_update="## New procedure\n- Do X")
-        await fabric._process_reflection(agent, task, suffix)
-
-        updated = agent.read_identity("procedures")
-        assert "New procedure" in updated
-        assert "Step 1" in updated
-
-    @pytest.mark.asyncio
     async def test_messages_sent_via_channel(self, tmp_path: Path) -> None:
         channel = AsyncMock()
         fabric = Fabric(
@@ -1396,57 +1385,6 @@ class TestCommitAttribution:
 # ---------------------------------------------------------------------------
 # Procedure reconciliation against tested reality (#282)
 # ---------------------------------------------------------------------------
-
-
-class TestProcedureReconcile:
-    def _fab_with_caps(self, tmp_path: Path, caps: dict):
-        import json
-        fabric = _make_fabric(tmp_path)
-        (fabric.agents_dir / ".capability_status.json").write_text(
-            json.dumps({"capabilities": caps}), encoding="utf-8",
-        )
-        return fabric
-
-    def _agent_with_procs(self, fabric, text: str):
-        agent = fabric.register_agent("proc-1")
-        agent.write_identity("procedures", text)
-        return agent
-
-    PHANTOM = (
-        "Maintain an internal log for operator escalations when outbound "
-        "channels are down, and route all human-bound comms through "
-        "agent-to-agent channels or deferred dispatch until resolved."
-    )
-    GOOD = "Maintain the EOD Monday receipt confirmation as a hard trigger."
-
-    def test_drops_phantom_procedure_when_email_live(self, tmp_path: Path) -> None:
-        fabric = self._fab_with_caps(tmp_path, {"email": {"status": "live"}})
-        agent = self._agent_with_procs(fabric, self.PHANTOM + "\n" + self.GOOD)
-        removed = fabric._reconcile_procedures_against_reality(agent)
-        assert removed == 1
-        out = agent.read_identity("procedures")
-        assert "route all human-bound" not in out
-        assert self.GOOD in out  # legitimate procedure preserved
-
-    def test_keeps_phantom_when_capability_not_good(self, tmp_path: Path) -> None:
-        # If the probe ALSO says email is down, the procedure is TRUE — keep it.
-        fabric = self._fab_with_caps(tmp_path, {"email": {"status": "down"}})
-        agent = self._agent_with_procs(fabric, self.PHANTOM + "\n" + self.GOOD)
-        assert fabric._reconcile_procedures_against_reality(agent) == 0
-        assert "route all human-bound" in agent.read_identity("procedures")
-
-    def test_noop_without_probe(self, tmp_path: Path) -> None:
-        fabric = _make_fabric(tmp_path)  # no capability file
-        agent = self._agent_with_procs(fabric, self.PHANTOM + "\n" + self.GOOD)
-        assert fabric._reconcile_procedures_against_reality(agent) == 0
-
-    def test_unrelated_procedures_untouched(self, tmp_path: Path) -> None:
-        fabric = self._fab_with_caps(tmp_path, {"email": {"status": "live"}})
-        body = "\n".join([self.GOOD, "Escalate budget overruns to the CFO.",
-                          "Review CI failures before merging."])
-        agent = self._agent_with_procs(fabric, body)
-        assert fabric._reconcile_procedures_against_reality(agent) == 0
-        assert agent.read_identity("procedures") == body
 
 
 # ---------------------------------------------------------------------------

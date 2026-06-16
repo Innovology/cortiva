@@ -460,12 +460,6 @@ class Fabric:
                 f"# {agent_id} — Responsibilities\n\n"
                 "## Primary\n\n## Secondary\n\n## Escalation\n",
             )
-        if not agent.identity_path("procedures").exists():
-            agent.write_identity(
-                "procedures",
-                f"# {agent_id} — Procedures\n\n"
-                "No procedures promoted yet.\n",
-            )
         if not agent.identity_path("plan").exists():
             agent.write_identity(
                 "plan",
@@ -1041,15 +1035,12 @@ class Fabric:
                         f"Agent {agent_id} synthesised Living Summary (daily)"
                     )
 
-            # Reconcile PROCEDURES against tested reality too (#282). The
-            # Living Summary fixes identity.md, but the execution/escalation
-            # path ALSO reads procedures.md — a phantom procedure there ("route
-            # human comms internally until the adapter is configured") kept an
-            # agent escalating even after its identity was corrected. Runs every
-            # sleep; deterministic + high-precision (drops a procedure only when
-            # it asserts a capability is down that the probe says is LIVE).
+            # (Procedures removed 2026-06-16 — agents have Role &
+            # Responsibilities + judgment, no self-written rulebook to
+            # reconcile. The phantom-procedure failure mode it guarded against
+            # can't recur: there's no procedures.md to harbour a stale workaround.)
             try:
-                self._reconcile_procedures_against_reality(agent)
+                pass
             except Exception:
                 logger.debug(
                     "Procedure reconcile failed for %s", agent.id, exc_info=True,
@@ -1331,10 +1322,15 @@ class Fabric:
             # invocation and the optimize_schedule suffix would never be
             # emitted on the consciousness path. (Same failure mode that
             # deferred the CPO's GitHub sweep — see the terminal note above.)
+            # No procedural_index any more — agents don't keep a procedure
+            # rulebook to pattern-match a task against. With an empty index the
+            # routine layer never confidently "matches", so every task falls
+            # through to consciousness and is actually reasoned, not rubber-
+            # stamped done. (The cheap procedural short-circuit is gone by design.)
             routine_assessment = await self.routine.assess(
                 agent_id=agent.id,
                 task_description=task.description,
-                procedural_index=agent.read_identity("procedures"),
+                procedural_index="",
                 familiarity=familiarity,
             )
             action = routine_assessment.get("action", "escalate")
@@ -2730,12 +2726,6 @@ class Fabric:
                 f"{suffix.prediction_error}"
             )
 
-        # Append procedure update to procedures.md
-        if suffix.procedure_update:
-            current = agent.read_identity("procedures")
-            updated = current.rstrip() + "\n\n" + suffix.procedure_update + "\n"
-            agent.write_identity("procedures", updated)
-
         # Deep think — frontier-model help on a hard question or a
         # second opinion on the agent's own conclusion. The local model
         # decides it needs this and emits `deep_think` in its suffix; we
@@ -3041,13 +3031,11 @@ class Fabric:
 
         # Build a prompt that includes agent identity context
         identity = agent.read_all_identity()
-        procedures = identity.get("procedures", "")
         responsibilities = identity.get("responsibilities", "")
 
         prompt = (
             f"You are {agent.id}. Execute this task:\n\n"
             f"{task.description}\n\n"
-            f"## Your Procedures\n{procedures}\n\n"
             f"## Your Responsibilities\n{responsibilities}\n\n"
             "When done, summarise what you did and the outcome."
         )
@@ -3209,7 +3197,6 @@ class Fabric:
         identity = agent.read_all_identity()
         prompt = (
             f"You are {agent.id}. Execute this task:\n\n{task.description}\n\n"
-            f"## Your Procedures\n{identity.get('procedures', '')}\n\n"
             f"## Your Responsibilities\n{identity.get('responsibilities', '')}\n\n"
             "Do the work end to end. When done, summarise what you did and the outcome."
         )
@@ -4197,59 +4184,6 @@ class Fabric:
             if any(t in text for t in self._PROC_CAP_TERMS[cap]):
                 return True
         return False
-
-    def _reconcile_procedures_against_reality(self, agent: Agent) -> int:
-        """Drop procedures a tested-LIVE capability contradicts (#282).
-
-        identity.md is reconciled by the Living Summary, but procedures.md is
-        read on the execution/escalation path — a phantom 'route human comms
-        internally until the adapter is configured' there made an agent keep
-        escalating after its identity was already corrected. We remove only
-        procedure lines that name a currently-GOOD capability AND assert it is
-        unavailable / must be routed around. Returns the count removed.
-        """
-        import json
-
-        path = self.agents_dir / ".capability_status.json"
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
-            return 0
-        caps = data.get("capabilities") or data
-        if not isinstance(caps, dict):
-            return 0
-        good = {"live", "ok", "up", "healthy", "available", "good"}
-        good_caps = [
-            c for c, info in caps.items()
-            if isinstance(info, dict)
-            and str(info.get("status", "")).lower() in good
-            and c in self._PROC_CAP_TERMS
-        ]
-        if not good_caps:
-            return 0
-        try:
-            proc = agent.read_identity("procedures")
-        except Exception:
-            return 0
-        if not proc:
-            return 0
-        kept: list[str] = []
-        removed = 0
-        for line in proc.splitlines():
-            low = line.lower()
-            if any(u in low for u in self._PROC_UNAVAILABLE) and any(
-                t in low for c in good_caps for t in self._PROC_CAP_TERMS[c]
-            ):
-                removed += 1
-                continue
-            kept.append(line)
-        if removed:
-            agent.write_identity("procedures", "\n".join(kept))
-            logger.info(
-                "Reality reconcile: removed %d phantom procedure(s) for %s",
-                removed, agent.id,
-            )
-        return removed
 
     # The capability-status probe was removed (2026-06-16). It pushed a
     # role-blind "email/github/model — TESTED, trust this, act on it" board into

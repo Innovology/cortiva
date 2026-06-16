@@ -175,8 +175,7 @@ IDENTITY_FILES = {
     "identity": "identity/identity.md",           # Living Summary
     "soul": "identity/soul.md",                   # Persona parameters
     "skills": "identity/skills.md",               # Domain knowledge
-    "responsibilities": "identity/responsibilities.md",  # R&R authority
-    "procedures": "identity/procedures.md",       # Promoted procedural knowledge
+    "responsibilities": "identity/responsibilities.md",  # Role & Responsibilities
     "plan": "today/plan.md",                      # Current plan
 }
 

@@ -57,14 +57,13 @@ def _make_agent(tmp_path: Path, agent_id: str = "ctx-01") -> Agent:
     agent.write_identity("identity", "# ctx-01\n\nTest agent.")
     agent.write_identity("skills", "# Skills\n\nPython.")
     agent.write_identity("responsibilities", "# Responsibilities\n\nCode review.")
-    agent.write_identity("procedures", "# Procedures\n\nRun tests first.")
     agent.write_identity("plan", "- [ ] Task A\n- [x] Task B\n")
     return agent
 
 
 class TestContextBuilderPlan:
     @pytest.mark.asyncio
-    async def test_includes_identity_date_procedures(self, tmp_path: Path) -> None:
+    async def test_includes_identity_responsibilities_date(self, tmp_path: Path) -> None:
         memory = InMemoryAdapter()
         builder = ContextBuilder(memory=memory)
         agent = _make_agent(tmp_path)
@@ -72,7 +71,9 @@ class TestContextBuilderPlan:
 
         result = await builder.build_plan_context(agent, identity, [])
         assert "## Identity" in result
-        assert "## Procedures" in result
+        # Agents have Role & Responsibilities, not a procedures rulebook.
+        assert "## Responsibilities" in result
+        assert "## Procedures" not in result
         # Date section present
         assert "## Date" in result
 
