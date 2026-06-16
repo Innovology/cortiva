@@ -695,11 +695,6 @@ class Fabric:
         # Consume the hooks (they've been injected into the plan context)
         self.hook_router.pending_for(agent_id)
 
-        # Fresh, tested status of the load-bearing capabilities — keeps stale
-        # "X is blocked" beliefs from surviving contact with reality.
-        capstat = self._capability_status_context(agent)
-        if capstat:
-            context = context + "\n\n---\n\n" + capstat
         # Grounded work: only claim work you could actually fetch the data for;
         # a gap is a request to your manager, never an invented result.
         ground_ctx = self._grounded_work_context(agent)
@@ -1024,15 +1019,9 @@ class Fabric:
                 else:
                     can_reflect = agent.spend_consciousness()
                 if can_reflect:
-                    # Feed the just-tested capability status into the rewrite as
-                    # the arbiter — so a stale 'X is blocked' belief gets
-                    # reconciled against reality and corrected by the agent
-                    # itself, instead of being laundered into identity. This is
-                    # the seam: the probe was shown at wake but never reached the
-                    # identity regen.
                     raw = await self.living_summary.regenerate(
                         agent, day_summary,
-                        ground_truth=self._capability_status_context(agent),
+                        ground_truth="",
                         frontier_reflect=self._frontier_identity_reflect,
                     )
                     if self.budget_manager and approval and approval.backend:
@@ -1437,12 +1426,6 @@ class Fabric:
         # pollution and re-confabulates the blocker — which is exactly how a
         # corrected agent still emitted "outbound channel unavailable". The probe
         # is the antidote, placed LAST so it's the most salient thing read before
-        # acting: "email is LIVE — trust this over memory; don't route around a
-        # capability that's up." This was present in the plan/replan contexts but
-        # missing from execution — the real root cause, not the output gate.
-        capstat = self._capability_status_context(agent)
-        if capstat:
-            context = context + "\n\n---\n\n" + capstat
         cap_email = self._email_capability_context(agent)
         if cap_email:
             context = context + "\n\n---\n\n" + cap_email
@@ -4268,75 +4251,17 @@ class Fabric:
             )
         return removed
 
-    def _capability_status_context(self, agent: Agent) -> str:
-        """Fresh, TESTED status of the load-bearing capabilities, as facts.
-
-        The node probes the real infrastructure each cycle — can outbound email
-        actually send, is GitHub auth live, is the local model up — and writes
-        the results to ``.capability_status.json``. We surface them here as
-        observations the agent should trust OVER its own memory or procedures.
-
-        This is the cure for self-sealing 'X is blocked' beliefs: an agent that
-        decided email was down then *relayed instead of emailing* never ran the
-        test that would disprove it. Putting a just-tested result in front of it
-        each wake means the belief is continuously reconciled with reality —
-        "tested 40s ago: email LIVE" beats "I think the channel is down".
-        """
-        import json
-
-        path = self.agents_dir / ".capability_status.json"
-        if not path.exists():
-            return ""
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
-            return ""
-        caps = data.get("capabilities") or data
-        if not isinstance(caps, dict) or not caps:
-            return ""
-        from datetime import UTC, datetime
-
-        age = ""
-        ts = data.get("probed_at")
-        if ts:
-            try:
-                dt = datetime.fromisoformat(str(ts))
-                secs = (datetime.now(UTC) - dt).total_seconds()
-                age = (
-                    f" — tested {int(secs)}s ago" if secs < 120
-                    else f" — tested {int(secs // 60)}m ago"
-                )
-            except (ValueError, TypeError):
-                age = ""
-        lines = [
-            f"## Live capability check{age} (TESTED — trust this over memory)\n",
-        ]
-        label = {
-            "email": "Email / reaching humans",
-            "github": "GitHub (push, PRs, CI)",
-            "model": "Local model",
-        }
-        for key, cap in caps.items():
-            if not isinstance(cap, dict):
-                continue
-            status = str(cap.get("status", "?")).upper()
-            detail = str(cap.get("detail", "")).strip()
-            lines.append(
-                f"- **{label.get(key, key)}: {status}**"
-                + (f" — {detail}" if detail else "")
-            )
-        lines.append(
-            "\nThese were just tested against the real infrastructure. If a "
-            "belief, procedure, or plan of yours says one of these is "
-            "missing/blocked when the check says it's LIVE/OK, **that belief is "
-            "stale — drop it and act on what's tested here.** Before you "
-            "escalate, journal, or route around something as 'blocked', confirm "
-            "it against this check (or, for anything not listed, run the cheapest "
-            "real test first). A workaround that avoids the blocked thing keeps "
-            "you blocked forever — the fastest unblock is usually to just try the "
-            "real thing once."
-        )
-        return "\n".join(lines)
+    # The capability-status probe was removed (2026-06-16). It pushed a
+    # role-blind "email/github/model — TESTED, trust this, act on it" board into
+    # every agent's planning context, which manufactured work: a CFO told
+    # "GitHub LIVE" went looking for repos to work. Capability is not a belief
+    # to surface and test — it's pulled by the job. An agent's tools are its
+    # role's grants, present and used when the work calls for them; a needed
+    # tool that's absent surfaces at point of use and is escalated (see
+    # _grounded_work_context + _email_capability_context). The self-sealing
+    # "X is blocked" beliefs the probe guarded against are now disproven by
+    # *doing* — when the job needs email, the agent emails, and success kills
+    # the false belief without a status board.
 
     def _grounded_work_context(self, agent: Agent) -> str:
         """Domain-work grounding — belief-testing (#93) extended from infra to
@@ -5202,12 +5127,6 @@ class Fabric:
         expect_ctx = self._expectation_salience_context(agent)
         if expect_ctx:
             context = context + "\n\n---\n\n" + expect_ctx
-
-        # Fresh tested capability status — so a reassess that's about to escalate
-        # or work around a "blocker" sees what's actually live first.
-        capstat = self._capability_status_context(agent)
-        if capstat:
-            context = context + "\n\n---\n\n" + capstat
 
         can_replan = False
         approval = None
