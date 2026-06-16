@@ -36,9 +36,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("cortiva.hooks")
@@ -83,10 +82,7 @@ class HookEvent:
     def summary(self) -> str:
         """One-line summary for context injection."""
         payload_preview = json.dumps(self.payload)[:200]
-        return (
-            f"[{self.source}/{self.event_type}] "
-            f"priority={self.priority} — {payload_preview}"
-        )
+        return f"[{self.source}/{self.event_type}] priority={self.priority} — {payload_preview}"
 
 
 @dataclass
@@ -136,13 +132,15 @@ class HookRouter:
         for route_data in config.get("routes", []):
             if not isinstance(route_data, dict):
                 continue
-            self._routes.append(HookRoute(
-                source=route_data.get("source", "*"),
-                events=route_data.get("events", ["*"]),
-                agent=route_data.get("agent", ""),
-                priority=route_data.get("priority", "normal"),
-                wake_if_sleeping=route_data.get("wake_if_sleeping", True),
-            ))
+            self._routes.append(
+                HookRoute(
+                    source=route_data.get("source", "*"),
+                    events=route_data.get("events", ["*"]),
+                    agent=route_data.get("agent", ""),
+                    priority=route_data.get("priority", "normal"),
+                    wake_if_sleeping=route_data.get("wake_if_sleeping", True),
+                )
+            )
 
     def route(self, source: str, event_type: str, payload: dict[str, Any]) -> HookEvent | None:
         """Route an inbound hook to the matching agent.
@@ -170,7 +168,10 @@ class HookRouter:
 
                 logger.info(
                     "Hook routed: %s/%s → %s (priority=%s)",
-                    source, event_type, rule.agent, rule.priority,
+                    source,
+                    event_type,
+                    rule.agent,
+                    rule.priority,
                 )
                 return event
 
@@ -199,8 +200,7 @@ class HookRouter:
 
         lines = [
             f"## Inbound Hooks ({len(hooks)})\n",
-            "External events received while you were sleeping. "
-            "Address these in your plan.\n",
+            "External events received while you were sleeping. Address these in your plan.\n",
         ]
         for hook in hooks:
             priority_marker = ""

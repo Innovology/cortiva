@@ -67,8 +67,7 @@ class GoogleAdapter:
                     from google import genai
                 except ImportError:
                     raise ImportError(
-                        "google-genai is not installed. "
-                        "Install it with: pip install google-genai"
+                        "google-genai is not installed. Install it with: pip install google-genai"
                     )
                 self._clients[agent_id] = genai.Client(api_key=agent_key)
             return self._clients[agent_id]
@@ -78,8 +77,7 @@ class GoogleAdapter:
                 from google import genai
             except ImportError:
                 raise ImportError(
-                    "google-genai is not installed. "
-                    "Install it with: pip install google-genai"
+                    "google-genai is not installed. Install it with: pip install google-genai"
                 )
             self._default_client = genai.Client(api_key=self._default_key)
         return self._default_client

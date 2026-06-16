@@ -16,12 +16,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger("cortiva.cluster")
@@ -35,11 +33,12 @@ logger = logging.getLogger("cortiva.cluster")
 @dataclass
 class ClusterNode:
     """Represents a single node in the cluster."""
+
     node_id: str
     host: str = "localhost"
     port: int = 9400
     agents: list[str] = field(default_factory=list)
-    last_heartbeat: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
     status: str = "online"  # "online" | "degraded" | "offline"
     capabilities: dict[str, Any] = field(default_factory=dict)
 
@@ -60,7 +59,7 @@ class ClusterNode:
         if isinstance(hb, str):
             hb = datetime.fromisoformat(hb)
         else:
-            hb = datetime.now(timezone.utc)
+            hb = datetime.now(UTC)
         return cls(
             node_id=data.get("node_id", ""),
             host=data.get("host", "localhost"),
@@ -161,7 +160,7 @@ class Cluster:
             node = ClusterNode(node_id=node_id)
             self.nodes[node_id] = node
 
-        node.last_heartbeat = datetime.now(timezone.utc)
+        node.last_heartbeat = datetime.now(UTC)
         node.status = status.get("status", "online")
         node.agents = status.get("agents", node.agents)
         node.capabilities = status.get("capabilities", node.capabilities)
@@ -172,7 +171,7 @@ class Cluster:
 
     def check_timeouts(self) -> list[str]:
         """Mark nodes as offline if heartbeat has expired. Returns degraded node IDs."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         degraded: list[str] = []
         for node_id, node in self.nodes.items():
             elapsed = (now - node.last_heartbeat).total_seconds()
@@ -246,6 +245,7 @@ class Cluster:
 @dataclass
 class MoveResult:
     """Result of an agent move operation."""
+
     success: bool
     agent_id: str
     source_node: str
@@ -285,8 +285,10 @@ async def move_agent(
     source_node_id = cluster.registry.find(agent_id)
     if not source_node_id:
         return MoveResult(
-            success=False, agent_id=agent_id,
-            source_node="", target_node=target_node_id,
+            success=False,
+            agent_id=agent_id,
+            source_node="",
+            target_node=target_node_id,
             error=f"Agent {agent_id} not found in registry",
         )
 
@@ -295,15 +297,19 @@ async def move_agent(
 
     if not target:
         return MoveResult(
-            success=False, agent_id=agent_id,
-            source_node=source_node_id, target_node=target_node_id,
+            success=False,
+            agent_id=agent_id,
+            source_node=source_node_id,
+            target_node=target_node_id,
             error=f"Target node {target_node_id} not found",
         )
 
     if not target.is_online:
         return MoveResult(
-            success=False, agent_id=agent_id,
-            source_node=source_node_id, target_node=target_node_id,
+            success=False,
+            agent_id=agent_id,
+            source_node=source_node_id,
+            target_node=target_node_id,
             error=f"Target node {target_node_id} is {target.status}",
         )
 
@@ -313,14 +319,18 @@ async def move_agent(
             synced = await sync_fn(agent_id, source, target)
             if not synced:
                 return MoveResult(
-                    success=False, agent_id=agent_id,
-                    source_node=source_node_id, target_node=target_node_id,
+                    success=False,
+                    agent_id=agent_id,
+                    source_node=source_node_id,
+                    target_node=target_node_id,
                     error="Directory sync failed",
                 )
         except Exception as e:
             return MoveResult(
-                success=False, agent_id=agent_id,
-                source_node=source_node_id, target_node=target_node_id,
+                success=False,
+                agent_id=agent_id,
+                source_node=source_node_id,
+                target_node=target_node_id,
                 error=f"Sync error: {e}",
             )
 
@@ -336,8 +346,10 @@ async def move_agent(
     logger.info(f"Agent {agent_id} moved: {source_node_id} -> {target_node_id}")
 
     return MoveResult(
-        success=True, agent_id=agent_id,
-        source_node=source_node_id, target_node=target_node_id,
+        success=True,
+        agent_id=agent_id,
+        source_node=source_node_id,
+        target_node=target_node_id,
     )
 
 
@@ -353,7 +365,11 @@ async def sync_via_rsync(
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            "rsync", "-az", "--delete", src_path, dst_path,
+            "rsync",
+            "-az",
+            "--delete",
+            src_path,
+            dst_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -392,7 +408,10 @@ async def _discover_static(
         try:
             loop = asyncio.get_event_loop()
             status = await loop.run_in_executor(
-                None, _fetch_node_status, host, port,
+                None,
+                _fetch_node_status,
+                host,
+                port,
             )
             if status:
                 node.status = "online"
@@ -419,6 +438,7 @@ async def _discover_config(config_path: str) -> list[ClusterNode]:
     except json.JSONDecodeError:
         try:
             import yaml
+
             data = yaml.safe_load(content)
         except Exception:
             return []
@@ -447,11 +467,13 @@ async def _discover_mdns() -> list[ClusterNode]:
             def add_service(self, zc: Any, type_: str, name: str) -> None:
                 info = zc.get_service_info(type_, name)
                 if info:
-                    found.append({
-                        "node_id": name.split(".")[0],
-                        "host": info.server,
-                        "port": info.port,
-                    })
+                    found.append(
+                        {
+                            "node_id": name.split(".")[0],
+                            "host": info.server,
+                            "port": info.port,
+                        }
+                    )
 
             def remove_service(self, zc: Any, type_: str, name: str) -> None:
                 pass
@@ -465,11 +487,13 @@ async def _discover_mdns() -> list[ClusterNode]:
         zc.close()
 
         for f in found:
-            nodes.append(ClusterNode(
-                node_id=f["node_id"],
-                host=f["host"],
-                port=f["port"],
-            ))
+            nodes.append(
+                ClusterNode(
+                    node_id=f["node_id"],
+                    host=f["host"],
+                    port=f["port"],
+                )
+            )
         return nodes
     except ImportError:
         logger.debug("zeroconf not installed, mDNS discovery unavailable")

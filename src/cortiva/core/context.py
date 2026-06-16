@@ -148,9 +148,7 @@ class ContextBuilder:
         # Familiarity context from routine assessment
         familiarity_text = ""
         if assessment and assessment.get("context_for_conscious"):
-            familiarity_text = (
-                "## Familiarity Context\n\n" + assessment["context_for_conscious"]
-            )
+            familiarity_text = "## Familiarity Context\n\n" + assessment["context_for_conscious"]
 
         plan_status = _format_plan_status(agent.task_queue) if agent.task_queue else ""
         messages_text = _format_messages(messages)
@@ -185,16 +183,12 @@ class ContextBuilder:
         completed = [t for t in agent.task_queue.tasks if t.status == "done"]
         completed_str = ", ".join(t.description for t in completed) or "none"
         completion_text = (
-            "## Plan Completion\n\n"
-            f"Completed: {completed_str}\n"
-            f"Completion rate: {rate:.0f}%\n"
+            f"## Plan Completion\n\nCompleted: {completed_str}\nCompletion rate: {rate:.0f}%\n"
         )
 
         # Exception pile
         exceptions = agent.task_queue.exceptions
-        exception_str = (
-            ", ".join(f"{t.description} ({t.error})" for t in exceptions) or "none"
-        )
+        exception_str = ", ".join(f"{t.description} ({t.error})" for t in exceptions) or "none"
         exception_text = f"## Exceptions\n\n{exception_str}"
 
         messages_text = _format_messages(messages)

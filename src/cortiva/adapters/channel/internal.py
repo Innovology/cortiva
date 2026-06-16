@@ -96,15 +96,17 @@ class InternalChannelAdapter:
                 if not line.strip():
                     continue
                 d = json.loads(line)
-                out.append(Message(
-                    id=d["id"],
-                    sender=d["sender"],
-                    recipient=d["recipient"],
-                    content=d["content"],
-                    timestamp=datetime.fromisoformat(d["timestamp"]),
-                    thread_id=d.get("thread_id"),
-                    metadata=d.get("metadata") or {},
-                ))
+                out.append(
+                    Message(
+                        id=d["id"],
+                        sender=d["sender"],
+                        recipient=d["recipient"],
+                        content=d["content"],
+                        timestamp=datetime.fromisoformat(d["timestamp"]),
+                        thread_id=d.get("thread_id"),
+                        metadata=d.get("metadata") or {},
+                    )
+                )
         except (OSError, json.JSONDecodeError, KeyError):
             logger.warning("Corrupt inbox %s — skipping", path, exc_info=True)
         return out
@@ -118,11 +120,17 @@ class InternalChannelAdapter:
                 path.unlink(missing_ok=True)
                 return
             lines = [
-                json.dumps({
-                    "id": m.id, "sender": m.sender, "recipient": m.recipient,
-                    "content": m.content, "timestamp": m.timestamp.isoformat(),
-                    "thread_id": m.thread_id, "metadata": m.metadata,
-                })
+                json.dumps(
+                    {
+                        "id": m.id,
+                        "sender": m.sender,
+                        "recipient": m.recipient,
+                        "content": m.content,
+                        "timestamp": m.timestamp.isoformat(),
+                        "thread_id": m.thread_id,
+                        "metadata": m.metadata,
+                    }
+                )
                 for m in remaining
             ]
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")

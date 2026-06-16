@@ -36,11 +36,26 @@ OPTIMIZE_SCHEDULE_TOOL: dict[str, Any] = {
                 },
                 "day_start": {"type": "number", "description": "Earliest hour (0-24)."},
                 "day_end": {"type": "number", "description": "Latest hour (0-24)."},
-                "w_overtime": {"type": "number", "description": "Weight: relieve overworked agents."},
-                "w_blocked": {"type": "number", "description": "Weight: protect manager oversight."},
-                "w_spread": {"type": "number", "description": "Weight: keep people overlapping (lower to spread)."},
-                "w_peak": {"type": "number", "description": "Weight: leave headroom under the ceiling."},
-                "w_preference": {"type": "number", "description": "Weight: honour preferred start times."},
+                "w_overtime": {
+                    "type": "number",
+                    "description": "Weight: relieve overworked agents.",
+                },
+                "w_blocked": {
+                    "type": "number",
+                    "description": "Weight: protect manager oversight.",
+                },
+                "w_spread": {
+                    "type": "number",
+                    "description": "Weight: keep people overlapping (lower to spread).",
+                },
+                "w_peak": {
+                    "type": "number",
+                    "description": "Weight: leave headroom under the ceiling.",
+                },
+                "w_preference": {
+                    "type": "number",
+                    "description": "Weight: honour preferred start times.",
+                },
                 "apply": {
                     "type": "boolean",
                     "description": "true to apply the rota, false for a dry-run preview.",
@@ -79,11 +94,17 @@ REBALANCE_NODES_TOOL: dict[str, Any] = {
                 },
                 "pressure_threshold": {
                     "type": "number",
-                    "description": "SRE pressure (0..1) at/above which a node is treated as pressured (default 0.85).",
+                    "description": (
+                        "SRE pressure (0..1) at/above which a node is treated as pressured"
+                        " (default 0.85)."
+                    ),
                 },
                 "apply": {
                     "type": "boolean",
-                    "description": "true to request execution of the plan, false (default) for an advisory plan only.",
+                    "description": (
+                        "true to request execution of the plan, false (default) for an advisory"
+                        " plan only."
+                    ),
                 },
             },
             "required": [],
@@ -126,11 +147,16 @@ RECOMMEND_SCHEDULE_TOOL: dict[str, Any] = {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Agent id to re-time. Omit to auto-pick the worst hotspot's role.",
+                    "description": (
+                        "Agent id to re-time. Omit to auto-pick the worst hotspot's role."
+                    ),
                 },
                 "apply": {
                     "type": "boolean",
-                    "description": "true to enact the recommended single-role change, false (default) to preview.",
+                    "description": (
+                        "true to enact the recommended single-role change,"
+                        " false (default) to preview."
+                    ),
                 },
             },
             "required": [],

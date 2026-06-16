@@ -7,9 +7,16 @@ from cortiva.workforce import AgentEfficiencyInput, assess_workforce_efficiency
 
 def _good(aid="a", **kw):
     base = dict(
-        agent_id=aid, name=aid.title(), tasks_completed=16, tasks_escalated=1,
-        active_hours=7.5, scheduled_hours=7.5, prediction_accuracy=0.8,
-        cost_gbp=2.0, satisfaction=0.5, frustration=0.0,
+        agent_id=aid,
+        name=aid.title(),
+        tasks_completed=16,
+        tasks_escalated=1,
+        active_hours=7.5,
+        scheduled_hours=7.5,
+        prediction_accuracy=0.8,
+        cost_gbp=2.0,
+        satisfaction=0.5,
+        frustration=0.0,
     )
     base.update(kw)
     return AgentEfficiencyInput(**base)
@@ -52,27 +59,38 @@ def test_trend_from_prior_score():
 def test_declining_agent_flagged():
     # current period much weaker than the agent's strong prior → >10pt drop
     r = assess_workforce_efficiency(
-        [_good(aid="dip", tasks_completed=3, tasks_escalated=5,
-               prediction_accuracy=0.2, prior_score=90.0)]
+        [
+            _good(
+                aid="dip",
+                tasks_completed=3,
+                tasks_escalated=5,
+                prediction_accuracy=0.2,
+                prior_score=90.0,
+            )
+        ]
     )
     kinds = {h.kind for h in r.hotspots}
     assert "declining" in kinds
 
 
 def test_at_risk_low_quality_flagged():
-    r = assess_workforce_efficiency([_good(tasks_completed=2, tasks_escalated=10, prediction_accuracy=0.1)])
+    r = assess_workforce_efficiency(
+        [_good(tasks_completed=2, tasks_escalated=10, prediction_accuracy=0.1)]
+    )
     assert any(h.kind == "at_risk" for h in r.hotspots)
 
 
 def test_hotspots_rank_problems_before_standouts():
     recs = [
         _good(aid="great", prior_score=70.0),  # high + improving → standout
-        _good(aid="dip", prior_score=95.0),    # declining
+        _good(aid="dip", prior_score=95.0),  # declining
     ]
     r = assess_workforce_efficiency(recs)
     if r.hotspots:
         # declining/at_risk must come before standout
-        first_standout = next((i for i, h in enumerate(r.hotspots) if h.kind == "standout"), len(r.hotspots))
+        first_standout = next(
+            (i for i, h in enumerate(r.hotspots) if h.kind == "standout"), len(r.hotspots)
+        )
         problems = [i for i, h in enumerate(r.hotspots) if h.kind in ("declining", "at_risk")]
         assert all(p < first_standout for p in problems)
 
@@ -83,7 +101,10 @@ def test_empty_is_safe():
 
 
 def test_ranked_by_score():
-    recs = [_good(aid="low", tasks_completed=2, tasks_escalated=6), _good(aid="high", tasks_completed=20)]
+    recs = [
+        _good(aid="low", tasks_completed=2, tasks_escalated=6),
+        _good(aid="high", tasks_completed=20),
+    ]
     scores = [a.score for a in assess_workforce_efficiency(recs).per_agent]
     assert scores == sorted(scores, reverse=True)
 

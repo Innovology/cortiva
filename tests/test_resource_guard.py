@@ -19,10 +19,12 @@ class TestResourceLimits:
         assert lim.max_hours_per_day == 12.0
 
     def test_from_dict(self) -> None:
-        lim = ResourceLimits.from_dict({
-            "cycle_timeout_s": 60,
-            "max_disk_mb": 100,
-        })
+        lim = ResourceLimits.from_dict(
+            {
+                "cycle_timeout_s": 60,
+                "max_disk_mb": 100,
+            }
+        )
         assert lim.cycle_timeout_s == 60
         assert lim.max_disk_mb == 100
         # Defaults for unspecified
@@ -117,10 +119,12 @@ class TestResourceGuard:
 
     def test_per_agent_overrides(self, tmp_path: Path) -> None:
         guard = ResourceGuard(tmp_path)
-        guard.load({
-            "defaults": {"cycle_timeout_s": 120},
-            "dev-cortiva": {"cycle_timeout_s": 300},
-        })
+        guard.load(
+            {
+                "defaults": {"cycle_timeout_s": 120},
+                "dev-cortiva": {"cycle_timeout_s": 300},
+            }
+        )
         assert guard.limits_for("dev-cortiva").cycle_timeout_s == 300
         assert guard.limits_for("qa-cortiva").cycle_timeout_s == 120
 
@@ -149,6 +153,7 @@ def test_raise_cycle_timeout_floor_outlasts_terminal():
     or long claude runs get hard-killed and retried forever (Astrid's
     120s-timeout loop, 2026-06-07)."""
     from pathlib import Path
+
     from cortiva.core.resource_guard import ResourceGuard
 
     g = ResourceGuard(Path("/tmp"))
@@ -165,6 +170,7 @@ def test_fabric_with_terminal_raises_cycle_timeout():
     import tempfile
     from pathlib import Path
     from unittest.mock import AsyncMock
+
     from cortiva.adapters.memory.inmemory import InMemoryAdapter
     from cortiva.core.fabric import Fabric
 

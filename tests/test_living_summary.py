@@ -15,7 +15,6 @@ from cortiva.core.living_summary import (
     split_identity_and_day_report,
 )
 
-
 # ---------------------------------------------------------------------------
 # _extract_themes
 # ---------------------------------------------------------------------------
@@ -86,8 +85,7 @@ class TestSplitIdentityAndDayReport:
 
     def test_delimiter_only_splits_once(self) -> None:
         content = (
-            f"# Identity\n{DAY_REPORT_DELIMITER}\n"
-            f"Report mentioning {DAY_REPORT_DELIMITER} inline."
+            f"# Identity\n{DAY_REPORT_DELIMITER}\nReport mentioning {DAY_REPORT_DELIMITER} inline."
         )
         identity, report = split_identity_and_day_report(content)
         assert identity == "# Identity"
@@ -104,7 +102,8 @@ class TestLivingSummaryRegenerator:
         memory = memory or InMemoryAdapter()
         consciousness = consciousness or AsyncMock()
         return LivingSummaryRegenerator(
-            memory=memory, consciousness=consciousness,
+            memory=memory,
+            consciousness=consciousness,
         )
 
     @pytest.mark.asyncio
@@ -118,9 +117,13 @@ class TestLivingSummaryRegenerator:
     @pytest.mark.asyncio
     async def test_gather_experience_with_data(self) -> None:
         memory = InMemoryAdapter()
-        await memory.store("a", "Task: Process invoice. Outcome: done", tags=["task"], importance=7.0)
+        await memory.store(
+            "a", "Task: Process invoice. Outcome: done", tags=["task"], importance=7.0
+        )
         await memory.store("a", "Task: Review report. Outcome: done", tags=["task"], importance=7.0)
-        await memory.store("a", "learned to verify amounts first", tags=["learning"], importance=8.0)
+        await memory.store(
+            "a", "learned to verify amounts first", tags=["learning"], importance=8.0
+        )
 
         regen = self._make_regen(memory=memory)
         exp = await regen.gather_experience("a")
@@ -177,7 +180,9 @@ class TestLivingSummaryRegenerator:
     @pytest.mark.asyncio
     async def test_regenerate_returns_content(self) -> None:
         memory = InMemoryAdapter()
-        await memory.store("a", "Task: Important work. Outcome: done", tags=["task"], importance=7.0)
+        await memory.store(
+            "a", "Task: Important work. Outcome: done", tags=["task"], importance=7.0
+        )
 
         consciousness = AsyncMock()
         consciousness.reflect.return_value = ConsciousResponse(
@@ -243,6 +248,7 @@ class TestFabricLivingSummaryIntegration:
         class StubConsciousness:
             async def think(self, **kw):
                 return ConsciousResponse(content="- [ ] Plan item", model="stub")
+
             async def reflect(self, **kw):
                 return ConsciousResponse(
                     content=(
@@ -266,11 +272,14 @@ class TestFabricLivingSummaryIntegration:
 
         # Store some experience so regeneration isn't skipped
         await fabric.memory.store(
-            "agent-01", "Task: Did important work. Outcome: success",
-            tags=["task"], importance=7.0,
+            "agent-01",
+            "Task: Did important work. Outcome: success",
+            tags=["task"],
+            importance=7.0,
         )
 
         from cortiva.core.agent import AgentState
+
         agent.state = AgentState.WAKING
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)
@@ -289,11 +298,14 @@ class TestFabricLivingSummaryIntegration:
         agent = fabric.register_agent("agent-01")
 
         await fabric.memory.store(
-            "agent-01", "Task: work. Outcome: ok",
-            tags=["task"], importance=7.0,
+            "agent-01",
+            "Task: work. Outcome: ok",
+            tags=["task"],
+            importance=7.0,
         )
 
         from cortiva.core.agent import AgentState
+
         agent.state = AgentState.WAKING
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)
@@ -316,6 +328,7 @@ class TestFabricLivingSummaryIntegration:
         original_identity = agent.read_identity("identity")
 
         from cortiva.core.agent import AgentState
+
         agent.state = AgentState.WAKING
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)
@@ -333,7 +346,8 @@ class TestFabricLivingSummaryIntegration:
 
     @pytest.mark.asyncio
     async def test_sleep_journal_falls_back_without_delimiter(
-        self, tmp_path,
+        self,
+        tmp_path,
     ) -> None:
         """Reflection response without a day report → journal gets stats."""
         from cortiva.core.fabric import Fabric
@@ -341,9 +355,11 @@ class TestFabricLivingSummaryIntegration:
         class NoReportConsciousness:
             async def think(self, **kw):
                 return ConsciousResponse(content="- [ ] Plan", model="stub")
+
             async def reflect(self, **kw):
                 return ConsciousResponse(
-                    content="# Updated Identity only", model="stub",
+                    content="# Updated Identity only",
+                    model="stub",
                 )
 
         fabric = Fabric(
@@ -353,11 +369,14 @@ class TestFabricLivingSummaryIntegration:
         )
         agent = fabric.register_agent("agent-01")
         await fabric.memory.store(
-            "agent-01", "Task: work. Outcome: ok",
-            tags=["task"], importance=7.0,
+            "agent-01",
+            "Task: work. Outcome: ok",
+            tags=["task"],
+            importance=7.0,
         )
 
         from cortiva.core.agent import AgentState
+
         agent.state = AgentState.WAKING
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)
@@ -435,7 +454,8 @@ class TestRegenerationAnchoring:
 
     def _prompt(self, **kwargs):
         regen = LivingSummaryRegenerator(
-            memory=InMemoryAdapter(), consciousness=AsyncMock(),
+            memory=InMemoryAdapter(),
+            consciousness=AsyncMock(),
         )
         return regen.build_regeneration_prompt(
             MagicMock(),
@@ -483,8 +503,10 @@ class TestRegenerationAnchoring:
 
         memory = InMemoryAdapter()
         await memory.store(
-            "agent-01", "Task: work. Outcome: ok",
-            tags=["task"], importance=7.0,
+            "agent-01",
+            "Task: work. Outcome: ok",
+            tags=["task"],
+            importance=7.0,
         )
 
         captured = {}
@@ -506,7 +528,8 @@ class TestRegenerationAnchoring:
         agent.archive_identity("identity")
 
         regen = LivingSummaryRegenerator(
-            memory=memory, consciousness=CapturingConsciousness(),
+            memory=memory,
+            consciousness=CapturingConsciousness(),
         )
         result = await regen.regenerate(agent, "day summary")
         assert result is not None
@@ -528,7 +551,8 @@ class TestFabricArchivesIdentityOnRegen:
 
             async def reflect(self, **kw):
                 return ConsciousResponse(
-                    content="# Rewritten identity", model="stub",
+                    content="# Rewritten identity",
+                    model="stub",
                 )
 
         fabric = Fabric(
@@ -540,11 +564,14 @@ class TestFabricArchivesIdentityOnRegen:
         agent.write_identity("identity", "# The original me")
 
         await fabric.memory.store(
-            "agent-01", "Task: work. Outcome: ok",
-            tags=["task"], importance=7.0,
+            "agent-01",
+            "Task: work. Outcome: ok",
+            tags=["task"],
+            importance=7.0,
         )
 
         from cortiva.core.agent import AgentState
+
         agent.state = AgentState.WAKING
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)

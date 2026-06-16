@@ -33,7 +33,10 @@ class TestBackendBudget:
 
     def test_is_exhausted_by_tokens(self) -> None:
         b = BackendBudget(
-            backend=BackendType.API, calls_limit=100, tokens_limit=1000, tokens_used=1000,
+            backend=BackendType.API,
+            calls_limit=100,
+            tokens_limit=1000,
+            tokens_used=1000,
         )
         assert b.is_exhausted is True
 
@@ -328,9 +331,7 @@ class MockConsciousness:
 
 
 class TestFabricBudgetIntegration:
-    def _make_fabric_with_budget(
-        self, tmp_path: Path, calls_limit: int = 50
-    ) -> Fabric:
+    def _make_fabric_with_budget(self, tmp_path: Path, calls_limit: int = 50) -> Fabric:
         mgr = ConsciousnessBudgetManager(
             default_backend=BackendType.API,
             fallback_chain=[BackendType.API],
@@ -416,6 +417,7 @@ class TestFabricBudgetIntegration:
             mgr.record_usage("worker-01", BackendType.API, 10, 10)
         # Allow the ensure_future coroutine to run
         import asyncio
+
         await asyncio.sleep(0)
         mock_channel.send.assert_called_once()
         assert "worker-01" in mock_channel.send.call_args.kwargs.get(

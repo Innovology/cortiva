@@ -146,8 +146,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         return
 
     agents = sorted(
-        p.name for p in agents_dir.iterdir()
-        if p.is_dir() and not p.name.startswith(".")
+        p.name for p in agents_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
     )
 
     if not agents:
@@ -188,6 +187,7 @@ def _resolve_hq_url(config_path: Path) -> str | None:
     surface an actionable error.
     """
     import os
+
     env_url = os.environ.get("CORTIVA_HQ_URL")
     if env_url:
         return env_url.strip()
@@ -196,6 +196,7 @@ def _resolve_hq_url(config_path: Path) -> str | None:
         return None
     try:
         import yaml as _yaml
+
         data = _yaml.safe_load(config_path.read_text()) or {}
     except Exception:
         return None
@@ -274,19 +275,14 @@ def cmd_agent_create(args: argparse.Namespace) -> None:
         files = {
             "identity/identity.md": f"# {aid}\n\nNewly created agent. No experiences yet.\n",
             "identity/soul.md": (
-                f"# {aid} — Persona\n\n"
-                "Default persona. Configure disposition parameters.\n"
+                f"# {aid} — Persona\n\nDefault persona. Configure disposition parameters.\n"
             ),
             "identity/skills.md": f"# {aid} — Skills\n\nNo skills defined yet.\n",
             "identity/responsibilities.md": (
-                f"# {aid} — Responsibilities\n\n"
-                "## Primary\n\n## Secondary\n\n## Escalation\n"
+                f"# {aid} — Responsibilities\n\n## Primary\n\n## Secondary\n\n## Escalation\n"
             ),
             "identity/procedures.md": f"# {aid} — Procedures\n\nNo procedures promoted yet.\n",
-            "today/plan.md": (
-                f"# {aid} — Plan\n\n"
-                "No plan yet. Awaiting first wake cycle.\n"
-            ),
+            "today/plan.md": (f"# {aid} — Plan\n\nNo plan yet. Awaiting first wake cycle.\n"),
         }
 
         for filename, content in files.items():
@@ -387,7 +383,6 @@ def cmd_watch(args: argparse.Namespace) -> None:
         print_error,
         print_header,
         print_info,
-        print_kv,
         print_muted,
         print_table,
         progress_bar,
@@ -505,16 +500,18 @@ def cmd_capacity(args: argparse.Namespace) -> None:
     print("Node Resources\n")
     print(f"  CPU cores:       {node.get('cpu_cores', '?')}")
     print(f"  RAM total:       {node.get('ram_total_gb', '?')} GB")
-    print(f"  RAM available:   {node.get('ram_available_gb', '?')} GB ({node.get('ram_percent', '?')}% used)")
+    ram_avail = node.get('ram_available_gb', '?')
+    ram_pct = node.get('ram_percent', '?')
+    print(f"  RAM available:   {ram_avail} GB ({ram_pct}% used)")
     print(f"  Disk free:       {node.get('disk_free_gb', '?')} GB")
 
-    print(f"\nAgent Capacity\n")
+    print("\nAgent Capacity\n")
     print(f"  Active agents:   {ag.get('active', 0)}")
     print(f"  Total agents:    {ag.get('total', 0)}")
     basis = ag.get("max_concurrent_basis", "")
     print(f"  Max concurrent:  ~{ag.get('max_concurrent', '?')} ({basis})")
 
-    print(f"\nContention\n")
+    print("\nContention\n")
     print(f"  Avg queue wait:        {cont.get('avg_queue_wait_s', 0):>6.1f}s")
     print(f"  Avg execution time:    {cont.get('avg_execution_s', 0):>6.1f}s")
     print(f"  Avg LLM wait:          {cont.get('avg_consciousness_wait_s', 0):>6.1f}s")
@@ -523,15 +520,15 @@ def cmd_capacity(args: argparse.Namespace) -> None:
     print(f"  Heartbeat utilisation: {cont.get('heartbeat_utilisation_pct', 0):>5.0f}%")
 
     if share:
-        print(f"\nHeartbeat Share (who's using the cycle)\n")
+        print("\nHeartbeat Share (who's using the cycle)\n")
         for aid, pct in sorted(share.items(), key=lambda x: x[1], reverse=True):
             bar = "#" * int(pct / 2)
             print(f"  {aid:<20} {pct:>5.1f}%  {bar}")
 
     if tasks:
-        print(f"\nRecent Tasks\n")
+        print("\nRecent Tasks\n")
         print(f"  {'Agent':<16} {'Task':<10} {'Queue':>7} {'Exec':>7} {'LLM':>7}")
-        print(f"  {'-'*16} {'-'*10} {'-'*7} {'-'*7} {'-'*7}")
+        print(f"  {'-' * 16} {'-' * 10} {'-' * 7} {'-' * 7} {'-' * 7}")
         for t in tasks:
             print(
                 f"  {t['agent_id']:<16} {t['task_id']:<10} "
@@ -562,13 +559,15 @@ def cmd_agent_activity(args: argparse.Namespace) -> None:
     print(f"Agent: {resp['agent_id']}  |  State: {resp['state']}")
     print(f"Today: {ts.get('date', '?')}  |  Hours: {ts.get('total_hours', 0):.1f}h")
     if ts.get("overtime_hours", 0) > 0:
-        print(f"Overtime: +{ts['overtime_hours']:.1f}h (scheduled: {ts.get('scheduled_hours', 8)}h)")
+        print(
+            f"Overtime: +{ts['overtime_hours']:.1f}h (scheduled: {ts.get('scheduled_hours', 8)}h)"
+        )
     print()
 
     # Current task
     current = resp.get("current_task")
     if current:
-        print(f"In Progress:")
+        print("In Progress:")
         print(f"  {current['description']}")
         print()
 
@@ -654,7 +653,7 @@ def _print_hours(resp: dict) -> None:
         overtime = resp.get("total_overtime", 0)
         print(f"Agent: {agent_id}  |  This Week\n")
         print(f"  {'Day':<12} {'Hours':>7} {'Scheduled':>10} {'Overtime':>9} {'Tasks':>7}")
-        print(f"  {'-'*12} {'-'*7} {'-'*10} {'-'*9} {'-'*7}")
+        print(f"  {'-' * 12} {'-' * 7} {'-' * 10} {'-' * 9} {'-' * 7}")
         for day in resp.get("days", []):
             h = day.get("total_hours", 0)
             s = day.get("scheduled_hours", 8)
@@ -662,7 +661,7 @@ def _print_hours(resp: dict) -> None:
             tasks = day.get("tasks_completed", 0)
             ot_str = f"+{ot:.1f}h" if ot > 0 else "-"
             print(f"  {day['date']:<12} {h:>6.1f}h {s:>9.0f}h {ot_str:>9} {tasks:>7}")
-        print(f"  {'-'*12} {'-'*7} {'-'*10} {'-'*9}")
+        print(f"  {'-' * 12} {'-' * 7} {'-' * 10} {'-' * 9}")
         ot_str = f"+{overtime:.1f}h" if overtime > 0 else "-"
         print(f"  {'Total':<12} {total:>6.1f}h {'':>10} {ot_str:>9}")
     else:
@@ -681,7 +680,7 @@ def _print_hours(resp: dict) -> None:
 
         entries = resp.get("entries", [])
         if entries:
-            print(f"\n  Work Periods:")
+            print("\n  Work Periods:")
             for e in entries:
                 wake = e.get("wake_time", "?")[:16]
                 sleep = e.get("sleep_time")
@@ -694,7 +693,6 @@ def cmd_agent_chat(args: argparse.Namespace) -> None:
     from cortiva.cli.output import (
         print_error,
         print_header,
-        print_info,
         print_muted,
     )
     from cortiva.core.ipc import FabricClient
@@ -897,12 +895,12 @@ def cmd_skill_list(args: argparse.Namespace) -> None:
         # Show category summary
         for cat, count in cats.items():
             print(f"  {cat:<30} {count:>4} skills")
-        print(f"\nUse: cortiva skill list --category <name>")
-        print(f"     cortiva skill search <query>")
+        print("\nUse: cortiva skill list --category <name>")
+        print("     cortiva skill search <query>")
         return
 
     print(f"  {'Skill':<25} {'Category':<22} Description")
-    print(f"  {'-'*25} {'-'*22} {'-'*40}")
+    print(f"  {'-' * 25} {'-' * 22} {'-' * 40}")
     for skill in results:
         desc = skill.description[:40] if skill.description else ""
         print(f"  {skill.name:<25} {skill.category:<22} {desc}")
@@ -924,11 +922,11 @@ def cmd_skill_search(args: argparse.Namespace) -> None:
 
     print(f"Found {len(results)} skills matching '{query}':\n")
     print(f"  {'Skill':<25} {'Category':<22} Description")
-    print(f"  {'-'*25} {'-'*22} {'-'*40}")
+    print(f"  {'-' * 25} {'-' * 22} {'-' * 40}")
     for skill in results:
         desc = skill.description[:40] if skill.description else ""
         print(f"  {skill.name:<25} {skill.category:<22} {desc}")
-    print(f"\nInstall with: cortiva skill install <name> --agent <agent-id>")
+    print("\nInstall with: cortiva skill install <name> --agent <agent-id>")
 
 
 def cmd_skill_install(args: argparse.Namespace) -> None:
@@ -946,7 +944,7 @@ def cmd_skill_install(args: argparse.Namespace) -> None:
     skill = registry.get(args.name)
     if skill is None:
         print(f"Skill '{args.name}' not found in registry.")
-        print(f"Use 'cortiva skill search' to find available skills.")
+        print("Use 'cortiva skill search' to find available skills.")
         sys.exit(1)
 
     try:
@@ -1004,13 +1002,13 @@ def cmd_skill_info(args: argparse.Namespace) -> None:
     if skill.tags:
         print(f"  Tags:        {', '.join(skill.tags)}")
     if skill.mcp:
-        print(f"\n  MCP Server:")
+        print("\n  MCP Server:")
         print(f"    Package:   {skill.mcp.package}")
         print(f"    Command:   {skill.mcp.command}")
         if skill.mcp.env:
             print(f"    Env vars:  {', '.join(skill.mcp.env)}")
     if skill.procedures:
-        print(f"\n  Procedures:")
+        print("\n  Procedures:")
         for line in skill.procedures.strip().splitlines():
             print(f"    {line}")
 
@@ -1065,12 +1063,12 @@ def cmd_approve_list(args: argparse.Namespace) -> None:
 
     print(f"Pending Approvals ({len(pending)}):\n")
     print(f"  {'ID':<10} {'Agent':<16} {'Approver':<16} Task")
-    print(f"  {'-'*10} {'-'*16} {'-'*16} {'-'*30}")
+    print(f"  {'-' * 10} {'-' * 16} {'-' * 16} {'-' * 30}")
     for r in pending:
         desc = r.task_description[:30] if r.task_description else ""
         print(f"  {r.id:<10} {r.agent_id:<16} {r.approver_id:<16} {desc}")
-    print(f"\nAccept: cortiva approve accept <id>")
-    print(f"Reject: cortiva approve reject <id> --reason '...'")
+    print("\nAccept: cortiva approve accept <id>")
+    print("Reject: cortiva approve reject <id> --reason '...'")
 
 
 def cmd_approve_accept(args: argparse.Namespace) -> None:
@@ -1151,9 +1149,11 @@ def cmd_discover(args: argparse.Namespace) -> None:
     async def _run() -> NodeCapabilities:
         import os as _os
         import platform as _platform
+
         node_id = f"{_platform.node()}-{_os.getpid()}"
         return await NodeCapabilities.discover(
-            node_id, custom_endpoints=custom_endpoints,
+            node_id,
+            custom_endpoints=custom_endpoints,
         )
 
     caps = _asyncio.run(_run())
@@ -1173,7 +1173,7 @@ def cmd_discover(args: argparse.Namespace) -> None:
     print(f"\nLocal Models ({len(caps.local_models)}):")
     if caps.local_models:
         for m in caps.local_models:
-            size_gb = m.size_bytes / (1024 ** 3) if m.size_bytes else 0
+            size_gb = m.size_bytes / (1024**3) if m.size_bytes else 0
             size_str = f"{size_gb:.1f}GB" if size_gb else ""
             print(f"  {m.name:<30} {m.parameter_size:<8} {size_str}")
     else:
@@ -1185,7 +1185,7 @@ def cmd_discover(args: argparse.Namespace) -> None:
             health = "healthy" if e.healthy else "unreachable"
             print(f"  {e.name:<20} {e.url:<40} {health}")
 
-    print(f"\nResources:")
+    print("\nResources:")
     r = caps.resources
     print(f"  CPU:      {r.cpu_cores} cores")
     print(f"  RAM:      {r.ram_available_gb:.1f}GB free / {r.ram_total_gb:.1f}GB total")
@@ -1264,9 +1264,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> None:
                 },
             },
         }
-        config_path.write_text(
-            yaml.dump(config, default_flow_style=False, sort_keys=False)
-        )
+        config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
         print(f"\n  Config: {config_path}")
     else:
         print(f"\n  Config: {config_path} (already exists, not overwritten)")
@@ -1285,6 +1283,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     # Set process name so it shows as "cortiva" in Activity Monitor / ps
     try:
         import setproctitle
+
         setproctitle.setproctitle("cortiva")
     except ImportError:
         pass
@@ -1351,7 +1350,10 @@ def cmd_start(args: argparse.Namespace) -> None:
                 agents_dir = str(fabric.agents_dir)
                 app = create_app(agents_dir=agents_dir)
                 portal_config = uvicorn.Config(
-                    app, host=portal_host, port=portal_port, log_level="info",
+                    app,
+                    host=portal_host,
+                    port=portal_port,
+                    log_level="info",
                 )
                 server = uvicorn.Server(portal_config)
                 print(f"Portal running on http://{portal_host}:{portal_port}")
@@ -1548,7 +1550,9 @@ def cmd_agent_promote(args: argparse.Namespace) -> None:
     record = initiate_promotion(agent_dir, tpl_path, probation_days=args.probation)
     print(f"Promotion initiated for {args.id}")
     print(f"  {record.source_role} -> {record.target_role}")
-    print(f"  Probation: {record.probation_config.duration_days} days (until {record.probation_end[:10]})")
+    prob_days = record.probation_config.duration_days
+    prob_end = record.probation_end[:10]
+    print(f"  Probation: {prob_days} days (until {prob_end})")
     print(f"  Snapshot: {record.pre_promotion_snapshot}")
 
 
@@ -1557,7 +1561,6 @@ def cmd_agent_probation(args: argparse.Namespace) -> None:
     from cortiva.core.promotion import (
         confirm_promotion,
         extend_probation,
-        get_promotion,
         revert_promotion,
     )
 
@@ -1576,7 +1579,8 @@ def cmd_agent_probation(args: argparse.Namespace) -> None:
     elif getattr(args, "revert", False):
         record = revert_promotion(agent_dir)
         if record:
-            print(f"Promotion reverted for {args.id}. Restored from snapshot {record.pre_promotion_snapshot}.")
+            snap = record.pre_promotion_snapshot
+            print(f"Promotion reverted for {args.id}. Restored from snapshot {snap}.")
         else:
             print(f"No active probation for {args.id}.")
             sys.exit(1)
@@ -1620,8 +1624,9 @@ def cmd_agent_export(args: argparse.Namespace) -> None:
                 content = md_file.read_text(encoding="utf-8")
                 # Remove email addresses and URLs
                 import re
-                content = re.sub(r'\b[\w.+-]+@[\w-]+\.[\w.-]+\b', '[REDACTED]', content)
-                content = re.sub(r'https?://\S+', '[URL_REDACTED]', content)
+
+                content = re.sub(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b", "[REDACTED]", content)
+                content = re.sub(r"https?://\S+", "[URL_REDACTED]", content)
                 md_file.write_text(content, encoding="utf-8")
 
         with tarfile.open(output, "w:gz") as tar:
@@ -1656,6 +1661,7 @@ def cmd_agent_import(args: argparse.Namespace) -> None:
                 sys.exit(1)
 
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp:
             tar.extractall(tmp)
             # Find the extracted directory (first dir in tmp)
@@ -1665,10 +1671,12 @@ def cmd_agent_import(args: argparse.Namespace) -> None:
                 sys.exit(1)
             src = extracted[0]
             import shutil
+
             shutil.copytree(src, agent_dir)
 
     # Ensure workspace dirs exist
     from cortiva.core.agent import WORKSPACE_DIRS
+
     for subdir in WORKSPACE_DIRS:
         (agent_dir / subdir).mkdir(parents=True, exist_ok=True)
 
@@ -1694,6 +1702,7 @@ def cmd_portal(args: argparse.Namespace) -> None:
     agents_dir = "./agents"
     if config_path.exists():
         import yaml as _yaml
+
         cfg = _yaml.safe_load(config_path.read_text()) or {}
         agents_dir = cfg.get("agents", {}).get("directory", "./agents")
 
@@ -1720,7 +1729,7 @@ def cmd_cluster_status(args: argparse.Namespace) -> None:
         print(f"Failed to connect to daemon: {exc}")
         sys.exit(1)
 
-    print(f"Cluster Status\n")
+    print("Cluster Status\n")
     print(f"  Local node:     {resp.get('local_node_id', '?')}")
     print(f"  Discovery:      {resp.get('discovery_mode', '?')}")
     print(f"  Nodes:          {resp.get('node_count', 0)}")
@@ -1771,7 +1780,7 @@ def cmd_cluster_nodes(args: argparse.Namespace) -> None:
         if agents:
             print(f"    Agents:  {', '.join(agents)}")
         else:
-            print(f"    Agents:  (none)")
+            print("    Agents:  (none)")
         hb = node.get("last_heartbeat", "")
         if hb:
             print(f"    Heartbeat: {hb}")
@@ -1841,7 +1850,8 @@ def cmd_cluster_load(args: argparse.Namespace) -> None:
     async def _run() -> NodeCapabilities:
         node_id = f"{_platform.node()}-{_os.getpid()}"
         return await NodeCapabilities.discover(
-            node_id, custom_endpoints=custom_endpoints,
+            node_id,
+            custom_endpoints=custom_endpoints,
         )
 
     caps = _asyncio.run(_run())
@@ -1950,7 +1960,8 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser = agent_sub.add_parser("create", help="Register a new agent")
     create_parser.add_argument("id", help="Agent ID")
     create_parser.add_argument(
-        "-t", "--template",
+        "-t",
+        "--template",
         help="Create agent from a bundled template",
     )
 
@@ -1995,12 +2006,16 @@ def build_parser() -> argparse.ArgumentParser:
     clone_parser = agent_sub.add_parser("clone", help="Clone an agent from a snapshot")
     clone_parser.add_argument("id", help="Source agent ID")
     clone_parser.add_argument("--as", dest="new_id", required=True, help="New agent ID")
-    clone_parser.add_argument("--from-snapshot", default="latest", help="Snapshot ID (default: latest)")
+    clone_parser.add_argument(
+        "--from-snapshot", default="latest", help="Snapshot ID (default: latest)"
+    )
 
     promote_parser = agent_sub.add_parser("promote", help="Promote an agent to a new role")
     promote_parser.add_argument("id", help="Agent ID")
     promote_parser.add_argument("--to", required=True, help="Target role template name")
-    promote_parser.add_argument("--probation", type=int, default=14, help="Probation days (default: 14)")
+    promote_parser.add_argument(
+        "--probation", type=int, default=14, help="Probation days (default: 14)"
+    )
 
     probation_parser = agent_sub.add_parser("probation", help="Manage agent probation")
     probation_parser.add_argument("id", help="Agent ID")

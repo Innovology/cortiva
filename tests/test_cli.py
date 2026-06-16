@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -246,7 +245,9 @@ def _ns(**kwargs: object) -> argparse.Namespace:
 
 
 class TestCmdInit:
-    def test_creates_workspace(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_creates_workspace(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         from cortiva.cli.main import cmd_init
 
@@ -264,7 +265,9 @@ class TestCmdInit:
         assert "Initialised" in out
         assert "myws" in out
 
-    def test_existing_directory_exits(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_existing_directory_exits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "existing").mkdir()
         from cortiva.cli.main import cmd_init
@@ -274,7 +277,9 @@ class TestCmdInit:
 
 
 class TestCmdStatus:
-    def test_ipc_live_path(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_ipc_live_path(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
 
@@ -292,12 +297,15 @@ class TestCmdStatus:
         }
         with patch("cortiva.cli.main._try_ipc_status", return_value=live_data):
             from cortiva.cli.main import cmd_status
+
             cmd_status(_ns())
 
         out = capsys.readouterr().out
         assert "agent-1" in out
 
-    def test_filesystem_fallback(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_filesystem_fallback(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
         agents_dir = tmp_path / "agents"
@@ -311,6 +319,7 @@ class TestCmdStatus:
 
         with patch("cortiva.cli.main._try_ipc_status", return_value=None):
             from cortiva.cli.main import cmd_status
+
             cmd_status(_ns())
 
         out = capsys.readouterr().out
@@ -323,24 +332,30 @@ class TestCmdStatus:
         with pytest.raises(SystemExit):
             cmd_status(_ns())
 
-    def test_no_agents_dir(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_agents_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
 
         with patch("cortiva.cli.main._try_ipc_status", return_value=None):
             from cortiva.cli.main import cmd_status
+
             cmd_status(_ns())
 
         out = capsys.readouterr().out
         assert "No agents" in out
 
-    def test_empty_agents_dir(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_empty_agents_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
         (tmp_path / "agents").mkdir()
 
         with patch("cortiva.cli.main._try_ipc_status", return_value=None):
             from cortiva.cli.main import cmd_status
+
             cmd_status(_ns())
 
         out = capsys.readouterr().out
@@ -348,7 +363,9 @@ class TestCmdStatus:
 
 
 class TestCmdAgentCreate:
-    def test_create_agent_no_template(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_create_agent_no_template(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
         (tmp_path / "agents").mkdir()
@@ -366,7 +383,9 @@ class TestCmdAgentCreate:
         out = capsys.readouterr().out
         assert "Created agent: bot-1" in out
 
-    def test_create_agent_already_exists(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_create_agent_already_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
         (tmp_path / "agents" / "bot-1").mkdir(parents=True)
@@ -383,13 +402,16 @@ class TestCmdAgentCreate:
         with pytest.raises(SystemExit):
             cmd_agent_create(_ns(id="bot-1", template=None))
 
-    def test_create_agent_with_template(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_create_agent_with_template(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
         (tmp_path / "agents").mkdir()
 
         with patch("cortiva.templates.apply_template", return_value=["identity.md", "soul.md"]):
             from cortiva.cli.main import cmd_agent_create
+
             cmd_agent_create(_ns(id="bot-tpl", template="my-template"))
 
         out = capsys.readouterr().out
@@ -398,7 +420,9 @@ class TestCmdAgentCreate:
 
 
 class TestCmdWatch:
-    def test_watch_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_watch_success(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         resp = {
             "ok": True,
@@ -417,6 +441,7 @@ class TestCmdWatch:
         client = _mock_ipc_client(resp=resp)
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_watch
+
             cmd_watch(_ns())
 
         out = capsys.readouterr().out
@@ -427,6 +452,7 @@ class TestCmdWatch:
         client = _mock_ipc_client(is_running=False)
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_watch
+
             with pytest.raises(SystemExit):
                 cmd_watch(_ns())
 
@@ -435,20 +461,26 @@ class TestCmdWatch:
         client = _mock_ipc_client(resp={"ok": False, "error": "boom"})
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_watch
+
             with pytest.raises(SystemExit):
                 cmd_watch(_ns())
 
-    def test_watch_no_agents(self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_watch_no_agents(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         client = _mock_ipc_client(resp={"ok": True, "agents": {}})
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_watch
+
             cmd_watch(_ns())
 
         out = capsys.readouterr().out
         assert "No agents" in out
 
-    def test_watch_with_capacity(self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_watch_with_capacity(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         resp = {
             "ok": True,
@@ -465,13 +497,18 @@ class TestCmdWatch:
             },
             "capacity": {
                 "node": {"cpu_cores": 8, "ram_available_gb": 16, "ram_percent": 50},
-                "contention": {"avg_queue_wait_s": 1.5, "avg_consciousness_wait_s": 0.5, "heartbeat_utilisation_pct": 30},
+                "contention": {
+                    "avg_queue_wait_s": 1.5,
+                    "avg_consciousness_wait_s": 0.5,
+                    "heartbeat_utilisation_pct": 30,
+                },
                 "agents": {"active": 1, "total": 2, "max_concurrent": 4},
             },
         }
         client = _mock_ipc_client(resp=resp)
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_watch
+
             cmd_watch(_ns())
 
         out = capsys.readouterr().out
@@ -484,7 +521,12 @@ class TestCmdAgentActivity:
             "ok": True,
             "agent_id": "dev-01",
             "state": "executing",
-            "timesheet": {"date": "2026-03-29", "total_hours": 4.0, "overtime_hours": 0.5, "scheduled_hours": 8},
+            "timesheet": {
+                "date": "2026-03-29",
+                "total_hours": 4.0,
+                "overtime_hours": 0.5,
+                "scheduled_hours": 8,
+            },
             "current_task": {"description": "Writing unit tests"},
             "completed_tasks": [{"description": "Setup project"}],
             "pending_tasks": [{"description": "Deploy"}],
@@ -494,6 +536,7 @@ class TestCmdAgentActivity:
 
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_agent_activity
+
             cmd_agent_activity(_ns(id="dev-01"))
 
         out = capsys.readouterr().out
@@ -508,6 +551,7 @@ class TestCmdAgentActivity:
         client = _mock_ipc_client(is_running=False)
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_agent_activity
+
             with pytest.raises(SystemExit):
                 cmd_agent_activity(_ns(id="x"))
 
@@ -530,6 +574,7 @@ class TestCmdAgentHours:
 
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_agent_hours
+
             cmd_agent_hours(_ns(id="dev-01", week=False))
 
         out = capsys.readouterr().out
@@ -544,21 +589,36 @@ class TestCmdAgentHours:
             "total_hours": 35.0,
             "total_overtime": 2.0,
             "days": [
-                {"date": "2026-03-24", "total_hours": 8.0, "scheduled_hours": 8, "overtime_hours": 0, "tasks_completed": 4},
-                {"date": "2026-03-25", "total_hours": 9.0, "scheduled_hours": 8, "overtime_hours": 1.0, "tasks_completed": 5},
+                {
+                    "date": "2026-03-24",
+                    "total_hours": 8.0,
+                    "scheduled_hours": 8,
+                    "overtime_hours": 0,
+                    "tasks_completed": 4,
+                },
+                {
+                    "date": "2026-03-25",
+                    "total_hours": 9.0,
+                    "scheduled_hours": 8,
+                    "overtime_hours": 1.0,
+                    "tasks_completed": 5,
+                },
             ],
         }
         client = _mock_ipc_client(resp=resp)
 
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_agent_hours
+
             cmd_agent_hours(_ns(id="dev-01", week=True))
 
         out = capsys.readouterr().out
         assert "This Week" in out
         assert "35.0h" in out
 
-    def test_filesystem_fallback_today(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_filesystem_fallback_today(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         agent_dir = tmp_path / "agents" / "dev-01"
         agent_dir.mkdir(parents=True)
@@ -582,6 +642,7 @@ class TestCmdAgentHours:
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             with patch("cortiva.core.timesheet.Timesheet", return_value=mock_ts):
                 from cortiva.cli.main import cmd_agent_hours
+
                 cmd_agent_hours(_ns(id="dev-01", week=False))
 
         out = capsys.readouterr().out
@@ -593,6 +654,7 @@ class TestCmdAgentHours:
 
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_agent_hours
+
             with pytest.raises(SystemExit):
                 cmd_agent_hours(_ns(id="nonexistent", week=False))
 
@@ -606,6 +668,7 @@ class TestCmdSkillList:
 
         with patch("cortiva.core.skills.SkillRegistry", return_value=mock_registry):
             from cortiva.cli.main import cmd_skill_list
+
             cmd_skill_list(_ns(agent=None, category=None, query=""))
 
         out = capsys.readouterr().out
@@ -619,6 +682,7 @@ class TestCmdSkillList:
 
         with patch("cortiva.core.skills.SkillRegistry", return_value=mock_registry):
             from cortiva.cli.main import cmd_skill_list
+
             cmd_skill_list(_ns(agent=None, category="missing", query=""))
 
         out = capsys.readouterr().out
@@ -637,6 +701,7 @@ class TestCmdSkillSearch:
 
         with patch("cortiva.core.skills.SkillRegistry", return_value=mock_registry):
             from cortiva.cli.main import cmd_skill_search
+
             cmd_skill_search(_ns(query="linear"))
 
         out = capsys.readouterr().out
@@ -649,6 +714,7 @@ class TestCmdSkillSearch:
 
         with patch("cortiva.core.skills.SkillRegistry", return_value=mock_registry):
             from cortiva.cli.main import cmd_skill_search
+
             cmd_skill_search(_ns(query="zzz"))
 
         out = capsys.readouterr().out
@@ -663,7 +729,9 @@ class TestCmdSkillInfo:
         mock_skill.category = "pm"
         mock_skill.version = "1.0"
         mock_skill.tags = ["issues"]
-        mock_skill.mcp = MagicMock(package="@linear/mcp", command="npx @linear/mcp", env=["LINEAR_API_KEY"])
+        mock_skill.mcp = MagicMock(
+            package="@linear/mcp", command="npx @linear/mcp", env=["LINEAR_API_KEY"]
+        )
         mock_skill.procedures = "## Use Linear\nDo stuff."
 
         mock_registry = MagicMock()
@@ -671,6 +739,7 @@ class TestCmdSkillInfo:
 
         with patch("cortiva.core.skills.SkillRegistry", return_value=mock_registry):
             from cortiva.cli.main import cmd_skill_info
+
             cmd_skill_info(_ns(name="linear"))
 
         out = capsys.readouterr().out
@@ -685,12 +754,15 @@ class TestCmdSkillInfo:
 
         with patch("cortiva.core.skills.SkillRegistry", return_value=mock_registry):
             from cortiva.cli.main import cmd_skill_info
+
             with pytest.raises(SystemExit):
                 cmd_skill_info(_ns(name="nope"))
 
 
 class TestCmdOrgStatus:
-    def test_org_with_departments(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_org_with_departments(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
 
@@ -707,6 +779,7 @@ class TestCmdOrgStatus:
         with patch("cortiva.core.config.load_config", return_value={"org": {}}):
             with patch("cortiva.core.org.parse_org_config", return_value=mock_org):
                 from cortiva.cli.main import cmd_org_status
+
                 cmd_org_status(_ns())
 
         out = capsys.readouterr().out
@@ -714,13 +787,16 @@ class TestCmdOrgStatus:
         assert "engineering" in out
         assert "alice" in out
 
-    def test_no_org_section(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_org_section(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
 
         with patch("cortiva.core.config.load_config", return_value={}):
             with patch("cortiva.core.org.parse_org_config", return_value=None):
                 from cortiva.cli.main import cmd_org_status
+
                 cmd_org_status(_ns())
 
         out = capsys.readouterr().out
@@ -728,7 +804,9 @@ class TestCmdOrgStatus:
 
 
 class TestCmdApproveList:
-    def test_pending(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_pending(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "agents" / ".approvals").mkdir(parents=True)
 
@@ -743,13 +821,16 @@ class TestCmdApproveList:
 
         with patch("cortiva.core.approval.ApprovalQueue", return_value=mock_queue):
             from cortiva.cli.main import cmd_approve_list
+
             cmd_approve_list(_ns())
 
         out = capsys.readouterr().out
         assert "req-1" in out
         assert "dev-01" in out
 
-    def test_no_pending(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_pending(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
 
         mock_queue = MagicMock()
@@ -757,6 +838,7 @@ class TestCmdApproveList:
 
         with patch("cortiva.core.approval.ApprovalQueue", return_value=mock_queue):
             from cortiva.cli.main import cmd_approve_list
+
             cmd_approve_list(_ns())
 
         out = capsys.readouterr().out
@@ -764,7 +846,9 @@ class TestCmdApproveList:
 
 
 class TestCmdApproveAccept:
-    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_success(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
 
         mock_result = MagicMock()
@@ -776,6 +860,7 @@ class TestCmdApproveAccept:
 
         with patch("cortiva.core.approval.ApprovalQueue", return_value=mock_queue):
             from cortiva.cli.main import cmd_approve_accept
+
             cmd_approve_accept(_ns(id="req-1"))
 
         out = capsys.readouterr().out
@@ -789,12 +874,15 @@ class TestCmdApproveAccept:
 
         with patch("cortiva.core.approval.ApprovalQueue", return_value=mock_queue):
             from cortiva.cli.main import cmd_approve_accept
+
             with pytest.raises(SystemExit):
                 cmd_approve_accept(_ns(id="nope"))
 
 
 class TestCmdApproveReject:
-    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_success(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
 
         mock_result = MagicMock()
@@ -805,6 +893,7 @@ class TestCmdApproveReject:
 
         with patch("cortiva.core.approval.ApprovalQueue", return_value=mock_queue):
             from cortiva.cli.main import cmd_approve_reject
+
             cmd_approve_reject(_ns(id="req-1", reason="too risky"))
 
         out = capsys.readouterr().out
@@ -819,12 +908,15 @@ class TestCmdApproveReject:
 
         with patch("cortiva.core.approval.ApprovalQueue", return_value=mock_queue):
             from cortiva.cli.main import cmd_approve_reject
+
             with pytest.raises(SystemExit):
                 cmd_approve_reject(_ns(id="nope", reason=""))
 
 
 class TestCmdDelegate:
-    def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_success(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
         (tmp_path / "agents" / ".delegation").mkdir(parents=True)
@@ -842,7 +934,15 @@ class TestCmdDelegate:
             with patch("cortiva.core.org.parse_org_config", return_value=None):
                 with patch("cortiva.core.delegation.DelegationManager", return_value=mock_mgr):
                     from cortiva.cli.main import cmd_delegate
-                    cmd_delegate(_ns(from_agent="pm-01", to_agent="dev-01", description="Fix the bug", priority=1))
+
+                    cmd_delegate(
+                        _ns(
+                            from_agent="pm-01",
+                            to_agent="dev-01",
+                            description="Fix the bug",
+                            priority=1,
+                        )
+                    )
 
         out = capsys.readouterr().out
         assert "asgn-1" in out
@@ -860,6 +960,7 @@ class TestCmdDelegate:
             with patch("cortiva.core.org.parse_org_config", return_value=None):
                 with patch("cortiva.core.delegation.DelegationManager", return_value=mock_mgr):
                     from cortiva.cli.main import cmd_delegate
+
                     with pytest.raises(SystemExit):
                         cmd_delegate(_ns(from_agent="a", to_agent="b", description="x", priority=1))
 
@@ -868,7 +969,13 @@ class TestCmdCapacity:
     def test_success(self, capsys: pytest.CaptureFixture[str]) -> None:
         resp = {
             "ok": True,
-            "node": {"cpu_cores": 8, "ram_total_gb": 32, "ram_available_gb": 16, "ram_percent": 50, "disk_free_gb": 100},
+            "node": {
+                "cpu_cores": 8,
+                "ram_total_gb": 32,
+                "ram_available_gb": 16,
+                "ram_percent": 50,
+                "disk_free_gb": 100,
+            },
             "agents": {"active": 2, "total": 3, "max_concurrent": 6, "max_concurrent_basis": "cpu"},
             "contention": {
                 "avg_queue_wait_s": 0.5,
@@ -880,13 +987,20 @@ class TestCmdCapacity:
             },
             "agent_share_pct": {"dev-01": 60.0, "qa-01": 40.0},
             "recent_tasks": [
-                {"agent_id": "dev-01", "task_id": "t1", "queue_wait_s": 0.1, "execution_s": 5.0, "consciousness_wait_s": 0.3},
+                {
+                    "agent_id": "dev-01",
+                    "task_id": "t1",
+                    "queue_wait_s": 0.1,
+                    "execution_s": 5.0,
+                    "consciousness_wait_s": 0.3,
+                },
             ],
         }
         client = _mock_ipc_client(resp=resp)
 
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_capacity
+
             cmd_capacity(_ns())
 
         out = capsys.readouterr().out
@@ -898,12 +1012,15 @@ class TestCmdCapacity:
         client = _mock_ipc_client(is_running=False)
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_capacity
+
             with pytest.raises(SystemExit):
                 cmd_capacity(_ns())
 
 
 class TestCmdAgentChat:
-    def test_quit_exits(self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_quit_exits(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = _mock_ipc_client()
 
         # Simulate user typing "quit"
@@ -911,12 +1028,15 @@ class TestCmdAgentChat:
 
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_agent_chat
+
             cmd_agent_chat(_ns(id="dev-01"))
 
         out = capsys.readouterr().out
         assert "Chat ended" in out
 
-    def test_send_message(self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_send_message(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = _mock_ipc_client(resp={"ok": True, "response": "Hello human!"})
 
         inputs = iter(["hello", "exit"])
@@ -924,12 +1044,15 @@ class TestCmdAgentChat:
 
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_agent_chat
+
             cmd_agent_chat(_ns(id="dev-01"))
 
         out = capsys.readouterr().out
         assert "Hello human!" in out
 
-    def test_eof_exits(self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_eof_exits(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = _mock_ipc_client()
 
         def raise_eof(prompt: str) -> str:
@@ -939,6 +1062,7 @@ class TestCmdAgentChat:
 
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_agent_chat
+
             cmd_agent_chat(_ns(id="dev-01"))
 
         out = capsys.readouterr().out
@@ -948,6 +1072,7 @@ class TestCmdAgentChat:
         client = _mock_ipc_client(is_running=False)
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_agent_chat
+
             with pytest.raises(SystemExit):
                 cmd_agent_chat(_ns(id="dev-01"))
 
@@ -964,20 +1089,25 @@ class TestCmdAgentLogs:
             },
             "exceptions": [],
             "recent_journals": [{"date": "2026-03-29", "preview": "Worked on tests"}],
-            "recent_memories": [{"importance": 8, "content": "Learned testing", "tags": ["testing"]}],
+            "recent_memories": [
+                {"importance": 8, "content": "Learned testing", "tags": ["testing"]}
+            ],
             "familiarity": [{"strength": "high", "task": "unit tests"}],
         }
         client = _mock_ipc_client(resp=resp)
 
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
             from cortiva.cli.main import cmd_agent_logs
+
             cmd_agent_logs(_ns(id="dev-01"))
 
         out = capsys.readouterr().out
         assert "dev-01" in out
         assert "Tasks:" in out
 
-    def test_no_daemon_filesystem_fallback(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_daemon_filesystem_fallback(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         agent_dir = tmp_path / "agents" / "dev-01"
         agent_dir.mkdir(parents=True)
@@ -994,12 +1124,14 @@ class TestCmdAgentLogs:
         }
 
         with patch("cortiva.core.ipc.FabricClient", return_value=client):
-            with patch("cortiva.core.agent.Agent") as mock_agent_cls:
+            with patch("cortiva.core.agent.Agent") as _mock_agent_cls:
                 with patch("cortiva.adapters.memory.inmemory.InMemoryAdapter"):
                     with patch("cortiva.core.chat.get_agent_logs", return_value=mock_logs):
                         import asyncio as _real_asyncio
+
                         with patch.object(_real_asyncio, "run", return_value=mock_logs):
                             from cortiva.cli.main import cmd_agent_logs
+
                             cmd_agent_logs(_ns(id="dev-01"))
 
         out = capsys.readouterr().out
@@ -1010,6 +1142,7 @@ class TestCmdTemplateList:
     def test_templates_available(self, capsys: pytest.CaptureFixture[str]) -> None:
         with patch("cortiva.templates.list_templates", return_value=["dev-cortiva", "qa-cortiva"]):
             from cortiva.cli.main import cmd_template_list
+
             cmd_template_list(_ns())
 
         out = capsys.readouterr().out
@@ -1020,6 +1153,7 @@ class TestCmdTemplateList:
     def test_no_templates(self, capsys: pytest.CaptureFixture[str]) -> None:
         with patch("cortiva.templates.list_templates", return_value=[]):
             from cortiva.cli.main import cmd_template_list
+
             cmd_template_list(_ns())
 
         out = capsys.readouterr().out
@@ -1027,7 +1161,9 @@ class TestCmdTemplateList:
 
 
 class TestCmdDiscover:
-    def test_discover(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_discover(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
 
         mock_terminal = MagicMock()
@@ -1039,7 +1175,7 @@ class TestCmdDiscover:
         mock_model = MagicMock()
         mock_model.name = "qwen3.5:35b"
         mock_model.parameter_size = "35B"
-        mock_model.size_bytes = 20 * (1024 ** 3)
+        mock_model.size_bytes = 20 * (1024**3)
 
         mock_resources = MagicMock()
         mock_resources.cpu_cores = 10
@@ -1065,6 +1201,7 @@ class TestCmdDiscover:
             with patch("cortiva.cli.main.yaml") as mock_yaml:
                 mock_yaml.safe_load.return_value = {}
                 from cortiva.cli.main import cmd_discover
+
                 cmd_discover(_ns())
 
         out = capsys.readouterr().out
@@ -1075,9 +1212,13 @@ class TestCmdDiscover:
 
 
 class TestCmdBudget:
-    def test_overview(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_overview(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\nconsciousness:\n  budget:\n    daily_limit: 100\n")
+        (tmp_path / "cortiva.yaml").write_text(
+            "fabric:\n  name: test\nconsciousness:\n  budget:\n    daily_limit: 100\n"
+        )
         (tmp_path / "agents").mkdir()
         (tmp_path / "agents" / "dev-01").mkdir()
 
@@ -1090,16 +1231,22 @@ class TestCmdBudget:
         mock_mgr = MagicMock()
         mock_mgr.all_status.return_value = {"dev-01": mock_status}
 
-        with patch("cortiva.core.config.load_config", return_value={"agents": {"directory": "./agents"}, "consciousness": {"budget": {}}}):
+        with patch(
+            "cortiva.core.config.load_config",
+            return_value={"agents": {"directory": "./agents"}, "consciousness": {"budget": {}}},
+        ):
             with patch("cortiva.core.config._build_budget_manager", return_value=mock_mgr):
                 from cortiva.cli.main import cmd_budget
+
                 cmd_budget(_ns(agent=None))
 
         out = capsys.readouterr().out
         assert "dev-01" in out
         assert "OK" in out
 
-    def test_agent_detail(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_agent_detail(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
 
@@ -1121,22 +1268,28 @@ class TestCmdBudget:
         mock_mgr = MagicMock()
         mock_mgr.agent_status.return_value = mock_agent_status
 
-        with patch("cortiva.core.config.load_config", return_value={"consciousness": {"budget": {}}}):
+        with patch(
+            "cortiva.core.config.load_config", return_value={"consciousness": {"budget": {}}}
+        ):
             with patch("cortiva.core.config._build_budget_manager", return_value=mock_mgr):
                 from cortiva.cli.main import cmd_budget
+
                 cmd_budget(_ns(agent="dev-01"))
 
         out = capsys.readouterr().out
         assert "dev-01" in out
         assert "anthropic" in out
 
-    def test_no_budget_manager(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_budget_manager(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "cortiva.yaml").write_text("fabric:\n  name: test\n")
 
         with patch("cortiva.core.config.load_config", return_value={}):
             with patch("cortiva.core.config._build_budget_manager", return_value=None):
                 from cortiva.cli.main import cmd_budget
+
                 cmd_budget(_ns(agent=None))
 
         out = capsys.readouterr().out

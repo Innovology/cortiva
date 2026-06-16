@@ -170,9 +170,7 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
             else None
         ),
         rebalance_nodes=(
-            data.get("rebalance_nodes")
-            if isinstance(data.get("rebalance_nodes"), dict)
-            else None
+            data.get("rebalance_nodes") if isinstance(data.get("rebalance_nodes"), dict) else None
         ),
         recommend_schedule=(
             data.get("recommend_schedule")
@@ -180,9 +178,7 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
             else None
         ),
         culture_health=(
-            data.get("culture_health")
-            if isinstance(data.get("culture_health"), dict)
-            else None
+            data.get("culture_health") if isinstance(data.get("culture_health"), dict) else None
         ),
         efficiency_review=(
             data.get("efficiency_review")
@@ -190,9 +186,7 @@ def parse_reflection_suffix(text: str) -> ReflectionResult:
             else None
         ),
         schedule_health=(
-            data.get("schedule_health")
-            if isinstance(data.get("schedule_health"), dict)
-            else None
+            data.get("schedule_health") if isinstance(data.get("schedule_health"), dict) else None
         ),
     )
 

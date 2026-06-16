@@ -26,7 +26,7 @@ from cortiva.adapters.protocols import (
     RoutineAdapter,
     TerminalAgentAdapter,
 )
-from cortiva.core.agent import Agent, AgentState, Task, TaskQueue, _parse_plan
+from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
 from cortiva.core.approval import ApprovalQueue
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
@@ -107,7 +107,9 @@ def _is_github_email(from_field: str) -> bool:
 
 
 def _resolve_msg_email(
-    recipient: str, cards_by_key: dict, domain: str,
+    recipient: str,
+    cards_by_key: dict,
+    domain: str,
 ) -> str | None:
     """Best-effort email address for a peer-message recipient.
 
@@ -146,9 +148,7 @@ def _parse_plan(plan_text: str) -> TaskQueue:
 
         # Match checkbox, numbered, or bullet list items
         # Checkbox: - [ ] or - [x] or - [X] or * [ ] etc.
-        checkbox_match = re.match(
-            r"^[-*]\s*\[([ xX])\]\s*(.*)", stripped
-        )
+        checkbox_match = re.match(r"^[-*]\s*\[([ xX])\]\s*(.*)", stripped)
         # Numbered: 1. or 1)
         numbered_match = re.match(r"^\d+[.)]\s+(.*)", stripped)
         # Plain bullet: - or *
@@ -187,12 +187,14 @@ def _parse_plan(plan_text: str) -> TaskQueue:
             continue
 
         task_id += 1
-        tasks.append(Task(
-            id=f"task-{task_id}",
-            description=description,
-            status="done" if done else "pending",
-            priority=priority,
-        ))
+        tasks.append(
+            Task(
+                id=f"task-{task_id}",
+                description=description,
+                status="done" if done else "pending",
+                priority=priority,
+            )
+        )
 
     return TaskQueue(tasks=tasks)
 
@@ -234,7 +236,8 @@ class Fabric:
         self.context_builder = ContextBuilder(memory=memory)
         self.familiarity_engine = FamiliarityEngine(memory=memory)
         self.living_summary = LivingSummaryRegenerator(
-            memory=memory, consciousness=consciousness,
+            memory=memory,
+            consciousness=consciousness,
         )
         self.scheduler = Scheduler()
         self.session_manager = SessionManager()
@@ -261,19 +264,25 @@ class Fabric:
         # The AR Scheduler owns it; Head of AR and COO can also invoke it.
         # Others emitting `optimize_schedule` are ignored.
         self.scheduling_authorised: set[str] = {
-            "ar-scheduler", "head-of-ar", "coo",
+            "ar-scheduler",
+            "head-of-ar",
+            "coo",
         }
         # Agents permitted to run the culture-health readout. The People &
         # Culture Lead owns it; Head of AR and COO can also invoke it.
         # Others emitting `culture_health` are ignored.
         self.culture_authorised: set[str] = {
-            "people-culture-lead", "head-of-ar", "coo",
+            "people-culture-lead",
+            "head-of-ar",
+            "coo",
         }
         # Agents permitted to run the workforce-efficiency review. The
         # Workforce Performance Analyst owns it; Head of AR and COO can also
         # invoke it. Others emitting `efficiency_review` are ignored.
         self.performance_authorised: set[str] = {
-            "workforce-performance-analyst", "head-of-ar", "coo",
+            "workforce-performance-analyst",
+            "head-of-ar",
+            "coo",
         }
         self.resource_guard = ResourceGuard(self.agents_dir)
         if self.terminal is not None:
@@ -326,6 +335,7 @@ class Fabric:
     def _emit(self, event_type: str, **data: Any) -> None:
         """Emit an event to all registered listeners and the EventBus."""
         import time as _time
+
         event = {"type": event_type, "timestamp": _time.time(), **data}
         for listener in self._event_listeners:
             try:
@@ -363,8 +373,8 @@ class Fabric:
                 if path.name not in self.agents:
                     agent = Agent.from_directory(path)
                     agent.migrate_flat_layout()
-                    agent.consciousness_budget_limit = (
-                        self.daily_consciousness_limit // max(len(self.agents) + 1, 1)
+                    agent.consciousness_budget_limit = self.daily_consciousness_limit // max(
+                        len(self.agents) + 1, 1
                     )
                     self.agents[agent.id] = agent
                     discovered.append(agent.id)
@@ -394,7 +404,7 @@ class Fabric:
         """
         import yaml
 
-        from cortiva.core.org import Department, RoleDefinition
+        from cortiva.core.org import RoleDefinition
 
         known = set(self.agents.keys())
         reporting: dict[str, str] = {}
@@ -483,8 +493,7 @@ class Fabric:
         if not agent.identity_path("soul").exists():
             agent.write_identity(
                 "soul",
-                f"# {agent_id} — Persona\n\nDefault persona. "
-                "Configure disposition parameters.\n",
+                f"# {agent_id} — Persona\n\nDefault persona. Configure disposition parameters.\n",
             )
         if not agent.identity_path("skills").exists():
             agent.write_identity(
@@ -494,20 +503,17 @@ class Fabric:
         if not agent.identity_path("responsibilities").exists():
             agent.write_identity(
                 "responsibilities",
-                f"# {agent_id} — Responsibilities\n\n"
-                "## Primary\n\n## Secondary\n\n## Escalation\n",
+                f"# {agent_id} — Responsibilities\n\n## Primary\n\n## Secondary\n\n## Escalation\n",
             )
         if not agent.identity_path("procedures").exists():
             agent.write_identity(
                 "procedures",
-                f"# {agent_id} — Procedures\n\n"
-                "No procedures promoted yet.\n",
+                f"# {agent_id} — Procedures\n\nNo procedures promoted yet.\n",
             )
         if not agent.identity_path("plan").exists():
             agent.write_identity(
                 "plan",
-                f"# {agent_id} — Plan\n\n"
-                "No plan yet. Awaiting first wake cycle.\n",
+                f"# {agent_id} — Plan\n\nNo plan yet. Awaiting first wake cycle.\n",
             )
 
         agent.transition(AgentState.SLEEPING)
@@ -594,12 +600,16 @@ class Fabric:
         # Monthly plan (generated on first wake of the month)
         if planner.needs_monthly_plan():
             monthly_ctx = await build_monthly_context(
-                agent_id, self.memory,
+                agent_id,
+                self.memory,
                 goals_context=self._goals_context(agent_id),
             )
             monthly_ctx = identity_preamble + "\n\n---\n\n" + monthly_ctx
             await self._conscious_plan(
-                agent, identity, monthly_ctx, MONTHLY_PROMPT,
+                agent,
+                identity,
+                monthly_ctx,
+                MONTHLY_PROMPT,
                 call_type="plan_monthly",
                 on_success=lambda text: planner.save_monthly(text),
             )
@@ -608,14 +618,18 @@ class Fabric:
         # Weekly plan (generated on first wake of the week)
         if planner.needs_weekly_plan():
             weekly_ctx = await build_weekly_context(
-                agent_id, self.memory,
+                agent_id,
+                self.memory,
                 monthly_plan=planner.store.current_monthly(),
                 previous_weekly=planner.store.previous_weekly(),
                 delegation_context=delegation_text,
             )
             weekly_ctx = identity_preamble + "\n\n---\n\n" + weekly_ctx
             await self._conscious_plan(
-                agent, identity, weekly_ctx, WEEKLY_PROMPT,
+                agent,
+                identity,
+                weekly_ctx,
+                WEEKLY_PROMPT,
                 call_type="plan_weekly",
                 on_success=lambda text: planner.save_weekly(text),
             )
@@ -630,7 +644,8 @@ class Fabric:
                 yesterday_journal = journals[0].read_text(encoding="utf-8")[:300]
 
         daily_ctx = await build_daily_context(
-            agent_id, self.memory,
+            agent_id,
+            self.memory,
             weekly_plan=planner.store.current_weekly(),
             yesterday_reflection=yesterday_journal,
             delegation_context=delegation_text,
@@ -696,7 +711,10 @@ class Fabric:
 
         # Generate daily plan
         await self._conscious_plan(
-            agent, identity, context, DAILY_PROMPT,
+            agent,
+            identity,
+            context,
+            DAILY_PROMPT,
             call_type="plan",
             on_success=lambda text: agent.set_plan(text),
         )
@@ -749,13 +767,14 @@ class Fabric:
     def _render_mood(self, e: dict[str, float]) -> str:
         if not e:
             return "(no emotion reading)"
-        dims = " · ".join(
-            f"{k.capitalize()} {e[k]:.2f}" for k in self._MOOD_DIMS if k in e
-        )
+        dims = " · ".join(f"{k.capitalize()} {e[k]:.2f}" for k in self._MOOD_DIMS if k in e)
         return f"{self._mood_label(e)} — {dims}"
 
     async def _session_reflection(
-        self, agent: Agent, day_summary: str, emotion: dict[str, float],
+        self,
+        agent: Agent,
+        day_summary: str,
+        emotion: dict[str, float],
     ) -> str:
         """Short, first-person note for the pre-sleep ritual.
 
@@ -775,7 +794,9 @@ class Fabric:
                 "keep it brief."
             )
             resp = await self.consciousness.think(
-                agent_id=agent.id, context=context, prompt=prompt,
+                agent_id=agent.id,
+                context=context,
+                prompt=prompt,
                 priority=Priority.NORMAL,
                 # Qwen3.6 is a reasoning model — a small budget is consumed
                 # entirely by hidden <think> and returns empty visible
@@ -791,21 +812,27 @@ class Fabric:
             return ""
 
     def _write_session_journal(
-        self, agent: Agent, day_summary: str, emotion: dict[str, float], note: str,
+        self,
+        agent: Agent,
+        day_summary: str,
+        emotion: dict[str, float],
+        note: str,
     ) -> None:
         """Append a timestamped pre-sleep entry to today's journal."""
         from datetime import UTC, datetime
 
         now = datetime.now(UTC)
+        note_section = f"{note}\n\n" if note else ""
         section = (
             f"\n\n## {now.strftime('%Y-%m-%d %H:%M')} — pre-sleep reflection\n\n"
             f"**How I feel:** {self._render_mood(emotion)}\n\n"
-            f"{note or day_summary}\n"
+            f"{note_section}{day_summary}\n"
         )
         path = agent.journal_path(now)
         try:
             existing = (
-                path.read_text(encoding="utf-8") if path.exists()
+                path.read_text(encoding="utf-8")
+                if path.exists()
                 else f"# Journal — {now.strftime('%Y-%m-%d')}\n"
             )
             path.write_text(existing + section, encoding="utf-8")
@@ -826,12 +853,24 @@ class Fabric:
             pass
         return True
 
+    def _append_journal_day_report(self, agent: Agent, day_report: str) -> None:
+        """Append the agent's day report (from Living Summary) to today's journal."""
+        from datetime import UTC, datetime
+
+        path = agent.journal_path(datetime.now(UTC))
+        try:
+            existing = path.read_text(encoding="utf-8") if path.exists() else ""
+            path.write_text(existing + f"\n{day_report}\n", encoding="utf-8")
+        except OSError:
+            logger.debug("could not append day report to journal for %s", agent.id)
+
     def _mark_identity_regen(self, agent: Agent) -> None:
         from datetime import UTC, datetime
 
         try:
             (agent.directory / ".last_identity_regen").write_text(
-                datetime.now(UTC).strftime("%Y-%m-%d"), encoding="utf-8",
+                datetime.now(UTC).strftime("%Y-%m-%d"),
+                encoding="utf-8",
             )
         except OSError:
             pass
@@ -847,13 +886,9 @@ class Fabric:
         if sched is None:
             return False
         sleep_mins = [
-            h * 60 + m for e in sched.entries
-            if e.action == "sleep" for (h, m) in e.times
+            h * 60 + m for e in sched.entries if e.action == "sleep" for (h, m) in e.times
         ]
-        wake_mins = [
-            h * 60 + m for e in sched.entries
-            if e.action == "wake" for (h, m) in e.times
-        ]
+        wake_mins = [h * 60 + m for e in sched.entries if e.action == "wake" for (h, m) in e.times]
         if not sleep_mins:
             return False
         now_min = now.hour * 60 + now.minute
@@ -892,7 +927,9 @@ class Fabric:
                 logger.info("Reconciled orphaned session for %s", agent_id)
             except Exception:
                 logger.debug(
-                    "Could not reconcile session for %s", agent_id, exc_info=True,
+                    "Could not reconcile session for %s",
+                    agent_id,
+                    exc_info=True,
                 )
 
     async def sleep(self, agent_id: str) -> Agent:
@@ -918,7 +955,9 @@ class Fabric:
             # felt timeline to reflect on later, not one fragile end-of-day
             # entry that's lost if the cycle is interrupted.
             session_note = await self._session_reflection(
-                agent, day_summary, emotion,
+                agent,
+                day_summary,
+                emotion,
             )
             self._write_session_journal(agent, day_summary, emotion, session_note)
 
@@ -938,7 +977,10 @@ class Fabric:
                     raw = await self.living_summary.regenerate(agent, day_summary)
                     if self.budget_manager and approval and approval.backend:
                         self.budget_manager.record_usage(
-                            agent_id, approval.backend, 0, 0,
+                            agent_id,
+                            approval.backend,
+                            0,
+                            0,
                         )
                         agent.spend_consciousness()
                     new_identity, _ = split_identity_and_day_report(raw or "")
@@ -949,9 +991,7 @@ class Fabric:
                         agent.archive_identity("identity")
                         agent.write_identity("identity", new_identity)
                     self._mark_identity_regen(agent)
-                    logger.info(
-                        f"Agent {agent_id} synthesised Living Summary (daily)"
-                    )
+                    logger.info(f"Agent {agent_id} synthesised Living Summary (daily)")
 
         # Final runtime state persistence before clearing
         agent.persist_runtime_state()
@@ -1017,9 +1057,7 @@ class Fabric:
         task = agent.next_task()
         if task is None:
             result["action"] = "idle"
-            result["all_tasks_complete"] = (
-                agent.task_queue.all_done() if agent.task_queue else True
-            )
+            result["all_tasks_complete"] = agent.task_queue.all_done() if agent.task_queue else True
             return result
 
         # Execute the task (with capacity tracking)
@@ -1034,15 +1072,15 @@ class Fabric:
         self._write_plan(agent)
         agent.persist_runtime_state()
         self._emit(
-            "task.complete", agent_id=agent_id,
-            task=task.description, status=task.status,
+            "task.complete",
+            agent_id=agent_id,
+            task=task.description,
+            status=task.status,
         )
 
         return result
 
-    async def _execute_task(
-        self, agent: Agent, task: Task, messages: list[Any]
-    ) -> None:
+    async def _execute_task(self, agent: Agent, task: Task, messages: list[Any]) -> None:
         """Execute a single task via routine or consciousness."""
         # Check execution policy before starting
         policy_result = self.policy_manager.check_action(agent.id, task.description)
@@ -1050,11 +1088,15 @@ class Fabric:
             agent.fail_task(task, f"Policy denied: {policy_result.reason}")
             logger.warning(
                 "Agent %s task blocked by policy: %s — %s",
-                agent.id, task.description, policy_result.reason,
+                agent.id,
+                task.description,
+                policy_result.reason,
             )
             self._emit(
-                "policy.denied", agent_id=agent.id,
-                task=task.description, reason=policy_result.reason,
+                "policy.denied",
+                agent_id=agent.id,
+                task=task.description,
+                reason=policy_result.reason,
             )
             return
 
@@ -1074,20 +1116,21 @@ class Fabric:
                     await self.channel.send(
                         sender="cortiva-fabric",
                         recipient=approver,
-                        content=(
-                            f"Approval needed: {agent.id} wants to: "
-                            f"{task.description}"
-                        ),
+                        content=(f"Approval needed: {agent.id} wants to: {task.description}"),
                     )
                 except Exception:
                     pass  # don't block on notification failure
             logger.info(
                 "Agent %s task requires approval from %s: %s",
-                agent.id, approver, task.description,
+                agent.id,
+                approver,
+                task.description,
             )
             self._emit(
-                "approval.requested", agent_id=agent.id,
-                task=task.description, approver=approver,
+                "approval.requested",
+                agent_id=agent.id,
+                task=task.description,
+                approver=approver,
             )
             agent.defer_task(task, f"Awaiting approval: {policy_result.reason}")
             return
@@ -1101,7 +1144,10 @@ class Fabric:
         familiarity = await self.familiarity_engine.assess(agent.id, task.description)
         try:
             await self._execute_task_inner(
-                agent, task, messages, familiarity,
+                agent,
+                task,
+                messages,
+                familiarity,
             )
         finally:
             # Every exit path (terminal, routine, consciousness,
@@ -1114,19 +1160,28 @@ class Fabric:
             try:
                 if task.status == "done":
                     await self.plugin_manager.dispatch_task_complete(
-                        agent.id, task, task.outcome or "",
+                        agent.id,
+                        task,
+                        task.outcome or "",
                     )
                 elif task.status == "exception":
                     await self.plugin_manager.dispatch_task_fail(
-                        agent.id, task, task.error or "",
+                        agent.id,
+                        task,
+                        task.error or "",
                     )
             except Exception:
                 logger.debug(
-                    "Plugin task dispatch failed for %s", agent.id, exc_info=True,
+                    "Plugin task dispatch failed for %s",
+                    agent.id,
+                    exc_info=True,
                 )
 
     def _record_task_emotions(
-        self, agent: Agent, task: Task, familiarity: Any,
+        self,
+        agent: Agent,
+        task: Task,
+        familiarity: Any,
     ) -> None:
         """Derive emotions from the task outcome and update the agent's
         rolling emotional state (persisted to today/emotions.json for
@@ -1137,12 +1192,11 @@ class Fabric:
                 return  # deferred to approval queue etc. — no outcome yet
             modifiers = parse_persona_modifiers(agent.read_identity("soul"))
             dims = derive_emotions(
-                signals_from_task(task, familiarity), modifiers,
+                signals_from_task(task, familiarity),
+                modifiers,
             )
             current = self._emotional_states.get(agent.id)
-            state = (
-                blend_emotions(current, dims) if current is not None else dims
-            )
+            state = blend_emotions(current, dims) if current is not None else dims
             self._emotional_states[agent.id] = state
             agent.write_today(
                 EMOTIONS_FILENAME,
@@ -1150,7 +1204,9 @@ class Fabric:
             )
         except Exception:
             logger.debug(
-                "Emotion bookkeeping failed for %s", agent.id, exc_info=True,
+                "Emotion bookkeeping failed for %s",
+                agent.id,
+                exc_info=True,
             )
 
     async def _execute_task_inner(
@@ -1162,12 +1218,14 @@ class Fabric:
     ) -> None:
         routine_assessment: dict[str, Any] | None = None
         signals = self._familiarity_signals.setdefault(agent.id, [])
-        signals.append({
-            "task": task.description,
-            "strength": familiarity.strength,
-            "valence": familiarity.valence,
-            "match_count": familiarity.match_count,
-        })
+        signals.append(
+            {
+                "task": task.description,
+                "strength": familiarity.strength,
+                "valence": familiarity.valence,
+                "match_count": familiarity.match_count,
+            }
+        )
         agent.persist_familiarity(signals)
 
         # Hands-on tasks (coding, file ops, GitHub/wiki work) go to the
@@ -1182,16 +1240,10 @@ class Fabric:
         # reflection suffix on the consciousness path. Keep it off the
         # terminal even when the description trips a keyword like "run"
         # ("Run the optimiser..."), or the suffix is never parsed.
-        _is_sched_action = (
-            agent.id in self.scheduling_authorised
-            and any(k in task.description.lower()
-                    for k in ("optimis", "rota", "schedul"))
+        _is_sched_action = agent.id in self.scheduling_authorised and any(
+            k in task.description.lower() for k in ("optimis", "rota", "schedul")
         )
-        if (
-            self.terminal
-            and not _is_sched_action
-            and self._is_terminal_task(task.description)
-        ):
+        if self.terminal and not _is_sched_action and self._is_terminal_task(task.description):
             terminal_result = await self._execute_via_terminal(agent, task)
             if terminal_result is not None:
                 return
@@ -1230,9 +1282,7 @@ class Fabric:
 
         # Consciousness execution (budget-permitting)
         task_priority = (
-            "critical" if task.priority >= 2
-            else "high" if task.priority >= 1
-            else "normal"
+            "critical" if task.priority >= 2 else "high" if task.priority >= 1 else "normal"
         )
 
         can_execute = False
@@ -1254,7 +1304,11 @@ class Fabric:
 
         identity = agent.read_all_identity()
         context = await self.context_builder.build_execution_context(
-            agent, identity, messages, task.description, assessment=routine_assessment,
+            agent,
+            identity,
+            messages,
+            task.description,
+            assessment=routine_assessment,
         )
 
         # Inject session context (what the agent has done so far today)
@@ -1277,7 +1331,9 @@ class Fabric:
         # convention (5.0 baseline + priority) so risk gates scale
         # scrutiny to stakes.
         task_ctx = self.plugin_manager.collect_task_context(
-            agent.id, task.description, importance=5.0 + task.priority,
+            agent.id,
+            task.description,
+            importance=5.0 + task.priority,
         )
         if task_ctx:
             context = context + "\n\n---\n\n" + task_ctx
@@ -1285,10 +1341,7 @@ class Fabric:
         # Validate context belongs to this agent
         self.session_manager.validate_agent(agent.id, context)
 
-        prompt = (
-            f"Execute this task: {task.description}\n\n"
-            "Describe what you did and the outcome."
-        )
+        prompt = f"Execute this task: {task.description}\n\nDescribe what you did and the outcome."
 
         # Offer the agent its native tools (e.g. the rota optimiser for
         # scheduling-authorised agents). Function-calling is far more
@@ -1300,7 +1353,8 @@ class Fabric:
         )
 
         agent_tools = tools_for_agent(
-            agent.id, scheduling_authorised=self.scheduling_authorised,
+            agent.id,
+            scheduling_authorised=self.scheduling_authorised,
             culture_authorised=self.culture_authorised,
             performance_authorised=self.performance_authorised,
         )
@@ -1316,13 +1370,18 @@ class Fabric:
 
         # Record in session for continuity across tasks
         self.session_manager.record(
-            agent.id, task.description, response.content, call_type="execute",
+            agent.id,
+            task.description,
+            response.content,
+            call_type="execute",
         )
 
         if self.budget_manager and approval and approval.backend:
             self.budget_manager.record_usage(
-                agent.id, approval.backend,
-                response.tokens_in, response.tokens_out,
+                agent.id,
+                approval.backend,
+                response.tokens_in,
+                response.tokens_out,
             )
             agent.spend_consciousness()
 
@@ -1354,7 +1413,10 @@ class Fabric:
         )
 
     async def _run_deep_think(
-        self, agent: Agent, task: Task, question: str,
+        self,
+        agent: Agent,
+        task: Task,
+        question: str,
     ) -> None:
         """Subshell to the claude CLI for frontier reasoning, store the
         answer as a high-importance memory + today/deep_think.md.
@@ -1367,7 +1429,8 @@ class Fabric:
             approval = self.budget_manager.request_budget(agent.id, "high")
             if not approval.approved:
                 logger.info(
-                    "Agent %s deep_think denied — budget exhausted", agent.id,
+                    "Agent %s deep_think denied — budget exhausted",
+                    agent.id,
                 )
                 return
         try:
@@ -1378,23 +1441,24 @@ class Fabric:
             result = await asyncio.to_thread(deep_think, question)
         except Exception as exc:
             logger.warning(
-                "Agent %s deep_think failed: %s", agent.id, exc,
+                "Agent %s deep_think failed: %s",
+                agent.id,
+                exc,
             )
             return
 
         logger.info(
             "Agent %s deep_think (%.1fs, ~£%.4f) on: %s",
-            agent.id, result.duration_s, result.estimated_cost_gbp,
+            agent.id,
+            result.duration_s,
+            result.estimated_cost_gbp,
             question[:80],
         )
         # Fold the second opinion into memory so it shapes future
         # cycles, and leave it in today/ for the current arc.
         await self.memory.store(
             agent_id=agent.id,
-            content=(
-                f"Deep-think second opinion on '{question[:120]}':\n"
-                f"{result.text}"
-            ),
+            content=(f"Deep-think second opinion on '{question[:120]}':\n{result.text}"),
             tags=["deep_think", "second_opinion", "reflection"],
             importance=8.5,
         )
@@ -1447,8 +1511,8 @@ class Fabric:
         """
         if agent.id not in self.hiring_authorised:
             logger.info(
-                "Agent %s emitted a hire request but lacks hiring "
-                "authority — ignored.", agent.id,
+                "Agent %s emitted a hire request but lacks hiring authority — ignored.",
+                agent.id,
             )
             return
         role = str(spec.get("role", "")).strip()
@@ -1474,7 +1538,8 @@ class Fabric:
             (new_dir / "identity").mkdir(parents=True, exist_ok=True)
             for key, content in HiringManager().identity_files(persona).items():
                 (new_dir / "identity" / f"{key}.md").write_text(
-                    content, encoding="utf-8",
+                    content,
+                    encoding="utf-8",
                 )
             # soul.md with disposition front-matter so the emotion engine
             # reads this hire's individual weights.
@@ -1491,19 +1556,22 @@ class Fabric:
             (new_dir / "identity" / "soul.md").write_text(soul, encoding="utf-8")
             # Minimal deploy.yaml so HQ/portal and node scans see the hire.
             (new_dir / "deploy.yaml").write_text(
-                _yaml.safe_dump({
-                    "agent": {
-                        "name": persona.name,
-                        "role": persona.role,
-                        "department": persona.department,
-                        # Persisted so the workforce directory + avatar can
-                        # reflect the persona (the hiring policy already
-                        # decided this; see core/hiring.py).
-                        "gender": persona.gender,
-                        "reports_to": agent.id,
-                        "hired_by": agent.id,
-                    }
-                }, sort_keys=False),
+                _yaml.safe_dump(
+                    {
+                        "agent": {
+                            "name": persona.name,
+                            "role": persona.role,
+                            "department": persona.department,
+                            # Persisted so the workforce directory + avatar can
+                            # reflect the persona (the hiring policy already
+                            # decided this; see core/hiring.py).
+                            "gender": persona.gender,
+                            "reports_to": agent.id,
+                            "hired_by": agent.id,
+                        }
+                    },
+                    sort_keys=False,
+                ),
                 encoding="utf-8",
             )
 
@@ -1515,8 +1583,12 @@ class Fabric:
                 self.refresh_org_from_agents()
             logger.info(
                 "Agent %s HIRED %s (%s, %s) — ambition: %s, social: %s",
-                agent.id, persona.name, persona.role, persona.gender,
-                persona.ambition.label, persona.social.label,
+                agent.id,
+                persona.name,
+                persona.role,
+                persona.gender,
+                persona.ambition.label,
+                persona.social.label,
             )
             await self.memory.store(
                 agent_id=agent.id,
@@ -1565,8 +1637,9 @@ class Fabric:
             deploy = self.agents_dir / aid / "deploy.yaml"
             if deploy.exists():
                 try:
-                    spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
-                            or {}).get("agent", {}) or {}
+                    spec = (yaml.safe_load(deploy.read_text(encoding="utf-8")) or {}).get(
+                        "agent", {}
+                    ) or {}
                     dept = (spec.get("department") or "").strip()
                     budget = float(spec.get("daily_hours", spec.get("budget_hours", 7.5)))
                     if spec.get("preferred_start") is not None:
@@ -1581,10 +1654,13 @@ class Fabric:
         # Departments round-robin onto the shifts, so teams spread across
         # the day for round-the-clock coverage while same-shift departments
         # still overlap. One department → everyone on the 09:00-BST anchor.
-        _SHIFTS = [self._DEFAULT_START_UTC, (self._DEFAULT_START_UTC + 8) % 24,
-                   (self._DEFAULT_START_UTC + 16) % 24]
+        shifts = [
+            self._DEFAULT_START_UTC,
+            (self._DEFAULT_START_UTC + 8) % 24,
+            (self._DEFAULT_START_UTC + 16) % 24,
+        ]
         depts = sorted({r["dept"] for r in raw.values() if r["dept"]})
-        dept_start = {d: _SHIFTS[i % len(_SHIFTS)] for i, d in enumerate(depts)}
+        dept_start = {d: shifts[i % len(shifts)] for i, d in enumerate(depts)}
 
         specs: list[Any] = []
         for aid in sorted(self.agents):
@@ -1595,11 +1671,16 @@ class Fabric:
             pref = r["pref"]
             if pref is None:
                 pref = dept_start.get(r["dept"], self._DEFAULT_START_UTC)
-            specs.append(AgentSpec(
-                agent_id=aid, role_type=role_type, manager=manager,
-                reports=list(reports), budget_hours=r["budget"],
-                preferred_start=pref,
-            ))
+            specs.append(
+                AgentSpec(
+                    agent_id=aid,
+                    role_type=role_type,
+                    manager=manager,
+                    reports=list(reports),
+                    budget_hours=r["budget"],
+                    preferred_start=pref,
+                )
+            )
         return specs
 
     def _model_concurrency(self) -> int | None:
@@ -1629,7 +1710,11 @@ class Fabric:
         return Signals(overtime_hours=overtime)
 
     def _schedule_inputs_fingerprint(
-        self, specs: list[Any], signals: Any, constraints: Any, objectives: Any,
+        self,
+        specs: list[Any],
+        signals: Any,
+        constraints: Any,
+        objectives: Any,
     ) -> str:
         """Stable hash of everything that determines the rota.
 
@@ -1641,22 +1726,34 @@ class Fabric:
 
         payload = {
             "agents": sorted(
-                (s.agent_id, s.role_type.value, s.manager or "",
-                 tuple(sorted(s.reports)), s.budget_hours, s.preferred_start)
+                (
+                    s.agent_id,
+                    s.role_type.value,
+                    s.manager or "",
+                    tuple(sorted(s.reports)),
+                    s.budget_hours,
+                    s.preferred_start,
+                )
                 for s in specs
             ),
             "overtime": sorted(signals.overtime_hours.items()),
             "blocked": sorted(signals.blocked_wait_hours.items()),
             "saturation": sorted(signals.infra_saturation.items()),
             "constraints": [
-                constraints.day_start_h, constraints.day_end_h,
-                constraints.capacity_ceiling, constraints.slot_minutes,
-                constraints.manager_windows, constraints.manager_window_len_h,
+                constraints.day_start_h,
+                constraints.day_end_h,
+                constraints.capacity_ceiling,
+                constraints.slot_minutes,
+                constraints.manager_windows,
+                constraints.manager_window_len_h,
                 constraints.ic_block_len_h,
             ],
             "objectives": [
-                objectives.w_peak, objectives.w_blocked, objectives.w_overtime,
-                objectives.w_spread, objectives.w_preference,
+                objectives.w_peak,
+                objectives.w_blocked,
+                objectives.w_overtime,
+                objectives.w_spread,
+                objectives.w_preference,
             ],
         }
         blob = json.dumps(payload, sort_keys=True, default=str)
@@ -1675,8 +1772,7 @@ class Fabric:
         from cortiva.scheduling import windows_to_schedule_config
 
         if not proposal.feasible:
-            return {"applied": False, "reason": "infeasible",
-                    "violations": proposal.violations}
+            return {"applied": False, "reason": "infeasible", "violations": proposal.violations}
 
         configs: dict[str, dict[str, str]] = {}
         for aid, windows in proposal.schedules.items():
@@ -1695,7 +1791,9 @@ class Fabric:
         return {"applied": True, "agents": len(configs), "configs": configs}
 
     async def _run_schedule_optimization(
-        self, agent: Agent, spec: dict[str, Any],
+        self,
+        agent: Agent,
+        spec: dict[str, Any],
     ) -> None:
         """Run the rota optimiser and apply the result. Authority-gated.
 
@@ -1705,8 +1803,8 @@ class Fabric:
         """
         if agent.id not in self.scheduling_authorised:
             logger.info(
-                "Agent %s emitted optimize_schedule but lacks scheduling "
-                "authority — ignored.", agent.id,
+                "Agent %s emitted optimize_schedule but lacks scheduling authority — ignored.",
+                agent.id,
             )
             return
         try:
@@ -1731,8 +1829,10 @@ class Fabric:
                 w_preference=float(spec.get("w_preference", 0.5)),
             )
             proposal = optimize_schedule(
-                specs, constraints=constraints,
-                objectives=objectives, signals=signals,
+                specs,
+                constraints=constraints,
+                objectives=objectives,
+                signals=signals,
             )
 
             apply = bool(spec.get("apply", True))
@@ -1745,25 +1845,28 @@ class Fabric:
                 import json as _json
 
                 fingerprint = self._schedule_inputs_fingerprint(
-                    specs, signals, constraints, objectives,
+                    specs,
+                    signals,
+                    constraints,
+                    objectives,
                 )
                 state_path = self.agents_dir / ".schedule_state.json"
                 last_fp = None
                 try:
                     if state_path.exists():
-                        last_fp = _json.loads(
-                            state_path.read_text(encoding="utf-8")
-                        ).get("fingerprint")
+                        last_fp = _json.loads(state_path.read_text(encoding="utf-8")).get(
+                            "fingerprint"
+                        )
                 except (OSError, ValueError):
                     pass
 
                 already_applied = (self.agents_dir / ".schedules.json").exists()
                 if fingerprint == last_fp and already_applied:
-                    applied = {"applied": False,
-                               "reason": "no material change — debounced"}
+                    applied = {"applied": False, "reason": "no material change — debounced"}
                     logger.info(
                         "Agent %s rota inputs unchanged since last run — "
-                        "skipping re-apply (debounce).", agent.id,
+                        "skipping re-apply (debounce).",
+                        agent.id,
                     )
                 else:
                     applied = self.apply_schedule_proposal(proposal)
@@ -1795,21 +1898,23 @@ class Fabric:
             await self.memory.store(
                 agent_id=agent.id,
                 content=(
-                    f"Ran rota optimiser: {proposal.summary} "
-                    f"(applied={applied.get('applied')})"
+                    f"Ran rota optimiser: {proposal.summary} (applied={applied.get('applied')})"
                 ),
                 tags=["schedule", "ar", "decision"],
                 importance=7.0,
             )
             self._emit(
-                "schedule.optimized", agent_id=agent.id,
+                "schedule.optimized",
+                agent_id=agent.id,
                 feasible=proposal.feasible,
                 applied=applied.get("applied", False),
                 peak=proposal.impact.peak_concurrency,
             )
             logger.info(
                 "Agent %s ran rota optimiser — %s (applied=%s)",
-                agent.id, proposal.summary, applied.get("applied"),
+                agent.id,
+                proposal.summary,
+                applied.get("applied"),
             )
         except Exception:
             logger.exception("Schedule optimisation failed for %s", agent.id)
@@ -1837,7 +1942,8 @@ class Fabric:
         return data if isinstance(data, dict) else None
 
     def _build_rebalance_inputs(
-        self, snapshot: dict[str, Any],
+        self,
+        snapshot: dict[str, Any],
     ) -> tuple[list[Any], list[Any]]:
         """Map an HQ cluster-metrics snapshot onto rebalance dataclasses.
 
@@ -1855,32 +1961,38 @@ class Fabric:
         for n in snapshot.get("nodes", []) or []:
             if not isinstance(n, dict) or not n.get("node_id"):
                 continue
-            nodes.append(NodeState(
-                node_id=str(n["node_id"]),
-                grade=int(n.get("grade", 0)),
-                ram_free_gb=float(n.get("ram_free_gb", 0.0)),
-                ram_total_gb=float(n.get("ram_total_gb", 0.0)),
-                agents_deployed=int(n.get("agents_deployed", 0)),
-                agent_slots=int(n.get("agent_slots", 0)),
-                name=str(n.get("name", "")),
-                pressure=float(n.get("pressure", 0.0)),
-            ))
+            nodes.append(
+                NodeState(
+                    node_id=str(n["node_id"]),
+                    grade=int(n.get("grade", 0)),
+                    ram_free_gb=float(n.get("ram_free_gb", 0.0)),
+                    ram_total_gb=float(n.get("ram_total_gb", 0.0)),
+                    agents_deployed=int(n.get("agents_deployed", 0)),
+                    agent_slots=int(n.get("agent_slots", 0)),
+                    name=str(n.get("name", "")),
+                    pressure=float(n.get("pressure", 0.0)),
+                )
+            )
         agents: list[Any] = []
         for a in snapshot.get("agents", []) or []:
             if not isinstance(a, dict) or not a.get("agent_id"):
                 continue
-            agents.append(AgentState(
-                agent_id=str(a["agent_id"]),
-                grade=int(a.get("grade", 0)),
-                current_node=str(a.get("current_node", "")),
-                asleep=bool(a.get("asleep", False)),
-                name=str(a.get("name", "")),
-                last_moved_hours_ago=float(a.get("last_moved_hours_ago", 1e9)),
-            ))
+            agents.append(
+                AgentState(
+                    agent_id=str(a["agent_id"]),
+                    grade=int(a.get("grade", 0)),
+                    current_node=str(a.get("current_node", "")),
+                    asleep=bool(a.get("asleep", False)),
+                    name=str(a.get("name", "")),
+                    last_moved_hours_ago=float(a.get("last_moved_hours_ago", 1e9)),
+                )
+            )
         return nodes, agents
 
     async def _run_node_rebalance(
-        self, agent: Agent, spec: dict[str, Any],
+        self,
+        agent: Agent,
+        spec: dict[str, Any],
     ) -> None:
         """Plan a reshuffle of agents between nodes. Authority-gated, advisory.
 
@@ -1893,8 +2005,8 @@ class Fabric:
         """
         if agent.id not in self.scheduling_authorised:
             logger.info(
-                "Agent %s emitted rebalance_nodes but lacks scheduling "
-                "authority — ignored.", agent.id,
+                "Agent %s emitted rebalance_nodes but lacks scheduling authority — ignored.",
+                agent.id,
             )
             return
         try:
@@ -1943,9 +2055,7 @@ class Fabric:
             if plan.moves:
                 lines.append("### Proposed moves")
                 for m in plan.moves:
-                    lines.append(
-                        f"- **{m.agent_id}**: {m.from_node} → {m.to_node} — {m.reason}"
-                    )
+                    lines.append(f"- **{m.agent_id}**: {m.from_node} → {m.to_node} — {m.reason}")
                 lines.append("")
             if plan.skipped:
                 lines.append("### Skipped")
@@ -1967,13 +2077,17 @@ class Fabric:
                 importance=7.0,
             )
             self._emit(
-                "cluster.rebalance_planned", agent_id=agent.id,
-                moves=len(plan.moves), skipped=len(plan.skipped),
+                "cluster.rebalance_planned",
+                agent_id=agent.id,
+                moves=len(plan.moves),
+                skipped=len(plan.skipped),
                 applied=False,
             )
             logger.info(
                 "Agent %s planned node rebalance — %s (advisory, %d moves)",
-                agent.id, plan.summary, len(plan.moves),
+                agent.id,
+                plan.summary,
+                len(plan.moves),
             )
         except Exception:
             logger.exception("Node rebalance planning failed for %s", agent.id)
@@ -2011,8 +2125,8 @@ class Fabric:
         """
         if agent.id not in self.scheduling_authorised:
             logger.info(
-                "Agent %s emitted schedule_health but lacks scheduling "
-                "authority — ignored.", agent.id,
+                "Agent %s emitted schedule_health but lacks scheduling authority — ignored.",
+                agent.id,
             )
             return
         try:
@@ -2033,7 +2147,9 @@ class Fabric:
 
             signals = self._gather_schedule_signals()
             health = assess_schedule_health(
-                specs, windows, signals=signals,
+                specs,
+                windows,
+                signals=signals,
                 model_concurrency=self._model_concurrency(),
             )
 
@@ -2055,13 +2171,16 @@ class Fabric:
                 importance=6.5,
             )
             self._emit(
-                "schedule.health_measured", agent_id=agent.id,
+                "schedule.health_measured",
+                agent_id=agent.id,
                 score=health.responsiveness_score,
                 uncovered_hours=health.uncovered_hours,
                 oversight_gaps=len(health.oversight_gaps),
             )
             logger.info(
-                "Agent %s measured schedule health — %s", agent.id, health.summary,
+                "Agent %s measured schedule health — %s",
+                agent.id,
+                health.summary,
             )
         except Exception:
             logger.exception("Schedule-health measurement failed for %s", agent.id)
@@ -2078,16 +2197,15 @@ class Fabric:
             deploy = self.agents_dir / aid / "deploy.yaml"
             if deploy.exists():
                 try:
-                    spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
-                            or {}).get("agent", {}) or {}
+                    spec = (yaml.safe_load(deploy.read_text(encoding="utf-8")) or {}).get(
+                        "agent", {}
+                    ) or {}
                     name = str(spec.get("name") or "").strip()
                     dept = str(spec.get("department") or "").strip()
                 except Exception:
                     pass
             manager = self.org.manager_of(aid) if self.org else None
-            members.append(
-                CultureMember(agent_id=aid, name=name, department=dept, manager=manager)
-            )
+            members.append(CultureMember(agent_id=aid, name=name, department=dept, manager=manager))
         return members
 
     async def _run_culture_health(self, agent: Agent, spec: dict[str, Any]) -> None:
@@ -2101,8 +2219,8 @@ class Fabric:
         """
         if agent.id not in self.culture_authorised:
             logger.info(
-                "Agent %s emitted culture_health but lacks culture authority "
-                "— ignored.", agent.id,
+                "Agent %s emitted culture_health but lacks culture authority — ignored.",
+                agent.id,
             )
             return
         try:
@@ -2141,14 +2259,17 @@ class Fabric:
                 importance=6.5,
             )
             self._emit(
-                "culture.health_measured", agent_id=agent.id,
+                "culture.health_measured",
+                agent_id=agent.id,
                 score=health.culture_score,
                 distressed=len(health.distressed),
                 burnout_risk=len(health.burnout_risk),
                 monoculture=health.monoculture,
             )
             logger.info(
-                "Agent %s measured culture health — %s", agent.id, health.summary,
+                "Agent %s measured culture health — %s",
+                agent.id,
+                health.summary,
             )
         except Exception:
             logger.exception("Culture-health measurement failed for %s", agent.id)
@@ -2164,8 +2285,8 @@ class Fabric:
         """
         if agent.id not in self.performance_authorised:
             logger.info(
-                "Agent %s emitted efficiency_review but lacks performance "
-                "authority — ignored.", agent.id,
+                "Agent %s emitted efficiency_review but lacks performance authority — ignored.",
+                agent.id,
             )
             return
         try:
@@ -2198,20 +2319,28 @@ class Fabric:
                 except Exception:
                     logger.debug("efficiency: no timesheet for %s", aid, exc_info=True)
                 emo = self._read_emotion(a)
-                records.append(AgentEfficiencyInput(
-                    agent_id=aid, name=names.get(aid) or aid,
-                    tasks_completed=tasks, tasks_escalated=esc,
-                    active_hours=hours, scheduled_hours=sched,
-                    prediction_accuracy=None,  # TODO: enrich from cognition.state
-                    cost_gbp=0.0,  # cost-efficiency enriched HQ-side (cost engine)
-                    satisfaction=float(emo.get("satisfaction", 0.0)),
-                    frustration=float(emo.get("frustration", 0.0)),
-                    prior_score=prior.get(aid),
-                ))
+                records.append(
+                    AgentEfficiencyInput(
+                        agent_id=aid,
+                        name=names.get(aid) or aid,
+                        tasks_completed=tasks,
+                        tasks_escalated=esc,
+                        active_hours=hours,
+                        scheduled_hours=sched,
+                        prediction_accuracy=None,  # TODO: enrich from cognition.state
+                        cost_gbp=0.0,  # cost-efficiency enriched HQ-side (cost engine)
+                        satisfaction=float(emo.get("satisfaction", 0.0)),
+                        frustration=float(emo.get("frustration", 0.0)),
+                        prior_score=prior.get(aid),
+                    )
+                )
 
             review = assess_workforce_efficiency(records)
 
-            lines = [f"## Workforce efficiency — measured by {agent.id}\n", f"**{review.summary}**\n"]
+            lines = [
+                f"## Workforce efficiency — measured by {agent.id}\n",
+                f"**{review.summary}**\n",
+            ]
             if review.hotspots:
                 lines.append("### Who needs attention (act on the top ones)")
                 for h in review.hotspots[:10]:
@@ -2231,7 +2360,9 @@ class Fabric:
 
             try:
                 prev_path.write_text(
-                    json.dumps({a_eff.agent_id: round(a_eff.score, 1) for a_eff in review.per_agent}),
+                    json.dumps(
+                        {a_eff.agent_id: round(a_eff.score, 1) for a_eff in review.per_agent}
+                    ),
                     encoding="utf-8",
                 )
             except OSError:
@@ -2244,7 +2375,8 @@ class Fabric:
                 importance=6.5,
             )
             self._emit(
-                "efficiency.reviewed", agent_id=agent.id,
+                "efficiency.reviewed",
+                agent_id=agent.id,
                 mean_score=review.mean_score,
                 declining=sum(1 for h in review.hotspots if h.kind == "declining"),
                 at_risk=sum(1 for h in review.hotspots if h.kind == "at_risk"),
@@ -2254,7 +2386,9 @@ class Fabric:
             logger.exception("Efficiency review failed for %s", agent.id)
 
     async def _run_schedule_recommendation(
-        self, agent: Agent, spec: dict[str, Any],
+        self,
+        agent: Agent,
+        spec: dict[str, Any],
     ) -> None:
         """Recommend (and optionally apply) a single-role re-timing that most
         improves company responsiveness. Authority-gated. The steady-state
@@ -2262,8 +2396,8 @@ class Fabric:
         """
         if agent.id not in self.scheduling_authorised:
             logger.info(
-                "Agent %s emitted recommend_schedule but lacks scheduling "
-                "authority — ignored.", agent.id,
+                "Agent %s emitted recommend_schedule but lacks scheduling authority — ignored.",
+                agent.id,
             )
             return
         try:
@@ -2288,7 +2422,10 @@ class Fabric:
             signals = self._gather_schedule_signals()
             target = spec.get("target") or None
             rec = recommend_schedule_change(
-                specs, windows, target=target, signals=signals,
+                specs,
+                windows,
+                target=target,
+                signals=signals,
                 model_concurrency=self._model_concurrency(),
             )
 
@@ -2308,10 +2445,7 @@ class Fabric:
 
                 path = self.agents_dir / ".schedules.json"
                 try:
-                    cur = (
-                        json.loads(path.read_text(encoding="utf-8"))
-                        if path.exists() else {}
-                    )
+                    cur = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
                     cur[rec.target] = cfg
                     path.write_text(json.dumps(cur, indent=2), encoding="utf-8")
                     applied = True
@@ -2334,24 +2468,28 @@ class Fabric:
             await self.memory.store(
                 agent_id=agent.id,
                 content=f"Schedule recommendation for {rec.target}: {rec.rationale} "
-                        f"(applied={applied})",
+                f"(applied={applied})",
                 tags=["schedule", "recommendation", "ar", "decision"],
                 importance=7.0,
             )
             self._emit(
-                "schedule.recommended", agent_id=agent.id,
-                target=rec.target, delta=rec.delta, applied=applied,
+                "schedule.recommended",
+                agent_id=agent.id,
+                target=rec.target,
+                delta=rec.delta,
+                applied=applied,
             )
             logger.info(
                 "Agent %s schedule recommendation for %s (+%s, applied=%s)",
-                agent.id, rec.target, rec.delta, applied,
+                agent.id,
+                rec.target,
+                rec.delta,
+                applied,
             )
         except Exception:
             logger.exception("Schedule recommendation failed for %s", agent.id)
 
-    async def _process_reflection(
-        self, agent: Agent, task: Task, suffix: ReflectionSuffix
-    ) -> None:
+    async def _process_reflection(self, agent: Agent, task: Task, suffix: ReflectionSuffix) -> None:
         """Process structured reflection metadata from a task execution."""
         # Store learning as high-importance memory
         if suffix.learned:
@@ -2440,6 +2578,7 @@ class Fabric:
         # vanishes (the cross-node drop that lost the CEO's memos).
         if suffix.messages:
             import json as _json
+
             agent.write_outbox("messages.json", _json.dumps(suffix.messages, indent=2))
             cards_by_key: dict[str, dict] = {}
             for c in self._load_directory_cards():
@@ -2457,37 +2596,53 @@ class Fabric:
                     continue
                 if recipient.lower() in local_keys and self.channel:
                     await self.channel.send(
-                        sender=agent.id, recipient=recipient, content=content,
+                        sender=agent.id,
+                        recipient=recipient,
+                        content=content,
                     )
                     self.communication_tracker.record(agent.id, recipient)
                     continue
                 addr = _resolve_msg_email(recipient, cards_by_key, domain)
                 if addr:
-                    self._queue_outbound_email(agent, {
-                        "to": addr,
-                        "subject": f"A message from {self._agent_first_name(agent) or agent.id}",
-                        "body": content,
-                    })
+                    self._queue_outbound_email(
+                        agent,
+                        {
+                            "to": addr,
+                            "subject": (
+                                f"A message from"
+                                f" {self._agent_first_name(agent) or agent.id}"
+                            ),
+                            "body": content,
+                        },
+                    )
                     logger.info(
                         "Peer message to %s not reachable in-process — sent as "
-                        "email to %s so it lands.", recipient, addr,
+                        "email to %s so it lands.",
+                        recipient,
+                        addr,
                     )
                 elif self.channel:
                     # No email route — best-effort in-process (may queue).
                     await self.channel.send(
-                        sender=agent.id, recipient=recipient, content=content,
+                        sender=agent.id,
+                        recipient=recipient,
+                        content=content,
                     )
                     self.communication_tracker.record(agent.id, recipient)
 
         # Log escalation request and persist to outbox
         if suffix.escalation:
             import json as _json
-            agent.write_outbox("escalations.json", _json.dumps(
-                {"task": task.description, "escalation": suffix.escalation}, indent=2,
-            ))
+
+            agent.write_outbox(
+                "escalations.json",
+                _json.dumps(
+                    {"task": task.description, "escalation": suffix.escalation},
+                    indent=2,
+                ),
+            )
             logger.warning(
-                f"Agent {agent.id} escalation on '{task.description}': "
-                f"{suffix.escalation}"
+                f"Agent {agent.id} escalation on '{task.description}': {suffix.escalation}"
             )
 
         # Process delegation requests (manager → subordinate)
@@ -2506,8 +2661,10 @@ class Fabric:
                             org=self.org,
                         )
                         self._emit(
-                            "delegation.created", agent_id=agent.id,
-                            to_agent=to_agent, description=desc,
+                            "delegation.created",
+                            agent_id=agent.id,
+                            to_agent=to_agent,
+                            description=desc,
                         )
                     except PermissionError as exc:
                         logger.warning("Delegation rejected: %s", exc)
@@ -2515,12 +2672,15 @@ class Fabric:
         # Process assignment completion
         if suffix.complete_assignment:
             completed = self.delegation.complete_assignment(
-                suffix.complete_assignment, task.outcome or task.description,
+                suffix.complete_assignment,
+                task.outcome or task.description,
             )
             if completed:
                 self._emit(
-                    "delegation.completed", agent_id=agent.id,
-                    assignment_id=completed.id, outcome=completed.outcome,
+                    "delegation.completed",
+                    agent_id=agent.id,
+                    assignment_id=completed.id,
+                    outcome=completed.outcome,
                 )
 
         # Process shared learning.
@@ -2547,7 +2707,8 @@ class Fabric:
             if result:
                 logger.info("Agent %s self-scheduled: %s", agent.id, result)
                 self._emit(
-                    "schedule.self_modified", agent_id=agent.id,
+                    "schedule.self_modified",
+                    agent_id=agent.id,
                     changes=result,
                 )
 
@@ -2558,32 +2719,59 @@ class Fabric:
         approved = self.approval_queue.approved_tasks_for(agent.id)
         for req in approved:
             for task in agent.task_queue.tasks:
-                if (
-                    task.description == req.task_description
-                    and task.status == "pending_approval"
-                ):
+                if task.description == req.task_description and task.status == "pending_approval":
                     task.status = "pending"
                     task.priority = max(task.priority, 1)  # bump priority
                     logger.info(
                         "Agent %s task re-activated after approval: %s",
-                        agent.id, task.description[:60],
+                        agent.id,
+                        task.description[:60],
                     )
                     break
 
     # Terminal keywords that indicate a task should use the terminal agent
-    _TERMINAL_KEYWORDS = frozenset({
-        "implement", "code", "write", "fix", "refactor", "test", "debug",
-        "commit", "branch", "merge", "deploy", "build", "run", "install",
-        "create file", "edit file", "update file", "delete file",
-        "pytest", "ruff", "lint", "review code", "open pr", "push",
-        # GitHub work — issues, projects, wiki product-thinking — runs
-        # through the gh CLI / git in the terminal env. Compound phrases
-        # to avoid over-routing prose ("investigate the issue") away
-        # from consciousness execution.
-        "github", "wiki", "create issue", "create an issue", "file an issue",
-        "raise an issue", "triage issues", "project board", "milestone",
-        "pull request",
-    })
+    _TERMINAL_KEYWORDS = frozenset(
+        {
+            "implement",
+            "code",
+            "write",
+            "fix",
+            "refactor",
+            "test",
+            "debug",
+            "commit",
+            "branch",
+            "merge",
+            "deploy",
+            "build",
+            "run",
+            "install",
+            "create file",
+            "edit file",
+            "update file",
+            "delete file",
+            "pytest",
+            "ruff",
+            "lint",
+            "review code",
+            "open pr",
+            "push",
+            # GitHub work — issues, projects, wiki product-thinking — runs
+            # through the gh CLI / git in the terminal env. Compound phrases
+            # to avoid over-routing prose ("investigate the issue") away
+            # from consciousness execution.
+            "github",
+            "wiki",
+            "create issue",
+            "create an issue",
+            "file an issue",
+            "raise an issue",
+            "triage issues",
+            "project board",
+            "milestone",
+            "pull request",
+        }
+    )
 
     def _is_terminal_task(self, description: str) -> bool:
         """Check if a task description suggests terminal agent work."""
@@ -2621,7 +2809,9 @@ class Fabric:
 
         # Apply isolation envelope
         envelope = self.isolation.prepare_terminal_env(
-            agent_id=agent.id, cmd=[], cwd=cwd,
+            agent_id=agent.id,
+            cmd=[],
+            cwd=cwd,
         )
 
         # Inject the agent's delegated credentials (GH_TOKEN etc.) into
@@ -2658,10 +2848,7 @@ class Fabric:
             resume_session = None
 
         if env_overrides:
-            base_env = (
-                dict(envelope.env) if envelope.env is not None
-                else dict(os.environ)
-            )
+            base_env = dict(envelope.env) if envelope.env is not None else dict(os.environ)
             envelope.env = {**base_env, **env_overrides}
 
         # Enforce tool-level policy
@@ -2758,13 +2945,18 @@ class Fabric:
         )
 
         self.session_manager.record(
-            agent.id, prompt, response.content, call_type=call_type,
+            agent.id,
+            prompt,
+            response.content,
+            call_type=call_type,
         )
 
         if self.budget_manager and approval and approval.backend:
             self.budget_manager.record_usage(
-                agent.id, approval.backend,
-                response.tokens_in, response.tokens_out,
+                agent.id,
+                approval.backend,
+                response.tokens_in,
+                response.tokens_out,
             )
             agent.spend_consciousness()
 
@@ -2816,7 +3008,7 @@ class Fabric:
             return m.group(0).lower() if m else (s or "").strip().lower()
 
         authority: dict[str, str] = {}  # address -> label
-        for c in (self._email_meta().get("contacts") or []):
+        for c in self._email_meta().get("contacts") or []:
             a = _addr(str(c.get("address", "")))
             if a:
                 authority[a] = "the founder"
@@ -2837,7 +3029,11 @@ class Fabric:
                 seen.add(mgr)
                 card = cards.get(mgr)
                 if card and card.get("email"):
-                    rel = "your manager" if mgr == self.org.manager_of(agent.id) else "in your management chain"
+                    rel = (
+                        "your manager"
+                        if mgr == self.org.manager_of(agent.id)
+                        else "in your management chain"
+                    )
                     authority.setdefault(_addr(card["email"]), f"{card.get('name') or mgr} ({rel})")
                 cur = mgr
 
@@ -2940,9 +3136,7 @@ class Fabric:
         ]
         contacts = meta.get("contacts") or []
         if contacts:
-            cline = "; ".join(
-                f"{c.get('address')} ({c.get('scope', '')})" for c in contacts
-            )
+            cline = "; ".join(f"{c.get('address')} ({c.get('scope', '')})" for c in contacts)
             lines.append(
                 f"\n**Reaching a human founder:** {cline}. Ask your manager "
                 "first — only go to a founder when it's genuinely warranted, "
@@ -2957,8 +3151,9 @@ class Fabric:
         deploy = agent.directory / "deploy.yaml"
         if deploy.exists():
             try:
-                spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
-                        or {}).get("agent", {}) or {}
+                spec = (yaml.safe_load(deploy.read_text(encoding="utf-8")) or {}).get(
+                    "agent", {}
+                ) or {}
                 name = (spec.get("name") or "").strip()
                 if name:
                     return name.split()[0].lower()
@@ -2991,23 +3186,26 @@ class Fabric:
             if not deploy.is_file():
                 continue
             try:
-                spec = (yaml.safe_load(deploy.read_text(encoding="utf-8"))
-                        or {}).get("agent", {}) or {}
+                spec = (yaml.safe_load(deploy.read_text(encoding="utf-8")) or {}).get(
+                    "agent", {}
+                ) or {}
             except Exception:
                 continue
             name = (spec.get("name") or "").strip()
             if not name:
                 continue
             first = name.split()[0].lower()
-            cards.append({
-                "id": d.name,
-                "name": name,
-                "first": first,
-                "role": (spec.get("role") or "").strip(),
-                "department": (spec.get("department") or "").strip(),
-                "reports_to": (spec.get("reports_to") or "").strip(),
-                "email": f"{first}@{domain}" if domain else "",
-            })
+            cards.append(
+                {
+                    "id": d.name,
+                    "name": name,
+                    "first": first,
+                    "role": (spec.get("role") or "").strip(),
+                    "department": (spec.get("department") or "").strip(),
+                    "reports_to": (spec.get("reports_to") or "").strip(),
+                    "email": f"{first}@{domain}" if domain else "",
+                }
+            )
         return cards
 
     def _directory_context(self, agent: Agent) -> str:
@@ -3120,7 +3318,10 @@ class Fabric:
                 rel = "reports to you" if reports_to == agent.id else f"reports to {reports_to}"
                 bits.append(f"  {rel}.")
             if agent.id in manages:
-                bits.append("  You manage this person — delegate async, give clear briefs, don't expect agent-speed turnaround.")
+                bits.append(
+                    "  You manage this person — delegate async, give clear briefs,"
+                    " don't expect agent-speed turnaround."
+                )
             lines.append("- " + "\n".join(bits))
         return "\n".join(lines)
 
@@ -3139,13 +3340,19 @@ class Fabric:
         try:
             outbox.mkdir(parents=True, exist_ok=True)
             mid = uuid.uuid4().hex
-            (outbox / f"{mid}.json").write_text(json.dumps({
-                "to": to,
-                "subject": spec.get("subject", ""),
-                "body": body,
-                "in_reply_to": spec.get("in_reply_to"),
-                "queued_at": datetime.now(UTC).isoformat(),
-            }, ensure_ascii=False), encoding="utf-8")
+            (outbox / f"{mid}.json").write_text(
+                json.dumps(
+                    {
+                        "to": to,
+                        "subject": spec.get("subject", ""),
+                        "body": body,
+                        "in_reply_to": spec.get("in_reply_to"),
+                        "queued_at": datetime.now(UTC).isoformat(),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             logger.info("Agent %s queued email to %s: %s", agent.id, to, spec.get("subject"))
             self._emit("email.queued", agent_id=agent.id, to=to)
         except OSError:
@@ -3179,16 +3386,22 @@ class Fabric:
         try:
             outbox.mkdir(parents=True, exist_ok=True)
             did = uuid.uuid4().hex
-            (outbox / f"{did}.json").write_text(json.dumps({
-                "title": title,
-                "content": content,
-                "visibility": vis,
-                "department": (spec.get("department") or "").strip(),
-                "filename": (spec.get("filename") or "").strip(),
-                "tags": spec.get("tags") or [],
-                "description": (spec.get("description") or "").strip(),
-                "queued_at": datetime.now(UTC).isoformat(),
-            }, ensure_ascii=False), encoding="utf-8")
+            (outbox / f"{did}.json").write_text(
+                json.dumps(
+                    {
+                        "title": title,
+                        "content": content,
+                        "visibility": vis,
+                        "department": (spec.get("department") or "").strip(),
+                        "filename": (spec.get("filename") or "").strip(),
+                        "tags": spec.get("tags") or [],
+                        "description": (spec.get("description") or "").strip(),
+                        "queued_at": datetime.now(UTC).isoformat(),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
             logger.info("Agent %s queued document '%s' (vis=%s)", agent.id, title, vis)
             self._emit("document.queued", agent_id=agent.id, title=title, visibility=vis)
         except OSError:
@@ -3259,6 +3472,7 @@ class Fabric:
         """Build goals context for planning, if GoalManager is available."""
         try:
             from cortiva.core.goals import GoalManager
+
             goals_dir = self.agents_dir / ".goals"
             if goals_dir.exists():
                 gm = GoalManager(goals_dir)
@@ -3304,8 +3518,10 @@ class Fabric:
 
             if self.budget_manager and approval and approval.backend:
                 self.budget_manager.record_usage(
-                    agent.id, approval.backend,
-                    response.tokens_in, response.tokens_out,
+                    agent.id,
+                    approval.backend,
+                    response.tokens_in,
+                    response.tokens_out,
                 )
                 agent.spend_consciousness()
 
@@ -3363,7 +3579,8 @@ class Fabric:
                     if action == "wake" and agent.state == AgentState.SLEEPING:
                         await self.wake(agent_id)
                     elif action == "sleep" and agent.state in (
-                        AgentState.EXECUTING, AgentState.REPLANNING,
+                        AgentState.EXECUTING,
+                        AgentState.REPLANNING,
                     ):
                         await self.sleep(agent_id)
                     elif action == "replan" and agent.state == AgentState.EXECUTING:
@@ -3381,7 +3598,8 @@ class Fabric:
         now = datetime.now(UTC)
         for agent_id, agent in list(self.agents.items()):
             if agent.state in (
-                AgentState.EXECUTING, AgentState.REPLANNING,
+                AgentState.EXECUTING,
+                AgentState.REPLANNING,
             ) and self._in_sleep_gap(agent_id, now):
                 try:
                     logger.info(
@@ -3413,11 +3631,13 @@ class Fabric:
             try:
                 # Wrap cycle with timeout from resource limits
                 result = await self.resource_guard.wrap_cycle(
-                    aid, self.cycle(aid),
+                    aid,
+                    self.cycle(aid),
                 )
                 if result is None:
                     self._emit(
-                        "resource.timeout", agent_id=aid,
+                        "resource.timeout",
+                        agent_id=aid,
                         timeout=self.resource_guard.limits_for(aid).cycle_timeout_s,
                     )
             except Exception as e:
@@ -3430,7 +3650,9 @@ class Fabric:
             if violations:
                 logger.warning("Agent %s resource violations: %s", aid, violations)
                 self._emit(
-                    "resource.violation", agent_id=aid, violations=violations,
+                    "resource.violation",
+                    agent_id=aid,
+                    violations=violations,
                 )
 
         coros = [
@@ -3489,15 +3711,18 @@ class Fabric:
         async def _handle_budget(**_kw: Any) -> dict[str, Any]:
             if not self.budget_manager:
                 return {"ok": True, "budget": {}}
-            return {"ok": True, "budget": {
-                aid: {
-                    "total_calls": s.total_calls,
-                    "total_tokens": s.total_tokens,
-                    "escalation_ratio": s.escalation_ratio,
-                    "exhausted": s.exhausted,
-                }
-                for aid, s in self.budget_manager.all_status().items()
-            }}
+            return {
+                "ok": True,
+                "budget": {
+                    aid: {
+                        "total_calls": s.total_calls,
+                        "total_tokens": s.total_tokens,
+                        "escalation_ratio": s.escalation_ratio,
+                        "exhausted": s.exhausted,
+                    }
+                    for aid, s in self.budget_manager.all_status().items()
+                },
+            }
 
         async def _handle_model_perf(**_kw: Any) -> dict[str, Any]:
             """Throughput of the local consciousness model (tokens/sec).
@@ -3523,7 +3748,8 @@ class Fabric:
             return {"ok": False, "error": "Discovery not yet run"}
 
         async def _handle_schedule_optimize(
-            agent_id: str = "ar-scheduler", **spec: Any,
+            agent_id: str = "ar-scheduler",
+            **spec: Any,
         ) -> dict[str, Any]:
             """Run the AR Scheduler's rota optimiser on demand.
 
@@ -3547,7 +3773,8 @@ class Fabric:
             }
 
         async def _handle_cluster_rebalance(
-            agent_id: str = "ar-scheduler", **spec: Any,
+            agent_id: str = "ar-scheduler",
+            **spec: Any,
         ) -> dict[str, Any]:
             """Plan a node rebalance on demand (advisory, Phase 1).
 
@@ -3569,7 +3796,8 @@ class Fabric:
             }
 
         async def _handle_schedule_health(
-            agent_id: str = "ar-scheduler", **_kw: Any,
+            agent_id: str = "ar-scheduler",
+            **_kw: Any,
         ) -> dict[str, Any]:
             """Measure rota responsiveness on demand (read-only). Control
             surface for HQ/Canopy + the AR Scheduler; runs the same
@@ -3588,7 +3816,8 @@ class Fabric:
             }
 
         async def _handle_culture_health(
-            agent_id: str = "people-culture-lead", **_kw: Any,
+            agent_id: str = "people-culture-lead",
+            **_kw: Any,
         ) -> dict[str, Any]:
             """Measure culture health on demand (read-only). Control surface
             for HQ/Canopy + the People & Culture Lead; runs the same
@@ -3607,7 +3836,8 @@ class Fabric:
             }
 
         async def _handle_efficiency_review(
-            agent_id: str = "workforce-performance-analyst", **_kw: Any,
+            agent_id: str = "workforce-performance-analyst",
+            **_kw: Any,
         ) -> dict[str, Any]:
             """Measure workforce efficiency on demand (read-only). Control
             surface for HQ/Canopy + the analyst; runs the authority-gated
@@ -3626,7 +3856,8 @@ class Fabric:
             }
 
         async def _handle_schedule_recommend(
-            agent_id: str = "ar-scheduler", **spec: Any,
+            agent_id: str = "ar-scheduler",
+            **spec: Any,
         ) -> dict[str, Any]:
             """Recommend/apply a single-role re-timing on demand."""
             agent = self.agents.get(agent_id)
@@ -3644,16 +3875,16 @@ class Fabric:
 
         async def _handle_cluster_load(**_kw: Any) -> dict[str, Any]:
             nodes = self.cluster_metrics.snapshot(
-                self.capabilities, self.agents, self.budget_manager,
+                self.capabilities,
+                self.agents,
+                self.budget_manager,
             )
             affinities = self.cluster_metrics.agent_affinity_scores()
             moves = self.cluster_metrics.suggest_moves()
             return {
                 "ok": True,
                 "nodes": [n.to_dict() for n in nodes],
-                "affinities": {
-                    f"{a}->{b}": score for (a, b), score in affinities.items()
-                },
+                "affinities": {f"{a}->{b}": score for (a, b), score in affinities.items()},
                 "moves": [m.to_dict() for m in moves],
             }
 
@@ -3675,7 +3906,9 @@ class Fabric:
             return {"ok": True, "nodes": nodes_data}
 
         async def _handle_agent_move(
-            agent_id: str = "", target_node: str = "", **_kw: Any,
+            agent_id: str = "",
+            target_node: str = "",
+            **_kw: Any,
         ) -> dict[str, Any]:
             if not agent_id:
                 return {"ok": False, "error": "agent_id required"}
@@ -3688,7 +3921,8 @@ class Fabric:
                 return {"ok": False, "error": str(exc)}
 
         async def _handle_agent_activity(
-            agent_id: str = "", **_kw: Any,
+            agent_id: str = "",
+            **_kw: Any,
         ) -> dict[str, Any]:
             """Return live activity: current task, session, timesheet."""
             if not agent_id:
@@ -3716,11 +3950,13 @@ class Fabric:
             session = self.session_manager.get(agent_id)
             if session:
                 for turn in session.turns:
-                    session_turns.append({
-                        "role": turn.role,
-                        "call_type": turn.call_type,
-                        "content": turn.content[:200],
-                    })
+                    session_turns.append(
+                        {
+                            "role": turn.role,
+                            "call_type": turn.call_type,
+                            "content": turn.content[:200],
+                        }
+                    )
 
             # Timesheet
             ts = self.timesheet_manager.get(agent_id)
@@ -3738,7 +3974,9 @@ class Fabric:
             }
 
         async def _handle_agent_hours(
-            agent_id: str = "", period: str = "today", **_kw: Any,
+            agent_id: str = "",
+            period: str = "today",
+            **_kw: Any,
         ) -> dict[str, Any]:
             """Return working hours summary."""
             if not agent_id:
@@ -3796,24 +4034,30 @@ class Fabric:
                 }
 
             active = sum(
-                1 for a in self.agents.values()
+                1
+                for a in self.agents.values()
                 if a.state in (AgentState.EXECUTING, AgentState.REPLANNING)
             )
             capacity = self.capacity_tracker.snapshot(
-                active, len(self.agents), self.heartbeat_interval,
+                active,
+                len(self.agents),
+                self.heartbeat_interval,
             )
             return {"ok": True, "agents": agents_data, "capacity": capacity}
 
         async def _handle_capacity(**_kw: Any) -> dict[str, Any]:
             """Return detailed capacity and contention metrics."""
             active = sum(
-                1 for a in self.agents.values()
+                1
+                for a in self.agents.values()
                 if a.state in (AgentState.EXECUTING, AgentState.REPLANNING)
             )
             return {
                 "ok": True,
                 **self.capacity_tracker.snapshot(
-                    active, len(self.agents), self.heartbeat_interval,
+                    active,
+                    len(self.agents),
+                    self.heartbeat_interval,
                 ),
             }
 
@@ -3822,9 +4066,7 @@ class Fabric:
             models: list[str] = self.model_registry.all_model_names()
             terminal_agents: list[str] = []
             if self.capabilities:
-                terminal_agents = [
-                    t.name for t in self.capabilities.terminal_agents if t.available
-                ]
+                terminal_agents = [t.name for t in self.capabilities.terminal_agents if t.available]
 
             agent_resources: dict[str, Any] = {}
             for aid in self.agents:
@@ -3844,7 +4086,9 @@ class Fabric:
             }
 
         async def _handle_hook_receive(
-            source: str = "", event_type: str = "", payload: dict | None = None,
+            source: str = "",
+            event_type: str = "",
+            payload: dict | None = None,
             **_kw: Any,
         ) -> dict[str, Any]:
             """Receive an inbound hook and route to an agent."""
@@ -3868,15 +4112,20 @@ class Fabric:
                             woke = True
                             logger.info(
                                 "Hook woke agent %s: %s/%s",
-                                agent_id, source, event_type,
+                                agent_id,
+                                source,
+                                event_type,
                             )
                         except Exception as exc:
                             logger.error("Failed to wake %s on hook: %s", agent_id, exc)
 
             self._emit(
-                "hook.received", agent_id=event.routed_to,
-                source=source, event_type=event_type,
-                priority=event.priority, woke_agent=woke,
+                "hook.received",
+                agent_id=event.routed_to,
+                source=source,
+                event_type=event_type,
+                priority=event.priority,
+                woke_agent=woke,
             )
 
             return {"ok": True, **event.to_dict()}
@@ -3889,7 +4138,9 @@ class Fabric:
             }
 
         async def _handle_agent_chat(
-            agent_id: str = "", message: str = "", **_kw: Any,
+            agent_id: str = "",
+            message: str = "",
+            **_kw: Any,
         ) -> dict[str, Any]:
             """Send a message to an agent and get a response."""
             if not agent_id or not message:
@@ -3913,7 +4164,9 @@ class Fabric:
                 return {"ok": False, "error": str(exc)}
 
         async def _handle_agent_logs(
-            agent_id: str = "", limit: int = 20, **_kw: Any,
+            agent_id: str = "",
+            limit: int = 20,
+            **_kw: Any,
         ) -> dict[str, Any]:
             """Get recent activity logs for an agent."""
             if not agent_id:
@@ -3960,7 +4213,8 @@ class Fabric:
         for cmd, handler in self.plugin_manager.collect_ipc_handlers().items():
             if cmd in server._handlers:
                 logger.warning(
-                    "Plugin IPC command %r shadows a built-in; skipping", cmd,
+                    "Plugin IPC command %r shadows a built-in; skipping",
+                    cmd,
                 )
                 continue
             server.register(cmd, handler)
@@ -4023,7 +4277,8 @@ class Fabric:
         node_id = self._cluster_config.get("node_id") or f"{platform.node()}-{os.getpid()}"
         all_endpoints = custom_endpoints or self._custom_endpoints or None
         self.capabilities = await NodeCapabilities.discover(
-            node_id, custom_endpoints=all_endpoints,
+            node_id,
+            custom_endpoints=all_endpoints,
         )
         logger.info(f"Node capabilities: {self.capabilities.summary}")
 
@@ -4070,7 +4325,8 @@ class Fabric:
                         host=peer.host,
                         models=caps.get("local_models", []),
                         terminal_agents=[
-                            t.get("name", "") for t in caps.get("terminal_agents", [])
+                            t.get("name", "")
+                            for t in caps.get("terminal_agents", [])
                             if t.get("available")
                         ],
                         custom_endpoints=caps.get("custom_endpoints", []),
@@ -4148,4 +4404,3 @@ class Fabric:
         if self.capabilities:
             result["capabilities"] = self.capabilities.to_dict()
         return result
-

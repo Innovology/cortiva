@@ -18,6 +18,7 @@ from typing import Any, Protocol, runtime_checkable
 # Common data types
 # ---------------------------------------------------------------------------
 
+
 class Priority(Enum):
     LOW = "low"
     NORMAL = "normal"
@@ -28,6 +29,7 @@ class Priority(Enum):
 @dataclass
 class MemoryRecord:
     """A single unit of agent memory."""
+
     id: str
     content: str
     agent_id: str
@@ -45,16 +47,18 @@ class MemoryRecord:
 @dataclass
 class FamiliaritySignal:
     """The agent's gut feeling about a task, computed from memory."""
-    strength: str          # "novel" | "vague_recognition" | "familiar" | "routine"
-    valence: str           # "positive" | "neutral" | "cautious" | "negative"
-    match_count: int       # how many similar experiences found
-    text: str              # natural language description for context injection
+
+    strength: str  # "novel" | "vague_recognition" | "familiar" | "routine"
+    valence: str  # "positive" | "neutral" | "cautious" | "negative"
+    match_count: int  # how many similar experiences found
+    text: str  # natural language description for context injection
     retrieved: list[MemoryRecord] = field(default_factory=list)
 
 
 @dataclass
 class ConsciousResponse:
     """Response from a conscious (LLM) invocation."""
+
     content: str
     reflection: str | None = None
     tokens_in: int = 0
@@ -74,9 +78,10 @@ class ConsciousResponse:
 @dataclass
 class Message:
     """A message between agents or between agent and human."""
+
     id: str
-    sender: str            # agent_id or "human"
-    recipient: str         # agent_id, channel name, or "human"
+    sender: str  # agent_id or "human"
+    recipient: str  # agent_id, channel name, or "human"
     content: str
     timestamp: datetime = field(default_factory=datetime.utcnow)
     thread_id: str | None = None
@@ -86,6 +91,7 @@ class Message:
 # ---------------------------------------------------------------------------
 # Memory adapter protocol
 # ---------------------------------------------------------------------------
+
 
 @runtime_checkable
 class MemoryAdapter(Protocol):
@@ -137,6 +143,7 @@ class MemoryAdapter(Protocol):
 # ---------------------------------------------------------------------------
 # Graph memory adapter protocol (extension)
 # ---------------------------------------------------------------------------
+
 
 @runtime_checkable
 class GraphMemoryAdapter(MemoryAdapter, Protocol):
@@ -194,6 +201,7 @@ class GraphMemoryAdapter(MemoryAdapter, Protocol):
 # Consciousness adapter protocol
 # ---------------------------------------------------------------------------
 
+
 @runtime_checkable
 class ConsciousnessAdapter(Protocol):
     """
@@ -244,6 +252,7 @@ class ConsciousnessAdapter(Protocol):
 # Routine adapter protocol
 # ---------------------------------------------------------------------------
 
+
 @runtime_checkable
 class RoutineAdapter(Protocol):
     """
@@ -293,6 +302,7 @@ class RoutineAdapter(Protocol):
 # Channel adapter protocol
 # ---------------------------------------------------------------------------
 
+
 @runtime_checkable
 class ChannelAdapter(Protocol):
     """
@@ -339,9 +349,11 @@ class ChannelAdapter(Protocol):
 # Terminal agent adapter protocol
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ToolCapabilities:
     """Describes what a terminal agent can do."""
+
     can_edit_files: bool = False
     can_run_bash: bool = False
     can_use_mcp: bool = False
@@ -352,6 +364,7 @@ class ToolCapabilities:
 @dataclass
 class AgentResponse:
     """Response from a terminal agent invocation."""
+
     content: str
     output_format: str = "json"
     cost_usd: float | None = None

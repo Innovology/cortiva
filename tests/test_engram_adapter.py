@@ -39,7 +39,7 @@ class TestEngramMemoryAdapter:
         from cortiva.adapters.memory.engram import EngramMemoryAdapter
 
         adapter = EngramMemoryAdapter()
-        mem = adapter._get_memory("agent-1")
+        _mem = adapter._get_memory("agent-1")
         mock_engram.assert_called_once_with(namespace="cortiva_agent-1")
         assert "agent-1" in adapter._memories
 
@@ -99,9 +99,7 @@ class TestEngramMemoryAdapter:
         adapter = EngramMemoryAdapter()
         record = await adapter.store("agent-1", "data")
 
-        mock_mem_instance.store.assert_called_once_with(
-            "data", tags=[], importance=5
-        )
+        mock_mem_instance.store.assert_called_once_with("data", tags=[], importance=5)
         assert record.tags == []
         assert record.importance == 5.0
         assert record.metadata == {}

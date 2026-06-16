@@ -14,12 +14,11 @@ import pytest
 from cortiva.core.planner import (
     HorizonPlan,
     PlanHorizon,
-    PlanStore,
     Planner,
+    PlanStore,
     build_monthly_context,
     build_weekly_context,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -39,10 +38,12 @@ def _make_memory_with_shared() -> AsyncMock:
         FakeMemory(content="Learned: always add tests before merging"),
         FakeMemory(content="Pattern: retry transient errors 3 times"),
     ]
-    memory.recall_shared = AsyncMock(return_value=[
-        FakeMemory(content="Org policy: deploy only on Tuesdays"),
-        FakeMemory(content="Shared: use structured logging everywhere"),
-    ])
+    memory.recall_shared = AsyncMock(
+        return_value=[
+            FakeMemory(content="Org policy: deploy only on Tuesdays"),
+            FakeMemory(content="Shared: use structured logging everywhere"),
+        ]
+    )
     return memory
 
 
@@ -73,7 +74,8 @@ class TestBuildMonthlyContextShared:
         memory = _make_memory_with_shared()
 
         ctx = await build_monthly_context(
-            "agent-1", memory,
+            "agent-1",
+            memory,
             goals_context="Ship v2.0",
             performance_context="90% completion rate",
         )
@@ -104,7 +106,9 @@ class TestBuildMonthlyContextShared:
         )
 
         ctx = await build_monthly_context(
-            "agent-1", memory, previous_monthly=prev,
+            "agent-1",
+            memory,
+            previous_monthly=prev,
         )
         assert "Previous Month" in ctx
         assert "2026-02" in ctx
@@ -154,7 +158,8 @@ class TestBuildWeeklyContextExtended:
         )
 
         ctx = await build_weekly_context(
-            "agent-1", memory,
+            "agent-1",
+            memory,
             previous_weekly=prev_weekly,
         )
         assert "Previous Week" in ctx

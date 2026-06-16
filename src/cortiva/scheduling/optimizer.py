@@ -27,10 +27,10 @@ rows.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class RoleType(str, Enum):
+class RoleType(StrEnum):
     """How an agent is scheduled.
 
     * ``IC`` — one continuous focus block (flow, context continuity).
@@ -241,7 +241,14 @@ def optimize_schedule(
     for a in sorted(ics, key=_ic_key):
         block = _block_slots(c, min(a.budget_hours, c.ic_block_len_h))
         start_slot = _best_block_start(
-            c, obj, sig, load, block, a, n_slots, mgr_reserve,
+            c,
+            obj,
+            sig,
+            load,
+            block,
+            a,
+            n_slots,
+            mgr_reserve,
         )
         _add_block(load, start_slot, block)
         w = WorkWindow(
@@ -260,16 +267,14 @@ def optimize_schedule(
     remaining = list(managers)
     while remaining:
         ready = [
-            m for m in remaining
-            if all((r in placed) or (r not in by_id_set) for r in m.reports)
+            m for m in remaining if all((r in placed) or (r not in by_id_set) for r in m.reports)
         ]
         if not ready:  # cycle or dangling reports — place the rest as-is
             ready = list(remaining)
         for a in sorted(ready, key=lambda m: m.agent_id):
             windows = _place_manager_windows(c, obj, sig, load, a, schedules)
             for w in windows:
-                _add_block(load, _hour_to_slot(c, w.start_h),
-                           _block_slots(c, w.length_h))
+                _add_block(load, _hour_to_slot(c, w.start_h), _block_slots(c, w.length_h))
             schedules[a.agent_id] = windows
             rationale[a.agent_id] = _manager_rationale(a, windows, schedules)
             placed.add(a.agent_id)
@@ -351,7 +356,7 @@ def _best_block_start(
         else:
             cost += obj.w_spread * s
         if overloaded:
-            cost += obj.w_overtime * sum(load[s:s + block]) * 0.01
+            cost += obj.w_overtime * sum(load[s : s + block]) * 0.01
         if cost < best_cost:
             best_cost = cost
             best_slot = s
@@ -372,24 +377,28 @@ def _place_manager_windows(
     least one manager window overlapping it. Windows are spread across the
     reports' active span to minimise the largest uncovered gap.
     """
-    report_windows = [
-        w
-        for r in manager.reports
-        for w in schedules.get(r, [])
-    ]
+    report_windows = [w for r in manager.reports for w in schedules.get(r, [])]
     # FLOOR, not round: a manager must never be scheduled over budget. With a
     # 7.5h budget and 2h windows, rounding gave 4 windows (8.0h > 7.5h budget)
     # → infeasible. Flooring gives 3 windows (6.0h) and stays within budget.
-    n = max(1, min(c.manager_windows,
-                   int(min(manager.budget_hours, c.manager_windows
-                           * c.manager_window_len_h) / c.manager_window_len_h)))
+    n = max(
+        1,
+        min(
+            c.manager_windows,
+            int(
+                min(manager.budget_hours, c.manager_windows * c.manager_window_len_h)
+                / c.manager_window_len_h
+            ),
+        ),
+    )
     wlen = c.manager_window_len_h
 
     if not report_windows:
         # No reports placed yet — fall back to a clustered block at day start.
         start = c.day_start_h
-        return [WorkWindow(start, min(start + min(manager.budget_hours,
-                                                  c.ic_block_len_h), c.day_end_h))]
+        return [
+            WorkWindow(start, min(start + min(manager.budget_hours, c.ic_block_len_h), c.day_end_h))
+        ]
 
     span_start = min(w.start_h for w in report_windows)
     span_end = max(w.end_h for w in report_windows)
@@ -437,8 +446,6 @@ def _validate(
 ) -> list[str]:
     """Return a list of hard-invariant violations (empty == feasible)."""
     v: list[str] = []
-    by_id = {a.agent_id: a for a in agents}
-
     # 1. Budget + 4. no starvation + 5. within day span
     for a in agents:
         ws = schedules.get(a.agent_id, [])
@@ -480,9 +487,7 @@ def _impact(
 ) -> ImpactPreview:
     imp = ImpactPreview(capacity_ceiling=c.capacity_ceiling)
     imp.peak_concurrency = int(max(load)) if load else 0
-    imp.total_scheduled_hours = sum(
-        w.length_h for ws in schedules.values() for w in ws
-    )
+    imp.total_scheduled_hours = sum(w.length_h for ws in schedules.values() for w in ws)
     all_w = [w for ws in schedules.values() for w in ws]
     if all_w:
         imp.spread_span_h = max(w.end_h for w in all_w) - min(w.start_h for w in all_w)
@@ -504,14 +509,14 @@ def _impact(
 
     # Overtime: chronic overtime can't be fixed by timing — surface it.
     imp.predicted_overtime_hours = sum(sig.overtime_hours.values())
-    imp.chronic_overtime_agents = sorted(
-        aid for aid, h in sig.overtime_hours.items() if h >= 2.0
-    )
+    imp.chronic_overtime_agents = sorted(aid for aid, h in sig.overtime_hours.items() if h >= 2.0)
     return imp
 
 
 def windows_to_schedule_config(
-    windows: list[WorkWindow], *, replan_per_window: bool = True,
+    windows: list[WorkWindow],
+    *,
+    replan_per_window: bool = True,
     days: str = "mon-fri",
 ) -> dict[str, str]:
     """Convert windows to the framework Scheduler's config format.
@@ -523,6 +528,7 @@ def windows_to_schedule_config(
     5-day week makes a daily ~7.5h block land at ~37.5h/week, with weekends
     off. Pass ``"daily"`` for round-the-clock 7-day roles.
     """
+
     def fmt(h: float) -> str:
         total_min = int(round(h * 60)) % (24 * 60)
         return f"{total_min // 60:02d}:{total_min % 60:02d}"
@@ -534,9 +540,7 @@ def windows_to_schedule_config(
     cfg = {"wake": f"{wake}{suffix}", "sleep": f"{sleep}{suffix}"}
     if replan_per_window and len(windows) > 1:
         # A mid-window replan keeps multi-window agents responsive.
-        cfg["replan"] = (
-            ",".join(fmt((w.start_h + w.end_h) / 2) for w in wins) + suffix
-        )
+        cfg["replan"] = ",".join(fmt((w.start_h + w.end_h) / 2) for w in wins) + suffix
     return cfg
 
 
@@ -548,6 +552,7 @@ def schedule_config_to_windows(cfg: dict[str, str]) -> list[WorkWindow]:
     wraps past midnight (end += 24). Any ``" mon-fri"``-style day suffix is
     ignored here (health is measured on the daily shape).
     """
+
     def _times(spec: str) -> list[float]:
         spec = (spec or "").split(maxsplit=1)[0]  # drop any day suffix
         out: list[float] = []
@@ -582,10 +587,11 @@ def _ic_rationale(a: AgentSpec, w: WorkWindow, sig: Signals) -> str:
 
 
 def _manager_rationale(
-    a: AgentSpec, windows: list[WorkWindow], schedules: dict[str, list[WorkWindow]],
+    a: AgentSpec,
+    windows: list[WorkWindow],
+    schedules: dict[str, list[WorkWindow]],
 ) -> str:
     spans = ", ".join(f"{w.start_h:04.1f}-{w.end_h:04.1f}" for w in windows)
     return (
-        f"{len(windows)} availability windows ({spans}) phased to cover "
-        f"{len(a.reports)} report(s)"
+        f"{len(windows)} availability windows ({spans}) phased to cover {len(a.reports)} report(s)"
     )

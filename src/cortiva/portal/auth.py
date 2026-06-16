@@ -15,7 +15,7 @@ import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -157,9 +157,7 @@ class AuthDB:
             row = conn.execute("SELECT COUNT(*) FROM users").fetchone()
             return row[0] > 0
 
-    def create_user(
-        self, email: str, name: str, password: str, role: str = "observer"
-    ) -> User:
+    def create_user(self, email: str, name: str, password: str, role: str = "observer") -> User:
         user_id = secrets.token_hex(8)
         now = datetime.now(tz=UTC).isoformat()
         pw_hash = _hash_password(password)
@@ -199,14 +197,14 @@ class AuthDB:
                 "SELECT id, email, name, role, created_at FROM users ORDER BY created_at"
             ).fetchall()
         return [
-            User(id=r[0], email=r[1], name=r[2], role=Role(r[3]), created_at=r[4])
-            for r in rows
+            User(id=r[0], email=r[1], name=r[2], role=Role(r[3]), created_at=r[4]) for r in rows
         ]
 
     def verify_credentials(self, email: str, password: str) -> User | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT id, email, name, role, created_at, password_hash FROM users WHERE email = ?",
+                "SELECT id, email, name, role, created_at, password_hash"
+                " FROM users WHERE email = ?",
                 (email,),
             ).fetchone()
         if row is None:
@@ -220,12 +218,12 @@ class AuthDB:
     def _encode_jwt(self, payload: dict[str, Any]) -> str:
         import base64
 
-        header = base64.urlsafe_b64encode(
-            json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
-        ).rstrip(b"=").decode()
-        body = base64.urlsafe_b64encode(
-            json.dumps(payload).encode()
-        ).rstrip(b"=").decode()
+        header = (
+            base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+        body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
         msg = f"{header}.{body}"
         sig = hmac.new(self._secret.encode(), msg.encode(), hashlib.sha256).digest()
         sig_str = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
@@ -319,8 +317,7 @@ class AuthDB:
         token_hash = _hash_token(refresh_token)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT id, user_id FROM sessions "
-                "WHERE refresh_token_hash = ? AND revoked = 0",
+                "SELECT id, user_id FROM sessions WHERE refresh_token_hash = ? AND revoked = 0",
                 (token_hash,),
             ).fetchone()
         if row is None:
@@ -338,15 +335,17 @@ class AuthDB:
 
     def revoke_session(self, session_id: str) -> bool:
         with self._connect() as conn:
-            cursor = conn.execute(
-                "UPDATE sessions SET revoked = 1 WHERE id = ?", (session_id,)
-            )
+            cursor = conn.execute("UPDATE sessions SET revoked = 1 WHERE id = ?", (session_id,))
             return cursor.rowcount > 0
 
     # ----- Audit log -----
 
     def audit(
-        self, user_id: str | None, action: str, target: str | None = None, details: str | None = None
+        self,
+        user_id: str | None,
+        action: str,
+        target: str | None = None,
+        details: str | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -385,9 +384,7 @@ class AuthDB:
 
     def get_org_setting(self, key: str) -> str | None:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT value FROM org_settings WHERE key = ?", (key,)
-            ).fetchone()
+            row = conn.execute("SELECT value FROM org_settings WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None
 
     def bootstrap_complete(self) -> bool:

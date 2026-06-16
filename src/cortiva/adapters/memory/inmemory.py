@@ -52,7 +52,8 @@ class InMemoryAdapter:
         query_lower = query.lower()
 
         matches = [
-            r for r in records
+            r
+            for r in records
             if query_lower in r.content.lower()
             and r.importance >= min_importance
             and (not tags or any(t in r.tags for t in tags))
@@ -93,12 +94,14 @@ class InMemoryAdapter:
         weight: float = 1.0,
     ) -> None:
         self.__init_edges()
-        self._edges.setdefault(agent_id, []).append({
-            "from_id": from_id,
-            "to_id": to_id,
-            "relationship": relationship,
-            "weight": weight,
-        })
+        self._edges.setdefault(agent_id, []).append(
+            {
+                "from_id": from_id,
+                "to_id": to_id,
+                "relationship": relationship,
+                "weight": weight,
+            }
+        )
 
     async def get_edges(
         self,
@@ -107,7 +110,8 @@ class InMemoryAdapter:
     ) -> list[dict[str, Any]]:
         self.__init_edges()
         return [
-            e for e in self._edges.get(agent_id, [])
+            e
+            for e in self._edges.get(agent_id, [])
             if e["from_id"] == memory_id or e["to_id"] == memory_id
         ]
 
@@ -156,9 +160,7 @@ class InMemoryAdapter:
         self.__init_edges()
         records = self._store.get(agent_id, [])
         filtered = [
-            r for r in records
-            if r.importance >= min_importance
-            and (not tag or tag in r.tags)
+            r for r in records if r.importance >= min_importance and (not tag or tag in r.tags)
         ]
         if not filtered:
             return []

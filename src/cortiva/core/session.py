@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 logger = logging.getLogger("cortiva.session")
 
@@ -66,12 +65,14 @@ class Session:
         call_type: str = "",
     ) -> None:
         """Append a turn and evict old ones if over limit."""
-        self.turns.append(Turn(
-            role=role,
-            content=content,
-            call_type=call_type,
-            agent_id=self.agent_id,
-        ))
+        self.turns.append(
+            Turn(
+                role=role,
+                content=content,
+                call_type=call_type,
+                agent_id=self.agent_id,
+            )
+        )
         self._evict()
 
     def _evict(self) -> None:

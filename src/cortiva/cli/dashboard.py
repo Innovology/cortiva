@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import curses
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -37,6 +38,7 @@ DEFAULT_INTERVAL = 2  # seconds
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
+
 def format_timestamp() -> str:
     """Return a human-readable timestamp string."""
     return time.strftime("%Y-%m-%d %H:%M:%S")
@@ -64,10 +66,7 @@ def format_agent_row(name: str, info: dict[str, Any]) -> str:
     budget = info.get("budget", "—")
 
     bar = format_progress_bar(progress)
-    return (
-        f"  {name:<18} {state:<12} {task:<20} {bar} "
-        f"{hours:6.1f}h {overtime} {budget:>10}"
-    )
+    return f"  {name:<18} {state:<12} {task:<20} {bar} {hours:6.1f}h {overtime} {budget:>10}"
 
 
 def format_header(agent_count: int) -> str:
@@ -101,6 +100,7 @@ def format_capacity_footer(capacity: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
+
 
 def render_frame(
     win: Any,
@@ -143,6 +143,7 @@ def render_frame(
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+
 
 def _dashboard_loop(
     stdscr: Any,

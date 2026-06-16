@@ -8,12 +8,11 @@ the filesystem.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
 
-from cortiva.portal.auth import AuthDB, JWTError, Role, User
+from cortiva.portal.auth import AuthDB, Role, User
 
 
 def create_app(
@@ -27,12 +26,10 @@ def create_app(
     try:
         from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import JSONResponse
         from pydantic import BaseModel
     except ImportError:
         raise ImportError(
-            "FastAPI is required for the portal. "
-            "Install with: pip install 'fastapi[standard]'"
+            "FastAPI is required for the portal. Install with: pip install 'fastapi[standard]'"
         )
 
     agents_path = Path(agents_dir)
@@ -94,6 +91,7 @@ def create_app(
             if not user.role.can_do(min_role):
                 raise HTTPException(status_code=403, detail="Insufficient permissions")
             return user
+
         return _check
 
     # ----- Auth endpoints -----
@@ -196,14 +194,15 @@ def create_app(
             if p.is_dir() and not p.name.startswith("."):
                 identity_path = p / "identity" / "identity.md"
                 has_identity = identity_path.exists()
-                agents.append({
-                    "id": p.name,
-                    "has_identity": has_identity,
-                    "identity_preview": (
-                        identity_path.read_text(encoding="utf-8")[:200]
-                        if has_identity else ""
-                    ),
-                })
+                agents.append(
+                    {
+                        "id": p.name,
+                        "has_identity": has_identity,
+                        "identity_preview": (
+                            identity_path.read_text(encoding="utf-8")[:200] if has_identity else ""
+                        ),
+                    }
+                )
         return agents
 
     @app.get("/api/agents/{agent_id}")
@@ -214,7 +213,9 @@ def create_app(
         return state
 
     @app.get("/api/agents/{agent_id}/identity/{file_key}")
-    async def get_identity_file(agent_id: str, file_key: str, user: User = Depends(get_current_user)):
+    async def get_identity_file(
+        agent_id: str, file_key: str, user: User = Depends(get_current_user)
+    ):
         path = agents_path / agent_id / "identity" / f"{file_key}.md"
         if not path.exists():
             raise HTTPException(status_code=404, detail="File not found")
@@ -235,6 +236,7 @@ def create_app(
 
         # Auto-snapshot before edit
         from cortiva.core.snapshots import create_snapshot
+
         create_snapshot(agent_dir, name=f"pre-edit-{file_key}", trigger="pre-edit")
 
         path = agent_dir / "identity" / f"{file_key}.md"
@@ -256,10 +258,12 @@ def create_app(
         entries = []
         for path in sorted(journal_dir.iterdir(), reverse=True)[:limit]:
             if path.suffix == ".md":
-                entries.append({
-                    "date": path.stem,
-                    "content": path.read_text(encoding="utf-8"),
-                })
+                entries.append(
+                    {
+                        "date": path.stem,
+                        "content": path.read_text(encoding="utf-8"),
+                    }
+                )
         return entries
 
     @app.get("/api/agents/{agent_id}/metrics")
@@ -284,6 +288,7 @@ def create_app(
 
     def _send_ipc(command: str, **kwargs: Any) -> dict[str, Any]:
         from cortiva.core.ipc import FabricClient
+
         client = FabricClient()
         if not client.is_daemon_running():
             return {"ok": False, "error": "Fabric daemon not running"}
@@ -313,6 +318,7 @@ def create_app(
     @app.get("/api/agents/{agent_id}/snapshots")
     async def agent_snapshots(agent_id: str, user: User = Depends(get_current_user)):
         from cortiva.core.snapshots import list_snapshots
+
         agent_dir = agents_path / agent_id
         if not agent_dir.is_dir():
             raise HTTPException(status_code=404, detail="Agent not found")
@@ -325,6 +331,7 @@ def create_app(
         user: User = Depends(require_role(Role.ADMIN)),
     ):
         from cortiva.core.snapshots import create_snapshot
+
         agent_dir = agents_path / agent_id
         if not agent_dir.is_dir():
             raise HTTPException(status_code=404, detail="Agent not found")
@@ -339,6 +346,7 @@ def create_app(
         user: User = Depends(require_role(Role.ADMIN)),
     ):
         from cortiva.core.snapshots import restore_snapshot
+
         agent_dir = agents_path / agent_id
         if not agent_dir.is_dir():
             raise HTTPException(status_code=404, detail="Agent not found")
@@ -357,6 +365,7 @@ def create_app(
         user: User = Depends(require_role(Role.ADMIN)),
     ):
         from cortiva.core.snapshots import clone_from_snapshot, list_snapshots
+
         agent_dir = agents_path / agent_id
         if not agent_dir.is_dir():
             raise HTTPException(status_code=404, detail="Agent not found")
@@ -423,10 +432,12 @@ def create_app(
     ) -> None:
         if routes:
             app.include_router(routes, prefix=f"/api/plugins/{name}")
-        app._cortiva_plugins.append({  # type: ignore[attr-defined]
-            "name": name,
-            "nav_items": nav_items or [],
-        })
+        app._cortiva_plugins.append(
+            {  # type: ignore[attr-defined]
+                "name": name,
+                "nav_items": nav_items or [],
+            }
+        )
 
     app.register_plugin = register_plugin  # type: ignore[attr-defined]
 

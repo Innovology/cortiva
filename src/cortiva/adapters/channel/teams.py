@@ -86,9 +86,7 @@ class TeamsChannelAdapter:
         try:
             import msal
         except ImportError:
-            raise ImportError(
-                "msal is not installed. Install it with: pip install 'msal>=1.20'"
-            )
+            raise ImportError("msal is not installed. Install it with: pip install 'msal>=1.20'")
 
         app = msal.ConfidentialClientApplication(
             self._client_id,
@@ -127,7 +125,12 @@ class TeamsChannelAdapter:
 
         if self._use_graph:
             return await self._send_graph(
-                client, sender, recipient, content, channel=channel, thread_id=thread_id,
+                client,
+                sender,
+                recipient,
+                content,
+                channel=channel,
+                thread_id=thread_id,
             )
 
         url = self._webhook_url
@@ -183,10 +186,7 @@ class TeamsChannelAdapter:
                 f"/channels/{channel_id}/messages/{thread_id}/replies"
             )
         else:
-            url = (
-                f"https://graph.microsoft.com/v1.0/teams/{team_id}"
-                f"/channels/{channel_id}/messages"
-            )
+            url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/channels/{channel_id}/messages"
 
         resp = await client.post(url, json=body, headers=headers)
         resp.raise_for_status()
@@ -257,9 +257,7 @@ class TeamsChannelAdapter:
                 if since and ts < since:
                     continue
 
-                sender_name = (
-                    item.get("from", {}).get("user", {}).get("displayName", "unknown")
-                )
+                sender_name = item.get("from", {}).get("user", {}).get("displayName", "unknown")
                 body_content = item.get("body", {}).get("content", "")
 
                 messages.append(
@@ -299,9 +297,7 @@ class TeamsChannelAdapter:
         for ch in channels:
             parts = ch.split(":", 1)
             if len(parts) != 2:
-                raise ValueError(
-                    f"Expected 'team_id:channel_id' format, got: {ch!r}"
-                )
+                raise ValueError(f"Expected 'team_id:channel_id' format, got: {ch!r}")
             pair = (parts[0], parts[1])
             if pair not in existing:
                 existing.append(pair)

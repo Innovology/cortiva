@@ -41,7 +41,7 @@ class CultureMember:
 class CultureHotspot:
     """One culture concern worth attention, and who it's about."""
 
-    kind: str  # "distress" | "burnout" | "fear" | "disengagement" | "isolation" | "monoculture" | "wellbeing"
+    kind: str  # "distress"|"burnout"|"fear"|"disengagement"|"isolation"|"monoculture"|"wellbeing"
     agent_id: str  # the agent it concerns ("" for org-wide signals)
     severity: float  # higher = worse; used to rank
     detail: str
@@ -155,7 +155,9 @@ def assess_culture_health(
             health.distressed.append(aid)
             hotspots.append(
                 CultureHotspot(
-                    "distress", aid, _PEN_PER_DISTRESS + fru * 4,
+                    "distress",
+                    aid,
+                    _PEN_PER_DISTRESS + fru * 4,
                     f"{who(aid)} is running high frustration ({fru:+.2f}) — "
                     f"check in; find what's blocking them.",
                 )
@@ -164,7 +166,9 @@ def assess_culture_health(
                 health.burnout_risk.append(aid)
                 hotspots.append(
                     CultureHotspot(
-                        "burnout", aid, _PEN_PER_BURNOUT + (fru - sat) * 3,
+                        "burnout",
+                        aid,
+                        _PEN_PER_BURNOUT + (fru - sat) * 3,
                         f"{who(aid)} shows burnout risk — frustrated ({fru:+.2f}) "
                         f"and unsatisfied ({sat:+.2f}) at once. Don't let it harden.",
                     )
@@ -174,7 +178,9 @@ def assess_culture_health(
             health.fearful.append(aid)
             hotspots.append(
                 CultureHotspot(
-                    "fear", aid, _PEN_PER_FEARFUL + cau * 3,
+                    "fear",
+                    aid,
+                    _PEN_PER_FEARFUL + cau * 3,
                     f"{who(aid)} is operating defensively (caution {cau:+.2f}) — "
                     f"a fear signal; is it safe to be wrong on their team?",
                 )
@@ -184,7 +190,9 @@ def assess_culture_health(
             health.disengaged.append(aid)
             hotspots.append(
                 CultureHotspot(
-                    "disengagement", aid, _PEN_PER_DISENGAGED,
+                    "disengagement",
+                    aid,
+                    _PEN_PER_DISENGAGED,
                     f"{who(aid)} looks checked out — flat curiosity, confidence "
                     f"and satisfaction. Re-engage before it becomes the norm.",
                 )
@@ -195,7 +203,9 @@ def assess_culture_health(
     if measured and net < 0:
         hotspots.append(
             CultureHotspot(
-                "wellbeing", "", _PEN_WELLBEING * min(1.0, -net),
+                "wellbeing",
+                "",
+                _PEN_WELLBEING * min(1.0, -net),
                 f"Workforce mood is net-negative (satisfaction "
                 f"{health.mean_satisfaction:+.2f} vs frustration "
                 f"{health.mean_frustration:+.2f}) — the company isn't a good "
@@ -216,7 +226,9 @@ def assess_culture_health(
                     health.unheard.append(a.agent_id)
                     hotspots.append(
                         CultureHotspot(
-                            "isolation", a.agent_id, _PEN_PER_UNHEARD,
+                            "isolation",
+                            a.agent_id,
+                            _PEN_PER_UNHEARD,
                             f"{who(a.agent_id)} is barely heard ({v} msgs vs a "
                             f"~{fair:.0f} fair share) — pull them into the "
                             f"conversation.",
@@ -228,7 +240,9 @@ def assess_culture_health(
                 health.monoculture = True
                 hotspots.append(
                     CultureHotspot(
-                        "monoculture", top_id, _PEN_MONOCULTURE * top_share,
+                        "monoculture",
+                        top_id,
+                        _PEN_MONOCULTURE * top_share,
                         f"One voice ({who(top_id)}) carries {top_share * 100:.0f}% "
                         f"of all messages — the org is drifting to a monoculture; "
                         f"widen who gets heard.",

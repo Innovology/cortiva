@@ -91,9 +91,7 @@ class ClaudeCodeAdapter:
                 stdin=asyncio.subprocess.DEVNULL,  # non-interactive: never block on stdin
                 env=env,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self._timeout
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
         except FileNotFoundError:
             return AgentResponse(
                 content="claude CLI not found",
@@ -124,9 +122,7 @@ class ClaudeCodeAdapter:
             try:
                 parsed = json.loads(raw)
                 content = parsed.get("result", raw)
-                metadata = {
-                    k: v for k, v in parsed.items() if k != "result"
-                }
+                metadata = {k: v for k, v in parsed.items() if k != "result"}
             except (json.JSONDecodeError, TypeError):
                 pass
 

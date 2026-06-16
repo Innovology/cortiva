@@ -169,9 +169,7 @@ class TestRenderFrame:
     def test_agent_names_rendered(self):
         win = _mock_window()
         render_frame(win, SAMPLE_DATA)
-        rendered = " ".join(
-            str(call.args[2]) for call in win.addnstr.call_args_list
-        )
+        rendered = " ".join(str(call.args[2]) for call in win.addnstr.call_args_list)
         assert "alice" in rendered
         assert "bob" in rendered
 
