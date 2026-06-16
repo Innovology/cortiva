@@ -10,6 +10,8 @@ Install: pip install openai
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 from typing import Any
@@ -59,6 +61,7 @@ class OpenAICompatibleAdapter:
         base_url: str | None = None,
         max_tokens: int = 4096,
         per_agent_keys: dict[str, str] | None = None,
+        max_concurrency: int = 0,
     ):
         self.model = model
         self.max_tokens = max_tokens
@@ -67,6 +70,15 @@ class OpenAICompatibleAdapter:
         self._per_agent_keys = per_agent_keys or {}
         self._clients: dict[str, Any] = {}
         self._default_client: Any = None
+        # Admission gate: cap concurrent inference so a wake-everyone burst +
+        # the agents' own cognitive loops can't all hit the local model at
+        # once (the OOM/livelock failure mode). 0 = unlimited. The semaphore is
+        # created lazily in the running loop. inflight/queued surface in
+        # perf_snapshot for the contention gauge.
+        self._max_concurrency = int(max_concurrency or 0)
+        self._sem: asyncio.Semaphore | None = None
+        self._inflight = 0
+        self._queued = 0
         # Rolling throughput stats for the model behind this adapter — the
         # "how fast is the local model" signal. EWMA tracks recent speed;
         # totals give a lifetime average. Read via perf_snapshot().
@@ -112,7 +124,39 @@ class OpenAICompatibleAdapter:
             "calls": self._perf_calls,
             "tokens_out_total": self._perf_tokens_out_total,
             "tokens_in_total": self._perf_tokens_in_total,
+            # Admission gate state — how many inferences are running vs waiting
+            # behind the K-at-a-time cap (the contention the gate is absorbing).
+            "max_concurrency": self._max_concurrency,
+            "inflight": self._inflight,
+            "queued": self._queued,
         }
+
+    @contextlib.asynccontextmanager
+    async def _inference_slot(self):
+        """Admit at most ``max_concurrency`` concurrent inferences.
+
+        Bounds the TOTAL in-flight model calls on this node (every agent shares
+        this one adapter), so a wake-everyone burst plus the agents' cognitive
+        loops can't slam the local model into an OOM or a livelock. Excess
+        callers wait here (counted in ``_queued``) until a slot frees. A cap of
+        0 disables the gate entirely (remote APIs that don't need it)."""
+        if self._max_concurrency <= 0:
+            yield
+            return
+        if self._sem is None:
+            # Created here so it binds to the running event loop.
+            self._sem = asyncio.Semaphore(self._max_concurrency)
+        self._queued += 1
+        try:
+            await self._sem.acquire()
+        finally:
+            self._queued -= 1
+        self._inflight += 1
+        try:
+            yield
+        finally:
+            self._inflight -= 1
+            self._sem.release()
 
     def _get_client(self, agent_id: str = "") -> Any:
         """Return a client for the given agent.
@@ -190,7 +234,6 @@ class OpenAICompatibleAdapter:
             create_kwargs["tools"] = tools
             create_kwargs["tool_choice"] = "auto"
 
-        import asyncio
         import time
 
         _start = time.monotonic()
@@ -200,9 +243,15 @@ class OpenAICompatibleAdapter:
         # (status / agent.wake) never got a turn, so wakes hung and HQ 500'd —
         # the "alive but mute" fabric. Offload to a thread so the loop keeps
         # serving IPC and interleaving other work during inference.
-        response = await asyncio.to_thread(
-            lambda: client.chat.completions.create(**create_kwargs)
-        )
+        #
+        # The admission gate bounds how many of those threads run at once, so
+        # the local model is never asked to batch more sequences than its RAM
+        # can hold (the OOM/livelock fix). Waiting happens OUTSIDE the thread,
+        # so the loop stays responsive while an agent queues for a slot.
+        async with self._inference_slot():
+            response = await asyncio.to_thread(
+                lambda: client.chat.completions.create(**create_kwargs)
+            )
         latency_ms = (time.monotonic() - _start) * 1000.0
 
         choice = response.choices[0]

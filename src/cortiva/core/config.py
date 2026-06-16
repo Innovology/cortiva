@@ -184,6 +184,13 @@ def _build_consciousness_adapter(con_section: dict[str, Any]) -> Any:
         con_kwargs["base_url"] = con_section["base_url"]
     if "max_tokens" in con_section:
         con_kwargs["max_tokens"] = con_section["max_tokens"]
+    # Local-model admission gate — cap concurrent inferences so a wake-everyone
+    # burst plus the agents' cognitive loops can't OOM/livelock the local model.
+    # Only the openai-compatible (local MLX) path needs it; remote APIs don't.
+    # Defaults to a safe 3; tune per node via consciousness.max_concurrency
+    # (a 32GB box wants ~2, a 64GB box ~4+).
+    if con_name in ("openai", "openai-compatible"):
+        con_kwargs["max_concurrency"] = int(con_section.get("max_concurrency", 3))
     return con_cls(**con_kwargs)
 
 
