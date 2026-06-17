@@ -191,6 +191,15 @@ def _build_consciousness_adapter(con_section: dict[str, Any]) -> Any:
     # (a 32GB box wants ~2, a 64GB box ~4+).
     if con_name in ("openai", "openai-compatible"):
         con_kwargs["max_concurrency"] = int(con_section.get("max_concurrency", 3))
+        # Per-request deadline + circuit breaker for a WEDGED local model — a
+        # hung generation can't pin a gate slot forever, and after a run of
+        # failures agents fail fast rather than all blocking on a dead server.
+        if "request_timeout" in con_section:
+            con_kwargs["request_timeout"] = float(con_section["request_timeout"])
+        if "breaker_threshold" in con_section:
+            con_kwargs["breaker_threshold"] = int(con_section["breaker_threshold"])
+        if "breaker_cooldown" in con_section:
+            con_kwargs["breaker_cooldown"] = float(con_section["breaker_cooldown"])
     return con_cls(**con_kwargs)
 
 

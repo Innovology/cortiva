@@ -433,3 +433,81 @@ class TestOpenAICompatAdapterExtended:
 
         assert resp.metadata["agent_id"] == "agent-1"
         assert resp.metadata["priority"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker — a WEDGED local model must not pin gate slots forever, and
+# after a run of timeouts agents fail fast instead of all blocking on a dead
+# server (the "dead model = company idle" incident).
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAICompatCircuitBreaker:
+    def _adapter(self, **kw):
+        from cortiva.adapters.consciousness.openai_compat import OpenAICompatibleAdapter
+
+        return OpenAICompatibleAdapter(api_key="sk-test", **kw)
+
+    def _ok_response(self):
+        usage = MagicMock(); usage.prompt_tokens = 5; usage.completion_tokens = 3
+        msg = MagicMock(); msg.content = "ok"; msg.tool_calls = None
+        ch = MagicMock(); ch.message = msg
+        resp = MagicMock(); resp.choices = [ch]; resp.usage = usage
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_breaker_trips_after_threshold_then_fails_fast(self) -> None:
+        from cortiva.adapters.consciousness.openai_compat import ModelUnavailableError
+
+        adapter = self._adapter(breaker_threshold=3, breaker_cooldown=999.0)
+        client = MagicMock()
+        client.chat.completions.create.side_effect = TimeoutError("hung")
+        adapter._default_client = client
+
+        for _ in range(3):  # three health failures trip the breaker
+            with pytest.raises(TimeoutError):
+                await adapter.think("a", "c", "p")
+        assert adapter.perf_snapshot()["breaker_open"] is True
+
+        # Next call must fail FAST without touching the client.
+        client.chat.completions.create.reset_mock()
+        with pytest.raises(ModelUnavailableError):
+            await adapter.think("a", "c", "p")
+        client.chat.completions.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_breaker_resets_on_success(self) -> None:
+        adapter = self._adapter(breaker_threshold=5)
+        client = MagicMock()
+        client.chat.completions.create.side_effect = TimeoutError("x")
+        adapter._default_client = client
+        with pytest.raises(TimeoutError):
+            await adapter.think("a", "c", "p")
+        assert adapter._breaker_fails == 1
+
+        client.chat.completions.create.side_effect = None
+        client.chat.completions.create.return_value = self._ok_response()
+        await adapter.think("a", "c", "p")
+        assert adapter._breaker_fails == 0
+        assert adapter.perf_snapshot()["breaker_open"] is False
+
+    @pytest.mark.asyncio
+    async def test_non_health_error_does_not_trip_breaker(self) -> None:
+        # A 4xx / validation error is a request problem, not a dead server.
+        adapter = self._adapter(breaker_threshold=1)
+        client = MagicMock()
+        client.chat.completions.create.side_effect = ValueError("bad request")
+        adapter._default_client = client
+        with pytest.raises(ValueError):
+            await adapter.think("a", "c", "p")
+        assert adapter._breaker_fails == 0
+        assert adapter.perf_snapshot()["breaker_open"] is False
+
+    @pytest.mark.asyncio
+    async def test_per_request_timeout_is_passed_to_client(self) -> None:
+        adapter = self._adapter(request_timeout=42.0)
+        client = MagicMock()
+        client.chat.completions.create.return_value = self._ok_response()
+        adapter._default_client = client
+        await adapter.think("a", "c", "p")
+        assert client.chat.completions.create.call_args.kwargs["timeout"] == 42.0

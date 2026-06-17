@@ -13,10 +13,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
+import time
 from typing import Any
 
 from cortiva.adapters.protocols import ConsciousResponse, Priority
+
+logger = logging.getLogger(__name__)
+
+
+class ModelUnavailableError(RuntimeError):
+    """Raised fast (without calling the model) while the local-model circuit
+    breaker is open — a run of timeouts / connection failures tripped it, so
+    agents back off instead of all piling long waits onto a wedged server."""
 
 REFLECTION_SUFFIX_INSTRUCTIONS = """\
 
@@ -62,6 +72,9 @@ class OpenAICompatibleAdapter:
         max_tokens: int = 4096,
         per_agent_keys: dict[str, str] | None = None,
         max_concurrency: int = 0,
+        request_timeout: float = 0.0,
+        breaker_threshold: int = 0,
+        breaker_cooldown: float = 0.0,
     ):
         self.model = model
         self.max_tokens = max_tokens
@@ -79,6 +92,22 @@ class OpenAICompatibleAdapter:
         self._sem: asyncio.Semaphore | None = None
         self._inflight = 0
         self._queued = 0
+        # Per-request deadline + circuit breaker. A local model can WEDGE: keep
+        # its socket open and answer /v1/models while every real generation
+        # hangs forever (the "dead model = company idle" incident). Without a
+        # per-call deadline a hung request pins a gate slot indefinitely (the
+        # openai client's own default timeout is ~600s), so every agent blocks
+        # and the node falls to ~0 output. We bound each call; after a run of
+        # timeouts/connection failures we OPEN a breaker so agents fail fast
+        # instead of all piling long waits onto a known-dead server — which also
+        # lets the node's model-watchdog restart it cleanly. The timeout is
+        # generous (a 35B at ~40 tok/s can legitimately take >2min on a long
+        # generation) so real slow work is never mistaken for a wedge.
+        self._request_timeout_s = float(request_timeout or 0) or 180.0
+        self._breaker_threshold = int(breaker_threshold or 0) or 4
+        self._breaker_cooldown_s = float(breaker_cooldown or 0) or 45.0
+        self._breaker_fails = 0
+        self._breaker_open_until = 0.0
         # Rolling throughput stats for the model behind this adapter — the
         # "how fast is the local model" signal. EWMA tracks recent speed;
         # totals give a lifetime average. Read via perf_snapshot().
@@ -129,6 +158,12 @@ class OpenAICompatibleAdapter:
             "max_concurrency": self._max_concurrency,
             "inflight": self._inflight,
             "queued": self._queued,
+            # Circuit-breaker state — surfaces a wedged local model: open means
+            # we're failing fast because recent generations timed out.
+            "breaker_open": bool(
+                self._breaker_open_until and time.monotonic() < self._breaker_open_until
+            ),
+            "breaker_fails": self._breaker_fails,
         }
 
     @contextlib.asynccontextmanager
@@ -234,7 +269,18 @@ class OpenAICompatibleAdapter:
             create_kwargs["tools"] = tools
             create_kwargs["tool_choice"] = "auto"
 
-        import time
+        # Circuit breaker: if a recent run of calls timed out / failed to
+        # connect, the local model is almost certainly wedged — fail fast
+        # instead of joining 16 other agents each waiting out the full deadline
+        # against a dead server. The node's model-watchdog restarts it; this
+        # just stops us hammering it meanwhile. Resets on the first success.
+        _now = time.monotonic()
+        if self._breaker_open_until and _now < self._breaker_open_until:
+            raise ModelUnavailableError(
+                "local model circuit breaker open "
+                f"({self._breaker_open_until - _now:.0f}s remaining) — "
+                f"{self._breaker_fails} consecutive inference failures"
+            )
 
         _start = time.monotonic()
         # The OpenAI client is SYNCHRONOUS — calling it directly here blocked
@@ -248,10 +294,47 @@ class OpenAICompatibleAdapter:
         # the local model is never asked to batch more sequences than its RAM
         # can hold (the OOM/livelock fix). Waiting happens OUTSIDE the thread,
         # so the loop stays responsive while an agent queues for a slot.
-        async with self._inference_slot():
-            response = await asyncio.to_thread(
-                lambda: client.chat.completions.create(**create_kwargs)
-            )
+        #
+        # The per-request ``timeout`` bounds the HTTP call itself so a wedged
+        # server can't pin this gate slot forever; the outer wait_for is a
+        # belt-and-braces backstop (a cancelled wait_for can't kill the thread,
+        # but the client timeout makes the thread return on its own).
+        try:
+            async with self._inference_slot():
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        lambda: client.chat.completions.create(
+                            timeout=self._request_timeout_s, **create_kwargs
+                        )
+                    ),
+                    timeout=self._request_timeout_s + 15.0,
+                )
+        except Exception as exc:
+            # Count only model-HEALTH failures (timeout / connection) toward the
+            # breaker — a 4xx/validation error is a request problem, not a dead
+            # server, and must not trip it. Name-based check avoids a hard
+            # dependency on openai's exception classes.
+            _n = type(exc).__name__
+            if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or any(
+                k in _n for k in ("Timeout", "APIConnection", "Connection")
+            ):
+                self._breaker_fails += 1
+                if (
+                    self._breaker_fails >= self._breaker_threshold
+                    and not (self._breaker_open_until and time.monotonic() < self._breaker_open_until)
+                ):
+                    self._breaker_open_until = time.monotonic() + self._breaker_cooldown_s
+                    logger.error(
+                        "Local model circuit breaker OPEN after %d consecutive "
+                        "inference failures (%s) — backing off %.0fs; the node "
+                        "model-watchdog should restart the server.",
+                        self._breaker_fails, _n, self._breaker_cooldown_s,
+                    )
+            raise
+        # Success → the model is answering; clear any failure state.
+        if self._breaker_fails or self._breaker_open_until:
+            self._breaker_fails = 0
+            self._breaker_open_until = 0.0
         latency_ms = (time.monotonic() - _start) * 1000.0
 
         choice = response.choices[0]
