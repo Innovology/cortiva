@@ -60,8 +60,8 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
-    "ruff>=0.8",
-    "mypy>=1.13",
+    "ruff>=0.8,<0.10",
+    "mypy>=1.13,<2.0",
     "mkdocs-material>=9.0",
 ]
 
@@ -104,10 +104,13 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+# E501: line-length debt predates this project's ruff CI gate — tracked separately
+ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
+ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["cortiva"]

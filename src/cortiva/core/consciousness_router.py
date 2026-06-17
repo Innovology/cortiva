@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cortiva.adapters.protocols import ConsciousResponse, ConsciousnessAdapter, Priority
+from cortiva.adapters.protocols import ConsciousnessAdapter, ConsciousResponse, Priority
 
 
 class ConsciousnessRouter:

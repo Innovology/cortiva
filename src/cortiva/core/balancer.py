@@ -97,8 +97,7 @@ class NodeLoad:
         if not self.budget_status:
             return 0.0
         exhausted = sum(
-            1 for s in self.budget_status.values()
-            if (hasattr(s, "exhausted") and s.exhausted)
+            1 for s in self.budget_status.values() if (hasattr(s, "exhausted") and s.exhausted)
         )
         return exhausted / len(self.budget_status)
 
@@ -185,7 +184,8 @@ class ClusterMetrics:
 
         all_ids = list(agents.keys())
         active_ids = [
-            aid for aid, a in agents.items()
+            aid
+            for aid, a in agents.items()
             if a.state not in (AgentState.SLEEPING, AgentState.ONBOARDING)
         ]
 
@@ -229,24 +229,28 @@ class ClusterMetrics:
 
         # RAM pressure
         if node.ram_usage_ratio > self.RAM_PRESSURE_THRESHOLD:
-            moves.append(ProposedMove(
-                agent_id="*",
-                source_node=node.node_id,
-                target_node="<new-node-needed>",
-                reason=f"RAM usage at {node.ram_usage_ratio:.0%}",
-                priority_score=min(1.0, node.ram_usage_ratio),
-            ))
+            moves.append(
+                ProposedMove(
+                    agent_id="*",
+                    source_node=node.node_id,
+                    target_node="<new-node-needed>",
+                    reason=f"RAM usage at {node.ram_usage_ratio:.0%}",
+                    priority_score=min(1.0, node.ram_usage_ratio),
+                )
+            )
 
         # Budget pressure — flag individually exhausted agents
         for agent_id, status in node.budget_status.items():
             if hasattr(status, "exhausted") and status.exhausted:
-                moves.append(ProposedMove(
-                    agent_id=agent_id if isinstance(agent_id, str) else str(agent_id),
-                    source_node=node.node_id,
-                    target_node="<new-node-needed>",
-                    reason="Budget exhausted",
-                    priority_score=0.7,
-                ))
+                moves.append(
+                    ProposedMove(
+                        agent_id=agent_id if isinstance(agent_id, str) else str(agent_id),
+                        source_node=node.node_id,
+                        target_node="<new-node-needed>",
+                        reason="Budget exhausted",
+                        priority_score=0.7,
+                    )
+                )
 
         return moves
 
@@ -284,13 +288,15 @@ class ClusterMetrics:
 
             # Only suggest move if affinity cost is manageable
             if affinity_cost < 0.5:
-                moves.append(ProposedMove(
-                    agent_id=agent_id,
-                    source_node=most_loaded.node_id,
-                    target_node=least_loaded.node_id,
-                    reason="Rebalance load",
-                    priority_score=round(most_loaded_score - least_loaded_score, 3),
-                ))
+                moves.append(
+                    ProposedMove(
+                        agent_id=agent_id,
+                        source_node=most_loaded.node_id,
+                        target_node=least_loaded.node_id,
+                        reason="Rebalance load",
+                        priority_score=round(most_loaded_score - least_loaded_score, 3),
+                    )
+                )
                 break  # one move at a time
 
         return moves

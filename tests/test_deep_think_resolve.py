@@ -18,7 +18,9 @@ def test_resolve_prefers_which(monkeypatch):
 def test_resolve_falls_back_to_known_location(monkeypatch):
     monkeypatch.setattr(w.shutil, "which", lambda b: None)
     monkeypatch.setattr(
-        w.os.path, "exists", lambda p: p == "/opt/homebrew/bin/claude",
+        w.os.path,
+        "exists",
+        lambda p: p == "/opt/homebrew/bin/claude",
     )
     assert w._resolve_claude() == "/opt/homebrew/bin/claude"
 
@@ -32,7 +34,9 @@ def test_resolve_none_when_absent(monkeypatch):
 def test_precondition_passes_with_known_location(monkeypatch):
     monkeypatch.setattr(w.shutil, "which", lambda b: None)
     monkeypatch.setattr(
-        w.os.path, "exists", lambda p: p == "/opt/homebrew/bin/claude",
+        w.os.path,
+        "exists",
+        lambda p: p == "/opt/homebrew/bin/claude",
     )
     w._check_preconditions()  # must not raise
 
@@ -49,7 +53,9 @@ def test_precondition_raises_when_absent(monkeypatch):
 def test_claude_env_puts_brew_on_path(monkeypatch):
     monkeypatch.setattr(w.shutil, "which", lambda b: None)
     monkeypatch.setattr(
-        w.os.path, "exists", lambda p: p == "/opt/homebrew/bin/claude",
+        w.os.path,
+        "exists",
+        lambda p: p == "/opt/homebrew/bin/claude",
     )
     monkeypatch.setattr(
         "cortiva.core.claude_auth.claude_oauth_env",

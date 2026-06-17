@@ -120,7 +120,8 @@ class TestClaudeCodeAdapter:
 
         with patch("asyncio.create_subprocess_exec", side_effect=capture_exec):
             await adapter.invoke(
-                "test", tmp_path,
+                "test",
+                tmp_path,
                 allowed_tools=["Read", "Write"],
                 max_turns=5,
             )
@@ -168,11 +169,13 @@ class TestClaudeCodeAdapter:
             seen_env.update(kwargs.get("env") or {})
             return mock_proc
 
-        with patch("asyncio.create_subprocess_exec", side_effect=capture_exec), \
-                patch(
-                    "cortiva.core.claude_auth.claude_oauth_token",
-                    return_value="tok-abc",
-                ):
+        with (
+            patch("asyncio.create_subprocess_exec", side_effect=capture_exec),
+            patch(
+                "cortiva.core.claude_auth.claude_oauth_token",
+                return_value="tok-abc",
+            ),
+        ):
             await adapter.invoke("test", tmp_path, env={"PATH": "/usr/bin"})
 
         assert seen_env.get("CLAUDE_CODE_OAUTH_TOKEN") == "tok-abc"
@@ -259,7 +262,8 @@ class TestPermissionTranslation:
 
     @pytest.mark.asyncio
     async def test_unrestricted_policy_skips_permission_gate(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         adapter = ClaudeCodeAdapter()
         captured: dict = {}
@@ -282,7 +286,8 @@ class TestPermissionTranslation:
 
     @pytest.mark.asyncio
     async def test_restricted_policy_uses_allowed_tools(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         adapter = ClaudeCodeAdapter()
         captured: dict = {}
@@ -300,7 +305,9 @@ class TestPermissionTranslation:
 
         with patch("asyncio.create_subprocess_exec", fake_exec):
             await adapter.invoke(
-                "do work", tmp_path, allowed_tools=["Read", "Grep"],
+                "do work",
+                tmp_path,
+                allowed_tools=["Read", "Grep"],
             )
         assert "--dangerously-skip-permissions" not in captured["cmd"]
         assert captured["cmd"].count("--allowedTools") == 2

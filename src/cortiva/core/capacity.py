@@ -43,26 +43,33 @@ def _ram_gb_stdlib() -> tuple[float, float, float]:
             total = int(
                 subprocess.run(
                     ["sysctl", "-n", "hw.memsize"],
-                    capture_output=True, text=True, timeout=3,
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
                 ).stdout.strip()
-            ) / (1024 ** 3)
+            ) / (1024**3)
             vm = subprocess.run(
-                ["vm_stat"], capture_output=True, text=True, timeout=3,
+                ["vm_stat"],
+                capture_output=True,
+                text=True,
+                timeout=3,
             ).stdout
             page = 4096
+
             def _pages(label: str) -> int:
                 m = re.search(rf"{label}:\s+(\d+)", vm)
                 return int(m.group(1)) if m else 0
+
             free = _pages("Pages free") + _pages("Pages inactive") + _pages("Pages purgeable")
-            avail = free * page / (1024 ** 3)
+            avail = free * page / (1024**3)
         else:
             mi: dict[str, str] = {}
             with open("/proc/meminfo") as f:
                 for line in f:
                     k, _, v = line.partition(":")
                     mi[k.strip()] = v.strip()
-            total = int(mi.get("MemTotal", "0").split()[0]) / (1024 ** 2)
-            avail = int(mi.get("MemAvailable", "0").split()[0]) / (1024 ** 2)
+            total = int(mi.get("MemTotal", "0").split()[0]) / (1024**2)
+            avail = int(mi.get("MemAvailable", "0").split()[0]) / (1024**2)
     except Exception:
         return 0.0, 0.0, 0.0
     percent = round((1 - avail / total) * 100, 1) if total > 0 else 0.0
@@ -136,9 +143,7 @@ class HeartbeatTiming:
         return {
             "total_s": round(self.total_time, 2),
             "idle_s": round(self.idle_time, 2),
-            "agents": {
-                aid: round(t, 2) for aid, t in self.agent_timings.items()
-            },
+            "agents": {aid: round(t, 2) for aid, t in self.agent_timings.items()},
         }
 
 
@@ -183,7 +188,10 @@ class CapacityTracker:
             )
 
     def task_finished(
-        self, agent_id: str, task_id: str, consciousness_wait: float = 0.0,
+        self,
+        agent_id: str,
+        task_id: str,
+        consciousness_wait: float = 0.0,
     ) -> TaskTiming | None:
         """Record task completion and return the timing data."""
         key = f"{agent_id}:{task_id}"
@@ -255,9 +263,10 @@ class CapacityTracker:
         ram_percent = 0.0
         try:
             import psutil
+
             mem = psutil.virtual_memory()
-            ram_total_gb = mem.total / (1024 ** 3)
-            ram_available_gb = mem.available / (1024 ** 3)
+            ram_total_gb = mem.total / (1024**3)
+            ram_available_gb = mem.available / (1024**3)
             ram_percent = mem.percent
         except Exception:
             pass
@@ -267,7 +276,7 @@ class CapacityTracker:
         # Disk
         try:
             usage = shutil.disk_usage(".")
-            disk_free_gb = usage.free / (1024 ** 3)
+            disk_free_gb = usage.free / (1024**3)
         except OSError:
             disk_free_gb = 0.0
 
@@ -279,9 +288,9 @@ class CapacityTracker:
         if recent_tasks:
             avg_queue_wait = sum(t.queue_wait for t in recent_tasks) / len(recent_tasks)
             avg_execution = sum(t.execution_time for t in recent_tasks) / len(recent_tasks)
-            avg_consciousness_wait = sum(
-                t.consciousness_wait for t in recent_tasks
-            ) / len(recent_tasks)
+            avg_consciousness_wait = sum(t.consciousness_wait for t in recent_tasks) / len(
+                recent_tasks
+            )
 
         # Heartbeat contention
         recent_hb = self._heartbeat_timings[-10:] if self._heartbeat_timings else []
@@ -298,8 +307,7 @@ class CapacityTracker:
                 agent_hb_totals[aid] = agent_hb_totals.get(aid, 0.0) + t
         total_agent_time = sum(agent_hb_totals.values()) or 1.0
         agent_share = {
-            aid: round(t / total_agent_time * 100, 1)
-            for aid, t in agent_hb_totals.items()
+            aid: round(t / total_agent_time * 100, 1) for aid, t in agent_hb_totals.items()
         }
 
         # Estimate max concurrent agents.
@@ -312,7 +320,9 @@ class CapacityTracker:
         # Without data: conservative estimate based on RAM (each agent
         # + terminal subprocess uses ~200-500MB).
         max_concurrent, max_basis = self._estimate_max_concurrent(
-            heartbeat_interval, avg_heartbeat, active_agents,
+            heartbeat_interval,
+            avg_heartbeat,
+            active_agents,
             ram_available_gb,
         )
 
@@ -336,9 +346,9 @@ class CapacityTracker:
                 "avg_consciousness_wait_s": round(avg_consciousness_wait, 2),
                 "avg_heartbeat_s": round(avg_heartbeat, 2),
                 "avg_heartbeat_idle_s": round(avg_idle, 2),
-                "heartbeat_utilisation_pct": round(
-                    (1.0 - avg_idle / avg_heartbeat) * 100, 1
-                ) if avg_heartbeat > 0 else 0.0,
+                "heartbeat_utilisation_pct": round((1.0 - avg_idle / avg_heartbeat) * 100, 1)
+                if avg_heartbeat > 0
+                else 0.0,
             },
             "agent_share_pct": agent_share,
             "recent_tasks": [t.to_dict() for t in recent_tasks[-5:]],
@@ -362,7 +372,10 @@ class CapacityTracker:
             if per_agent > 0:
                 measured = int(heartbeat_interval / per_agent)
                 measured = max(measured, 1)
-                return (measured, f"measured: {per_agent:.1f}s/agent, {heartbeat_interval:.0f}s interval")
+                return (
+                    measured,
+                    f"measured: {per_agent:.1f}s/agent, {heartbeat_interval:.0f}s interval",
+                )
 
         # Method 2: RAM-based — each agent with a terminal subprocess
         # uses roughly 300MB.  This is conservative.

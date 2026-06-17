@@ -264,8 +264,7 @@ class Timesheet:
         path = self._history_path(date_str)
         path.parent.mkdir(parents=True, exist_ok=True)
         day_entries = [
-            e for e in self._today_entries
-            if e.wake_time.strftime("%Y-%m-%d") == date_str
+            e for e in self._today_entries if e.wake_time.strftime("%Y-%m-%d") == date_str
         ]
         data = {
             "date": date_str,

@@ -171,8 +171,7 @@ class OpenAICompatibleAdapter:
                     from openai import OpenAI
                 except ImportError:
                     raise ImportError(
-                        "openai is not installed. "
-                        "Install it with: pip install openai"
+                        "openai is not installed. Install it with: pip install openai"
                     )
                 kwargs: dict[str, Any] = {"api_key": agent_key}
                 if self._base_url:
@@ -184,10 +183,7 @@ class OpenAICompatibleAdapter:
             try:
                 from openai import OpenAI
             except ImportError:
-                raise ImportError(
-                    "openai is not installed. "
-                    "Install it with: pip install openai"
-                )
+                raise ImportError("openai is not installed. Install it with: pip install openai")
             kwargs2: dict[str, Any] = {"api_key": self._default_key}
             if self._base_url:
                 kwargs2["base_url"] = self._base_url

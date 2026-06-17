@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -142,7 +142,10 @@ class DelegationManager:
         self._persist()
         logger.info(
             "Assignment %s created: %s → %s: %s",
-            assignment.id, from_agent, to_agent, description[:60],
+            assignment.id,
+            from_agent,
+            to_agent,
+            description[:60],
         )
         return assignment
 
@@ -169,7 +172,9 @@ class DelegationManager:
         return None
 
     def complete_assignment(
-        self, assignment_id: str, outcome: str,
+        self,
+        assignment_id: str,
+        outcome: str,
     ) -> WorkAssignment | None:
         """Mark an assignment as completed."""
         assignment = self.get_assignment(assignment_id)
@@ -183,7 +188,9 @@ class DelegationManager:
         return assignment
 
     def reject_assignment(
-        self, assignment_id: str, reason: str,
+        self,
+        assignment_id: str,
+        reason: str,
     ) -> WorkAssignment | None:
         """Mark an assignment as rejected."""
         assignment = self.get_assignment(assignment_id)
@@ -210,10 +217,12 @@ class DelegationManager:
         Used for injection into the agent's planning context.
         """
         pending = self.get_assignments_for(
-            agent_id, status=AssignmentStatus.PENDING,
+            agent_id,
+            status=AssignmentStatus.PENDING,
         )
         in_progress = self.get_assignments_for(
-            agent_id, status=AssignmentStatus.IN_PROGRESS,
+            agent_id,
+            status=AssignmentStatus.IN_PROGRESS,
         )
         items = pending + in_progress
         if not items:
@@ -226,14 +235,9 @@ class DelegationManager:
         )
         for a in sorted(items, key=lambda x: x.priority, reverse=True):
             priority_label = (
-                "**[CRITICAL]** " if a.priority >= 2
-                else "**[HIGH]** " if a.priority >= 1
-                else ""
+                "**[CRITICAL]** " if a.priority >= 2 else "**[HIGH]** " if a.priority >= 1 else ""
             )
             deadline_str = f" (deadline: {a.deadline})" if a.deadline else ""
-            lines.append(
-                f"- [ ] {priority_label}{a.description}{deadline_str} "
-                f"[assignment:{a.id}]"
-            )
+            lines.append(f"- [ ] {priority_label}{a.description}{deadline_str} [assignment:{a.id}]")
 
         return "\n".join(lines)

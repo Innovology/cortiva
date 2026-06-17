@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -205,7 +204,8 @@ class ResourceGuard:
             state.violations.append(f"timeout:{limits.cycle_timeout_s}s")
             logger.warning(
                 "Agent %s cycle timed out after %.0fs",
-                agent_id, limits.cycle_timeout_s,
+                agent_id,
+                limits.cycle_timeout_s,
             )
             return None
 
@@ -275,11 +275,7 @@ class ResourceGuard:
         if not agent_dir.exists():
             return 0.0
         try:
-            total = sum(
-                f.stat().st_size
-                for f in agent_dir.rglob("*")
-                if f.is_file()
-            )
+            total = sum(f.stat().st_size for f in agent_dir.rglob("*") if f.is_file())
             return total / (1024 * 1024)
         except OSError:
             return 0.0
@@ -304,7 +300,9 @@ class ResourceGuard:
             },
             "usage": {
                 "disk_mb": round(disk_mb, 1),
-                "disk_pct": round(disk_mb / limits.max_disk_mb * 100, 1) if limits.max_disk_mb > 0 else 0,
+                "disk_pct": round(disk_mb / limits.max_disk_mb * 100, 1)
+                if limits.max_disk_mb > 0
+                else 0,
                 "cycles_this_heartbeat": state.cycles_this_heartbeat,
                 "consciousness_calls_this_cycle": state.consciousness_calls_this_cycle,
             },

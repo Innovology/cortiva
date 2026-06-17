@@ -14,6 +14,7 @@ from cortiva.core.fabric import Fabric, _parse_plan
 # Agent tests
 # ---------------------------------------------------------------------------
 
+
 class TestAgent:
     def test_create_agent(self, tmp_path: Path) -> None:
         agent = Agent(id="test-01", directory=tmp_path / "test-01")
@@ -156,6 +157,7 @@ class TestAgentTodayOutbox:
 class TestRuntimePersistence:
     def test_persist_runtime_state(self, tmp_path: Path) -> None:
         import json
+
         agent = Agent(id="test-01", directory=tmp_path / "test-01")
         agent.ensure_workspace()
         agent.task_queue = TaskQueue(
@@ -185,6 +187,7 @@ class TestRuntimePersistence:
 
     def test_persist_familiarity(self, tmp_path: Path) -> None:
         import json
+
         agent = Agent(id="test-01", directory=tmp_path / "test-01")
         signals = [
             {"task": "Review PR", "strength": "familiar", "valence": "positive", "match_count": 3},
@@ -210,6 +213,7 @@ class TestRuntimePersistence:
 # ---------------------------------------------------------------------------
 # Memory adapter tests
 # ---------------------------------------------------------------------------
+
 
 class TestInMemoryAdapter:
     @pytest.mark.asyncio
@@ -251,6 +255,7 @@ class TestInMemoryAdapter:
 # ---------------------------------------------------------------------------
 # Fabric tests
 # ---------------------------------------------------------------------------
+
 
 class TestFabric:
     def _make_fabric(self, tmp_path: Path) -> Fabric:
@@ -324,6 +329,7 @@ class TestFabric:
 # Plan parsing tests
 # ---------------------------------------------------------------------------
 
+
 class TestPlanParsing:
     def test_checkbox_format(self) -> None:
         plan = (
@@ -356,11 +362,7 @@ class TestPlanParsing:
         assert tq.tasks[2].priority == 0
 
     def test_numbered_lists(self) -> None:
-        plan = (
-            "1. First task\n"
-            "2. Second task\n"
-            "3. Third task\n"
-        )
+        plan = "1. First task\n2. Second task\n3. Third task\n"
         tq = _parse_plan(plan)
         assert len(tq.tasks) == 3
         assert tq.tasks[0].description == "First task"
@@ -392,22 +394,27 @@ class TestPlanParsing:
 # TaskQueue tests
 # ---------------------------------------------------------------------------
 
+
 class TestTaskQueue:
     def test_next_pending_priority_ordering(self) -> None:
-        tq = TaskQueue(tasks=[
-            Task(id="t1", description="Low", priority=0),
-            Task(id="t2", description="Critical", priority=2),
-            Task(id="t3", description="High", priority=1),
-        ])
+        tq = TaskQueue(
+            tasks=[
+                Task(id="t1", description="Low", priority=0),
+                Task(id="t2", description="Critical", priority=2),
+                Task(id="t3", description="High", priority=1),
+            ]
+        )
         nxt = tq.next_pending()
         assert nxt is not None
         assert nxt.id == "t2"  # highest priority first
 
     def test_all_done(self) -> None:
-        tq = TaskQueue(tasks=[
-            Task(id="t1", description="A", status="done"),
-            Task(id="t2", description="B", status="skipped"),
-        ])
+        tq = TaskQueue(
+            tasks=[
+                Task(id="t1", description="A", status="done"),
+                Task(id="t2", description="B", status="skipped"),
+            ]
+        )
         assert tq.all_done() is True
 
         tq.tasks.append(Task(id="t3", description="C", status="pending"))
@@ -433,6 +440,7 @@ class TestTaskQueue:
 # ---------------------------------------------------------------------------
 # Subtasks + done-gating (#267): a parent isn't done until its leaves are.
 # ---------------------------------------------------------------------------
+
 
 class TestSubtasksAndDoneGating:
     def test_indented_bullets_become_subtasks(self) -> None:
@@ -467,21 +475,32 @@ class TestSubtasksAndDoneGating:
         assert nxt.description == "Standalone leaf"
 
     def test_next_pending_never_returns_a_parent(self) -> None:
-        tq = TaskQueue(tasks=[
-            Task(id="p", description="Parent", priority=2, subtasks=[
-                Task(id="s1", description="leaf", priority=0),
-            ]),
-        ])
+        tq = TaskQueue(
+            tasks=[
+                Task(
+                    id="p",
+                    description="Parent",
+                    priority=2,
+                    subtasks=[
+                        Task(id="s1", description="leaf", priority=0),
+                    ],
+                ),
+            ]
+        )
         nxt = tq.next_pending()
         assert nxt is not None
         assert nxt.id == "s1"  # the parent (priority 2) is never worked directly
 
     def test_complete_parent_with_open_subtasks_only_acknowledges(self) -> None:
         agent = Agent(id="a1", directory=Path("/tmp/a1"))
-        parent = Task(id="p", description="Directive", subtasks=[
-            Task(id="s1", description="act", status="pending"),
-            Task(id="s2", description="reply", status="pending"),
-        ])
+        parent = Task(
+            id="p",
+            description="Directive",
+            subtasks=[
+                Task(id="s1", description="act", status="pending"),
+                Task(id="s2", description="reply", status="pending"),
+            ],
+        )
         agent.task_queue = TaskQueue(tasks=[parent])
         agent.complete_task(parent, "read it")
         # Marking intent as completion is downgraded to acknowledged, NOT done.
@@ -499,10 +518,15 @@ class TestSubtasksAndDoneGating:
         assert parent.is_done() is True
 
     def test_all_done_respects_open_subtasks(self) -> None:
-        parent = Task(id="p", description="Directive", status="done", subtasks=[
-            Task(id="s1", description="act", status="done"),
-            Task(id="s2", description="reply", status="pending"),
-        ])
+        parent = Task(
+            id="p",
+            description="Directive",
+            status="done",
+            subtasks=[
+                Task(id="s1", description="act", status="done"),
+                Task(id="s2", description="reply", status="pending"),
+            ],
+        )
         tq = TaskQueue(tasks=[parent])
         # Parent says done, but a leaf is open → the queue is NOT all done.
         assert tq.all_done() is False
@@ -512,11 +536,7 @@ class TestSubtasksAndDoneGating:
     def test_acknowledged_parent_round_trips_through_plan(self) -> None:
         from cortiva.core.fabric import Fabric
 
-        plan = (
-            "- [ ] Directive\n"
-            "  - [ ] act\n"
-            "  - [ ] reply\n"
-        )
+        plan = "- [ ] Directive\n  - [ ] act\n  - [ ] reply\n"
         tq = _parse_plan(plan)
         agent = Agent(id="a1", directory=Path("/tmp/a1"))
         agent.task_queue = tq
@@ -524,7 +544,7 @@ class TestSubtasksAndDoneGating:
         assert tq.tasks[0].status == "acknowledged"
 
         # Render → reparse: subtasks survive the round-trip.
-        fabric = Fabric.__new__(Fabric)
+        fabric = Fabric.__new__(Fabric)  # noqa: F841
         lines: list[str] = []
 
         def _render(task, indent=0):  # type: ignore[no-untyped-def]
@@ -546,9 +566,11 @@ class TestSubtasksAndDoneGating:
 # Done = delivered (#269): a task naming a deliverable isn't done without one.
 # ---------------------------------------------------------------------------
 
+
 class TestDoneMeansDelivered:
     def _fabric(self):  # type: ignore[no-untyped-def]
         from cortiva.core.fabric import Fabric
+
         return Fabric.__new__(Fabric)
 
     def test_non_deliverable_task_is_delivered_by_execution(self) -> None:
@@ -586,6 +608,7 @@ class TestDoneMeansDelivered:
 # ---------------------------------------------------------------------------
 # Cycle tests
 # ---------------------------------------------------------------------------
+
 
 class TestCycle:
     def _make_fabric(self, tmp_path: Path, consciousness=None, budget: int = 50) -> Fabric:
@@ -654,8 +677,10 @@ class TestCycle:
         # Manually fill exception pile to trigger replan
         for i in range(3):
             exc_task = Task(
-                id=f"exc-{i}", description=f"Failed task {i}",
-                status="exception", error="test error",
+                id=f"exc-{i}",
+                description=f"Failed task {i}",
+                status="exception",
+                error="test error",
             )
             agent.task_queue.exceptions.append(exc_task)
 
@@ -667,6 +692,7 @@ class TestCycle:
 # ---------------------------------------------------------------------------
 # Plan vs Reality tests
 # ---------------------------------------------------------------------------
+
 
 class TestPlanVsReality:
     @pytest.mark.asyncio
@@ -693,6 +719,7 @@ class TestPlanVsReality:
 # ---------------------------------------------------------------------------
 # Full cycle tests
 # ---------------------------------------------------------------------------
+
 
 class TestFullCycle:
     @pytest.mark.asyncio
@@ -738,6 +765,7 @@ class TestFullCycle:
 # ---------------------------------------------------------------------------
 # Mock adapters for testing
 # ---------------------------------------------------------------------------
+
 
 class MockConsciousness:
     """Mock consciousness adapter that returns canned responses."""

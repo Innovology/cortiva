@@ -135,23 +135,19 @@ class OrgModel:
         if dept:
             lines.append(f"Department: {dept.name}")
             if dept.lead == agent_id:
-                lines.append(f"Role: Department lead")
+                lines.append("Role: Department lead")
             lines.append(f"Team: {', '.join(dept.members)}")
 
         manager = self.manager_of(agent_id)
         if manager:
             lines.append(f"Manager: {manager}")
-            lines.append(
-                "Delegated tasks from your manager take priority "
-                "over self-planned tasks."
-            )
+            lines.append("Delegated tasks from your manager take priority over self-planned tasks.")
 
         subs = self.subordinates_of(agent_id)
         if subs:
             lines.append(f"Direct reports: {', '.join(subs)}")
             lines.append(
-                "You may delegate work to your reports via the "
-                "delegate field in your reflection."
+                "You may delegate work to your reports via the delegate field in your reflection."
             )
             lines.append(
                 "When it genuinely matters — a crisis, a call to arms, or when "
@@ -177,9 +173,7 @@ class OrgModel:
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
-            "departments": {
-                name: dept.to_dict() for name, dept in self.departments.items()
-            },
+            "departments": {name: dept.to_dict() for name, dept in self.departments.items()},
             "reporting": dict(self.reporting),
         }
 

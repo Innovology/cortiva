@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from cortiva.core.org import Department, OrgModel, RoleDefinition, parse_org_config
-
+from cortiva.core.org import OrgModel, parse_org_config
 
 SAMPLE_CONFIG = {
     "name": "Cortiva Bootstrap",

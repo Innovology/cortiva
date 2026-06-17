@@ -16,9 +16,7 @@ from cortiva.core.hiring import (
 
 def test_85_percent_female_over_a_large_sample():
     mgr = HiringManager(random.Random(42))
-    genders = Counter(
-        mgr.generate(role="Developer").gender for _ in range(2000)
-    )
+    genders = Counter(mgr.generate(role="Developer").gender for _ in range(2000))
     frac_female = genders["female"] / 2000
     # 0.85 target; allow sampling slack
     assert 0.82 <= frac_female <= 0.88, genders
@@ -52,8 +50,7 @@ def test_disposition_weights_clamped_sane():
 
 def test_identity_files_render_persona():
     mgr = HiringManager(random.Random(9))
-    p = mgr.generate(role="Developer", department="engineering",
-                     justification="dev capacity gap")
+    p = mgr.generate(role="Developer", department="engineering", justification="dev capacity gap")
     files = mgr.identity_files(p)
     assert set(files) == {"identity", "responsibilities", "skills", "procedures"}
     assert p.name in files["identity"]
@@ -83,10 +80,7 @@ def test_same_role_hires_diverge_on_convictions():
     """The whole point: two developers hired together argue from different
     corners — friction by design, not role-stamped agreement."""
     mgr = HiringManager(random.Random(2))
-    pairs = {
-        tuple(sorted(mgr.generate(role="Developer").conviction_seeds))
-        for _ in range(8)
-    }
+    pairs = {tuple(sorted(mgr.generate(role="Developer").conviction_seeds)) for _ in range(8)}
     # 8 hires should yield several distinct conviction pairings, not one.
     assert len(pairs) >= 5
 

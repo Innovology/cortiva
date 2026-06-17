@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
@@ -197,9 +196,7 @@ class GoalManager:
         for obj in objectives:
             prog = self.progress(obj.id)
             status_icon = self._STATUS_ICONS.get(obj.status, "❓")
-            lines.append(
-                f"### {status_icon} {obj.title} ({obj.quarter}) — {prog:.0%}"
-            )
+            lines.append(f"### {status_icon} {obj.title} ({obj.quarter}) — {prog:.0%}")
             lines.append(f"_{obj.description}_")
             lines.append("")
             for kr in obj.key_results:

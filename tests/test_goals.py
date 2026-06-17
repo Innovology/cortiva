@@ -7,7 +7,6 @@ import pytest
 
 from cortiva.core.goals import GoalManager, KeyResult, Objective
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -185,9 +184,7 @@ class TestGetObjectives:
 class TestProgress:
     def test_no_key_results(self, tmp_path: Path):
         gm = GoalManager(tmp_path / ".goals")
-        obj = gm.create_objective(
-            title="Empty", description="", key_results=[], owner="a"
-        )
+        obj = gm.create_objective(title="Empty", description="", key_results=[], owner="a")
         assert gm.progress(obj.id) == 0.0
 
     def test_partial_progress(self, tmp_path: Path):
@@ -240,9 +237,7 @@ class TestUpdateKeyResult:
     def test_update_value(self, tmp_path: Path):
         gm = GoalManager(tmp_path / ".goals")
         kr = _kr("Ship it", 10.0, id="kr-fixed")
-        obj = gm.create_objective(
-            title="T", description="", key_results=[kr], owner="a"
-        )
+        obj = gm.create_objective(title="T", description="", key_results=[kr], owner="a")
         gm.update_key_result(obj.id, "kr-fixed", 7.0)
         updated = gm.get_objectives()[0].key_results[0]
         assert updated.current_value == 7.0
@@ -251,9 +246,7 @@ class TestUpdateKeyResult:
         data_dir = tmp_path / ".goals"
         gm = GoalManager(data_dir)
         kr = _kr("Ship it", 10.0, id="kr-fixed")
-        obj = gm.create_objective(
-            title="T", description="", key_results=[kr], owner="a"
-        )
+        obj = gm.create_objective(title="T", description="", key_results=[kr], owner="a")
         gm.update_key_result(obj.id, "kr-fixed", 7.0)
         gm2 = GoalManager(data_dir)
         assert gm2.get_objectives()[0].key_results[0].current_value == 7.0
@@ -265,9 +258,7 @@ class TestUpdateKeyResult:
 
     def test_bad_kr_raises(self, tmp_path: Path):
         gm = GoalManager(tmp_path / ".goals")
-        obj = gm.create_objective(
-            title="T", description="", key_results=[_kr("A", 1.0)], owner="a"
-        )
+        obj = gm.create_objective(title="T", description="", key_results=[_kr("A", 1.0)], owner="a")
         with pytest.raises(KeyError, match="KeyResult"):
             gm.update_key_result(obj.id, "nonexistent-kr", 1.0)
 
@@ -288,8 +279,13 @@ class TestAgentGoalsContext:
             title="Improve uptime",
             description="Reach 99.9% SLA",
             key_results=[
-                _kr("Reduce P1 incidents", 5.0, current_value=2.0, unit="incidents",
-                     agent_id="sre-01"),
+                _kr(
+                    "Reduce P1 incidents",
+                    5.0,
+                    current_value=2.0,
+                    unit="incidents",
+                    agent_id="sre-01",
+                ),
             ],
             owner="sre-01",
             quarter="2026-Q1",
@@ -334,8 +330,6 @@ class TestPersistence:
         data_dir = tmp_path / ".goals"
         gm = GoalManager(data_dir)
         for i in range(5):
-            gm.create_objective(
-                title=f"Obj {i}", description="", key_results=[], owner="a"
-            )
+            gm.create_objective(title=f"Obj {i}", description="", key_results=[], owner="a")
         gm2 = GoalManager(data_dir)
         assert len(gm2.get_objectives()) == 5

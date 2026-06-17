@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cortiva.core.encryption import EncryptionConfig, EncryptionVault, _MAGIC, _VERSION
+from cortiva.core.encryption import _MAGIC, EncryptionConfig, EncryptionVault
 
 
 class TestUnsupportedVersion:
@@ -23,7 +23,9 @@ class TestUnsupportedVersion:
 class TestAzureKeyVault:
     @patch("cortiva.core.encryption.EncryptionVault.from_azure_keyvault")
     def test_from_config_azure_keyvault(
-        self, mock_from_azure: MagicMock, tmp_path: Path,
+        self,
+        mock_from_azure: MagicMock,
+        tmp_path: Path,
     ) -> None:
         mock_vault = EncryptionVault(key=b"z" * 32)
         mock_from_azure.return_value = mock_vault
@@ -38,7 +40,8 @@ class TestAzureKeyVault:
 
         assert result is mock_vault
         mock_from_azure.assert_called_once_with(
-            "https://my-vault.vault.azure.net", "my-key",
+            "https://my-vault.vault.azure.net",
+            "my-key",
         )
 
     def test_from_config_azure_missing_url_raises(self, tmp_path: Path) -> None:
@@ -50,16 +53,20 @@ class TestAzureKeyVault:
         with pytest.raises(ValueError, match="key_vault_url required"):
             EncryptionVault.from_config(config, tmp_path)
 
-    @patch.dict("sys.modules", {
-        "azure": MagicMock(),
-        "azure.identity": MagicMock(),
-        "azure.keyvault": MagicMock(),
-        "azure.keyvault.keys": MagicMock(),
-        "azure.keyvault.keys.crypto": MagicMock(),
-    })
+    @patch.dict(
+        "sys.modules",
+        {
+            "azure": MagicMock(),
+            "azure.identity": MagicMock(),
+            "azure.keyvault": MagicMock(),
+            "azure.keyvault.keys": MagicMock(),
+            "azure.keyvault.keys.crypto": MagicMock(),
+        },
+    )
     def test_from_azure_keyvault_mocked(self) -> None:
         """Test the Azure Key Vault path with fully mocked azure modules."""
         import sys
+
         mock_identity = sys.modules["azure.identity"]
         mock_keys = sys.modules["azure.keyvault.keys"]
 
@@ -73,7 +80,8 @@ class TestAzureKeyVault:
         mock_keys.KeyClient.return_value = mock_key_client
 
         vault = EncryptionVault.from_azure_keyvault(
-            "https://vault.azure.net", "my-key",
+            "https://vault.azure.net",
+            "my-key",
         )
         assert isinstance(vault, EncryptionVault)
 
@@ -85,7 +93,8 @@ class TestAzureKeyVault:
         """Without azure libraries installed, should raise ImportError."""
         with pytest.raises(ImportError, match="Azure Key Vault support requires"):
             EncryptionVault.from_azure_keyvault(
-                "https://vault.azure.net", "my-key",
+                "https://vault.azure.net",
+                "my-key",
             )
 
 

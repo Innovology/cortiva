@@ -12,10 +12,10 @@ from cortiva.core.familiarity import (
     _infer_valence,
 )
 
-
 # ---------------------------------------------------------------------------
 # Classification helpers
 # ---------------------------------------------------------------------------
+
 
 class TestClassifyStrength:
     def test_novel(self) -> None:
@@ -39,6 +39,7 @@ class TestInferValence:
 
     def test_positive(self) -> None:
         from cortiva.adapters.protocols import MemoryRecord
+
         memories = [
             MemoryRecord(id="1", content="Task completed success", agent_id="a"),
             MemoryRecord(id="2", content="Great outcome approved", agent_id="a"),
@@ -47,6 +48,7 @@ class TestInferValence:
 
     def test_cautious(self) -> None:
         from cortiva.adapters.protocols import MemoryRecord
+
         memories = [
             MemoryRecord(id="1", content="Task fail error bug", agent_id="a"),
             MemoryRecord(id="2", content="Problem with wrong output", agent_id="a"),
@@ -56,6 +58,7 @@ class TestInferValence:
 
     def test_negative(self) -> None:
         from cortiva.adapters.protocols import MemoryRecord
+
         memories = [
             MemoryRecord(id="1", content="Task fail", agent_id="a"),
         ]
@@ -63,6 +66,7 @@ class TestInferValence:
 
     def test_neutral(self) -> None:
         from cortiva.adapters.protocols import MemoryRecord
+
         memories = [
             MemoryRecord(id="1", content="processed the data", agent_id="a"),
         ]
@@ -89,6 +93,7 @@ class TestBuildText:
 # ---------------------------------------------------------------------------
 # Engine integration
 # ---------------------------------------------------------------------------
+
 
 class TestFamiliarityEngine:
     @pytest.mark.asyncio

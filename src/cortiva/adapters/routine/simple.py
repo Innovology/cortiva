@@ -12,7 +12,6 @@ from typing import Any
 
 from cortiva.adapters.protocols import FamiliaritySignal, MemoryRecord
 
-
 # Words that carry no semantic weight for matching
 _STOP_WORDS = frozenset(
     "a an the is are was were be been being have has had do does did "

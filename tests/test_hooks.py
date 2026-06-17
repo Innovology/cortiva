@@ -33,11 +33,13 @@ class TestHookRoute:
 class TestHookRouter:
     def test_route_match(self) -> None:
         router = HookRouter()
-        router.load({
-            "routes": [
-                {"source": "github", "events": ["push"], "agent": "dev-cortiva"},
-            ],
-        })
+        router.load(
+            {
+                "routes": [
+                    {"source": "github", "events": ["push"], "agent": "dev-cortiva"},
+                ],
+            }
+        )
         event = router.route("github", "push", {"ref": "main"})
         assert event is not None
         assert event.routed_to == "dev-cortiva"
@@ -45,38 +47,44 @@ class TestHookRouter:
 
     def test_route_no_match(self) -> None:
         router = HookRouter()
-        router.load({
-            "routes": [
-                {"source": "github", "events": ["push"], "agent": "dev"},
-            ],
-        })
+        router.load(
+            {
+                "routes": [
+                    {"source": "github", "events": ["push"], "agent": "dev"},
+                ],
+            }
+        )
         event = router.route("slack", "message", {})
         assert event is None
 
     def test_route_priority(self) -> None:
         router = HookRouter()
-        router.load({
-            "routes": [
-                {
-                    "source": "pagerduty",
-                    "events": ["incident.trigger"],
-                    "agent": "dev-cortiva",
-                    "priority": "critical",
-                },
-            ],
-        })
+        router.load(
+            {
+                "routes": [
+                    {
+                        "source": "pagerduty",
+                        "events": ["incident.trigger"],
+                        "agent": "dev-cortiva",
+                        "priority": "critical",
+                    },
+                ],
+            }
+        )
         event = router.route("pagerduty", "incident.trigger", {"title": "prod down"})
         assert event is not None
         assert event.priority == "critical"
 
     def test_catch_all_route(self) -> None:
         router = HookRouter()
-        router.load({
-            "routes": [
-                {"source": "github", "events": ["push"], "agent": "dev"},
-                {"source": "*", "events": ["*"], "agent": "pm"},
-            ],
-        })
+        router.load(
+            {
+                "routes": [
+                    {"source": "github", "events": ["push"], "agent": "dev"},
+                    {"source": "*", "events": ["*"], "agent": "pm"},
+                ],
+            }
+        )
         # Specific match
         event1 = router.route("github", "push", {})
         assert event1 is not None
@@ -89,22 +97,24 @@ class TestHookRouter:
 
     def test_should_wake(self) -> None:
         router = HookRouter()
-        router.load({
-            "routes": [
-                {
-                    "source": "pagerduty",
-                    "events": ["*"],
-                    "agent": "dev",
-                    "wake_if_sleeping": True,
-                },
-                {
-                    "source": "github",
-                    "events": ["push"],
-                    "agent": "dev",
-                    "wake_if_sleeping": False,
-                },
-            ],
-        })
+        router.load(
+            {
+                "routes": [
+                    {
+                        "source": "pagerduty",
+                        "events": ["*"],
+                        "agent": "dev",
+                        "wake_if_sleeping": True,
+                    },
+                    {
+                        "source": "github",
+                        "events": ["push"],
+                        "agent": "dev",
+                        "wake_if_sleeping": False,
+                    },
+                ],
+            }
+        )
         event_pd = router.route("pagerduty", "incident", {})
         assert event_pd is not None
         assert router.should_wake(event_pd) is True
@@ -115,11 +125,13 @@ class TestHookRouter:
 
     def test_pending_for(self) -> None:
         router = HookRouter()
-        router.load({
-            "routes": [
-                {"source": "github", "events": ["*"], "agent": "dev"},
-            ],
-        })
+        router.load(
+            {
+                "routes": [
+                    {"source": "github", "events": ["*"], "agent": "dev"},
+                ],
+            }
+        )
         router.route("github", "push", {"ref": "main"})
         router.route("github", "pull_request", {"action": "opened"})
 
@@ -131,16 +143,18 @@ class TestHookRouter:
 
     def test_pending_context(self) -> None:
         router = HookRouter()
-        router.load({
-            "routes": [
-                {
-                    "source": "pagerduty",
-                    "events": ["*"],
-                    "agent": "dev",
-                    "priority": "critical",
-                },
-            ],
-        })
+        router.load(
+            {
+                "routes": [
+                    {
+                        "source": "pagerduty",
+                        "events": ["*"],
+                        "agent": "dev",
+                        "priority": "critical",
+                    },
+                ],
+            }
+        )
         router.route("pagerduty", "incident.trigger", {"title": "prod down"})
 
         ctx = router.pending_context("dev")

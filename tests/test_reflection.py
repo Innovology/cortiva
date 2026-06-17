@@ -118,10 +118,7 @@ class MockConsciousnessWithReflection:
     async def think(self, agent_id, context, prompt, **kwargs):
         if "plan" in prompt.lower() or "checklist" in prompt.lower():
             return ConsciousResponse(
-                content=(
-                    "# Plan\n\n"
-                    "- [ ] Do the thing\n"
-                ),
+                content=("# Plan\n\n- [ ] Do the thing\n"),
                 tokens_in=100,
                 tokens_out=50,
                 model="mock",
@@ -158,9 +155,7 @@ class MockConsciousnessWithReflection:
 
 
 class TestFabricReflectionIntegration:
-    def _make_fabric(
-        self, tmp_path: Path, suffix_data: dict | None = None
-    ) -> Fabric:
+    def _make_fabric(self, tmp_path: Path, suffix_data: dict | None = None) -> Fabric:
         return Fabric(
             agents_dir=tmp_path / "agents",
             memory=InMemoryAdapter(),
@@ -191,10 +186,7 @@ class TestFabricReflectionIntegration:
         await fabric.cycle("worker-01")
 
         memories = await fabric.memory.recall("worker-01", limit=50)
-        learning_memories = [
-            m for m in memories
-            if "learning" in m.tags and "reflection" in m.tags
-        ]
+        learning_memories = [m for m in memories if "learning" in m.tags and "reflection" in m.tags]
         assert len(learning_memories) == 1
         assert learning_memories[0].content == "Always validate CSV encoding"
         assert learning_memories[0].importance == 8.0
@@ -253,14 +245,13 @@ def test_deep_think_field_parsed():
 def test_deep_think_absent_is_none():
     from cortiva.core.reflection import parse_reflection_suffix
 
-    result = parse_reflection_suffix(
-        'x\n---REFLECTION---\n{"outcome": "ok"}'
-    )
+    result = parse_reflection_suffix('x\n---REFLECTION---\n{"outcome": "ok"}')
     assert result.suffix.deep_think is None
 
 
 def test_wake_field_parsed():
     from cortiva.core.reflection import parse_reflection_suffix
+
     text = (
         "Rallying the team.\n\n---REFLECTION---\n"
         '{"wake": {"agents": ["amara", "yuki"], "reason": "ship blocker"}}'

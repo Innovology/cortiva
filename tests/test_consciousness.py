@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cortiva.adapters.protocols import ConsciousResponse, Priority
+from cortiva.adapters.protocols import ConsciousResponse
 from cortiva.core.consciousness_router import ConsciousnessRouter
-
 
 # ---------------------------------------------------------------------------
 # ConsciousnessRouter
@@ -53,7 +52,9 @@ class TestConsciousnessRouter:
         )
 
         resp = await router.think(
-            "a", "ctx", "prompt",
+            "a",
+            "ctx",
+            "prompt",
             metadata={"call_type": "plan"},
         )
         assert resp.model == "planner"
@@ -67,7 +68,9 @@ class TestConsciousnessRouter:
         )
 
         resp = await router.think(
-            "a", "ctx", "prompt",
+            "a",
+            "ctx",
+            "prompt",
             metadata={"call_type": "unknown"},
         )
         assert resp.model == "default"
@@ -109,15 +112,18 @@ class TestConsciousnessRouter:
 class TestAdapterRegistry:
     def test_openai_in_registry(self) -> None:
         from cortiva.core.config import _CONSCIOUSNESS_ADAPTERS
+
         assert "openai" in _CONSCIOUSNESS_ADAPTERS
         assert "openai-compatible" in _CONSCIOUSNESS_ADAPTERS
 
     def test_google_in_registry(self) -> None:
         from cortiva.core.config import _CONSCIOUSNESS_ADAPTERS
+
         assert "google" in _CONSCIOUSNESS_ADAPTERS
 
     def test_anthropic_still_in_registry(self) -> None:
         from cortiva.core.config import _CONSCIOUSNESS_ADAPTERS
+
         assert "anthropic" in _CONSCIOUSNESS_ADAPTERS
 
 
@@ -129,11 +135,13 @@ class TestAdapterRegistry:
 class TestOpenAICompatibleAdapter:
     def test_init_defaults(self) -> None:
         from cortiva.adapters.consciousness.openai_compat import OpenAICompatibleAdapter
+
         adapter = OpenAICompatibleAdapter()
         assert adapter.model == "gpt-4o"
 
     def test_init_custom(self) -> None:
         from cortiva.adapters.consciousness.openai_compat import OpenAICompatibleAdapter
+
         adapter = OpenAICompatibleAdapter(
             model="gpt-4o-mini",
             base_url="https://api.example.com/v1",
@@ -181,11 +189,13 @@ class TestOpenAICompatibleAdapter:
 class TestGoogleAdapter:
     def test_init(self) -> None:
         from cortiva.adapters.consciousness.google import GoogleAdapter
+
         adapter = GoogleAdapter(model="gemini-2.0-flash")
         assert adapter.model == "gemini-2.0-flash"
 
     def test_init_params(self) -> None:
         from cortiva.adapters.consciousness.google import GoogleAdapter
+
         adapter = GoogleAdapter(model="gemini-2.5-pro", api_key="test-key", max_tokens=8192)
         assert adapter.model == "gemini-2.5-pro"
         assert adapter._default_key == "test-key"
@@ -193,6 +203,7 @@ class TestGoogleAdapter:
 
     def test_get_client_raises_without_sdk(self) -> None:
         from cortiva.adapters.consciousness.google import GoogleAdapter
+
         adapter = GoogleAdapter()
         # If google-genai is not installed, _get_client should raise ImportError
         # If it IS installed, it should return a client — both are valid
@@ -285,19 +296,28 @@ class TestConfigConsciousnessProviders:
 def _mock_import_adapter(registry, name, kind):
     if kind == "memory":
         from cortiva.adapters.memory.inmemory import InMemoryAdapter
+
         return InMemoryAdapter
     if kind == "consciousness":
+
         class MockCls:
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
+
             async def think(self, **kw):
                 return ConsciousResponse(content="ok", model="mock")
+
             async def reflect(self, **kw):
                 return ConsciousResponse(content="ok", model="mock")
+
         return MockCls
     if kind == "routine":
         from cortiva.adapters.routine.simple import SimpleRoutineAdapter
+
         return SimpleRoutineAdapter
+
     class FallbackMock:
-        def __init__(self, **kwargs): pass
+        def __init__(self, **kwargs):
+            pass
+
     return FallbackMock

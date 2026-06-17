@@ -10,8 +10,8 @@ import pytest
 from cortiva.core.planner import (
     HorizonPlan,
     PlanHorizon,
-    PlanStore,
     Planner,
+    PlanStore,
     build_daily_context,
     build_monthly_context,
     build_weekly_context,
@@ -108,7 +108,8 @@ class TestContextBuilders:
         memory.recall.return_value = []
 
         ctx = await build_monthly_context(
-            "agent-1", memory,
+            "agent-1",
+            memory,
             goals_context="Ship v1.0 by end of Q2",
             performance_context="Last month: 85% task completion",
         )
@@ -127,7 +128,8 @@ class TestContextBuilders:
             content="Ship v1.0",
         )
         ctx = await build_weekly_context(
-            "agent-1", memory,
+            "agent-1",
+            memory,
             monthly_plan=monthly,
             delegation_context="Fix auth bug",
         )
@@ -145,7 +147,8 @@ class TestContextBuilders:
             content="Finish auth module",
         )
         ctx = await build_daily_context(
-            "agent-1", memory,
+            "agent-1",
+            memory,
             weekly_plan=weekly,
             yesterday_reflection="Completed 3 tasks, 2 carry-over.",
         )

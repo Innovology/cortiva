@@ -65,7 +65,10 @@ class AgentChat:
         # Build context from agent identity + memories
         identity = self.agent.read_all_identity()
         context = await self.context_builder.build_execution_context(
-            self.agent, identity, messages=[], task=message,
+            self.agent,
+            identity,
+            messages=[],
+            task=message,
         )
 
         # Add session history if available
@@ -131,7 +134,6 @@ async def get_agent_logs(
     }
 
     # Journal — today's entry
-    from datetime import datetime
     journal_path = agent.journal_path()
     if journal_path.exists():
         result["journal_today"] = journal_path.read_text(encoding="utf-8")[:2000]
@@ -143,8 +145,7 @@ async def get_agent_logs(
     if journal_dir.is_dir():
         entries = sorted(journal_dir.glob("*.md"), reverse=True)[:5]
         result["recent_journals"] = [
-            {"date": p.stem, "preview": p.read_text(encoding="utf-8")[:200]}
-            for p in entries
+            {"date": p.stem, "preview": p.read_text(encoding="utf-8")[:200]} for p in entries
         ]
     else:
         result["recent_journals"] = []
@@ -153,6 +154,7 @@ async def get_agent_logs(
     task_data = agent.read_today("task_queue.json")
     if task_data:
         import json
+
         try:
             result["task_queue"] = json.loads(task_data)
         except json.JSONDecodeError:
@@ -164,6 +166,7 @@ async def get_agent_logs(
     exc_data = agent.read_today("exception_pile.json")
     if exc_data:
         import json
+
         try:
             result["exceptions"] = json.loads(exc_data)
         except json.JSONDecodeError:
@@ -174,8 +177,7 @@ async def get_agent_logs(
     # Recent memories
     memories = await memory.recall(agent.id, limit=limit, min_importance=3.0)
     result["recent_memories"] = [
-        {"content": m.content[:150], "importance": m.importance, "tags": m.tags}
-        for m in memories
+        {"content": m.content[:150], "importance": m.importance, "tags": m.tags} for m in memories
     ]
 
     # Identity summary
@@ -186,6 +188,7 @@ async def get_agent_logs(
     fam_data = agent.read_today("familiarity_signals.json")
     if fam_data:
         import json
+
         try:
             result["familiarity"] = json.loads(fam_data)[:10]
         except json.JSONDecodeError:

@@ -18,6 +18,7 @@ PRIORITY_RANK: dict[str, int] = {"low": 0, "normal": 1, "high": 2, "critical": 3
 
 class BackendType(Enum):
     """Types of consciousness backend."""
+
     TERMINAL = "terminal"
     API = "api"
     LOCAL = "local"
@@ -26,6 +27,7 @@ class BackendType(Enum):
 @dataclass
 class BackendBudget:
     """Per-backend budget tracker."""
+
     backend: BackendType
     calls_used: int = 0
     calls_limit: int = 0
@@ -68,6 +70,7 @@ class BackendBudget:
 @dataclass
 class BudgetApproval:
     """Result of a budget request."""
+
     approved: bool
     backend: BackendType | None = None
     fallback_used: bool = False
@@ -77,6 +80,7 @@ class BudgetApproval:
 @dataclass
 class AgentBudgetStatus:
     """Snapshot of an agent's budget state for CLI display."""
+
     agent_id: str
     backends: dict[str, dict[str, Any]] = field(default_factory=dict)
     total_calls: int = 0
@@ -177,9 +181,7 @@ class ConsciousnessBudgetManager:
                 ):
                     continue
 
-                self._consciousness_calls[agent_id] = (
-                    self._consciousness_calls.get(agent_id, 0) + 1
-                )
+                self._consciousness_calls[agent_id] = self._consciousness_calls.get(agent_id, 0) + 1
                 return BudgetApproval(
                     approved=True,
                     backend=backend_type,
@@ -221,9 +223,7 @@ class ConsciousnessBudgetManager:
             budget.record_usage(tokens_in, tokens_out)
             self._maybe_alert(agent_id, backend, budget)
 
-    def _maybe_alert(
-        self, agent_id: str, backend: BackendType, budget: BackendBudget
-    ) -> None:
+    def _maybe_alert(self, agent_id: str, backend: BackendType, budget: BackendBudget) -> None:
         """Fire on_alert callback if a backend crossed the alert threshold."""
         if self.on_alert is None or budget.calls_limit == 0:
             return
@@ -243,9 +243,7 @@ class ConsciousnessBudgetManager:
 
     def record_task_attempt(self, agent_id: str) -> None:
         """Record a task execution attempt for escalation ratio."""
-        self._task_attempts[agent_id] = (
-            self._task_attempts.get(agent_id, 0) + 1
-        )
+        self._task_attempts[agent_id] = self._task_attempts.get(agent_id, 0) + 1
 
     def escalation_ratio(self, agent_id: str) -> float:
         """Consciousness calls / task attempts."""
@@ -295,7 +293,4 @@ class ConsciousnessBudgetManager:
 
     def all_status(self) -> dict[str, AgentBudgetStatus]:
         """Snapshot of all agents' budget state."""
-        return {
-            agent_id: self.agent_status(agent_id)
-            for agent_id in self._agents
-        }
+        return {agent_id: self.agent_status(agent_id) for agent_id in self._agents}

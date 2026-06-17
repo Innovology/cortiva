@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -16,11 +15,9 @@ from cortiva.core.isolation import (
     NoIsolation,
     OSIsolation,
     SoftIsolation,
-    SubprocessEnvelope,
     build_enforcer,
 )
 from cortiva.core.memory_guard import GuardedMemoryAdapter
-
 
 # ---------------------------------------------------------------------------
 # IsolationConfig
@@ -38,16 +35,18 @@ class TestIsolationConfig:
         assert config.tier == IsolationTier.SOFT
 
     def test_from_dict_container(self) -> None:
-        config = IsolationConfig.from_dict({
-            "tier": "container",
-            "container": {
-                "runtime": "podman",
-                "cpu_limit": "2.0",
-                "memory_limit": "1g",
-                "network": "bridge",
-                "image": "ubuntu:24.04",
-            },
-        })
+        config = IsolationConfig.from_dict(
+            {
+                "tier": "container",
+                "container": {
+                    "runtime": "podman",
+                    "cpu_limit": "2.0",
+                    "memory_limit": "1g",
+                    "network": "bridge",
+                    "image": "ubuntu:24.04",
+                },
+            }
+        )
         assert config.tier == IsolationTier.CONTAINER
         assert config.container.runtime == "podman"
         assert config.container.cpu_limit == "2.0"
@@ -56,10 +55,12 @@ class TestIsolationConfig:
         assert config.container.image == "ubuntu:24.04"
 
     def test_from_dict_custom_allowed_env(self) -> None:
-        config = IsolationConfig.from_dict({
-            "tier": "os",
-            "allowed_env": ["PATH", "CUSTOM_VAR"],
-        })
+        config = IsolationConfig.from_dict(
+            {
+                "tier": "os",
+                "allowed_env": ["PATH", "CUSTOM_VAR"],
+            }
+        )
         assert config.allowed_env == ["PATH", "CUSTOM_VAR"]
 
 
@@ -252,7 +253,9 @@ class TestContainerIsolation:
         )
         enforcer = ContainerIsolation(agents_dir=tmp_path, config=config)
         envelope = enforcer.prepare_terminal_env(
-            "agent-1", ["claude", "-p", "hello"], agent_dir,
+            "agent-1",
+            ["claude", "-p", "hello"],
+            agent_dir,
         )
         # Command should start with docker run
         assert envelope.cmd[0] == "docker"
@@ -272,29 +275,29 @@ class TestContainerIsolation:
         assert envelope.container_id == "cortiva-agent-agent-1"
 
     @patch("shutil.which", return_value=None)
-    def test_fallback_when_docker_unavailable(
-        self, mock_which: object, tmp_path: Path
-    ) -> None:
+    def test_fallback_when_docker_unavailable(self, mock_which: object, tmp_path: Path) -> None:
         """When docker is not on PATH, falls back to OS isolation."""
         agent_dir = tmp_path / "agent-1"
         agent_dir.mkdir()
         enforcer = ContainerIsolation(agents_dir=tmp_path)
         envelope = enforcer.prepare_terminal_env(
-            "agent-1", ["echo", "hi"], agent_dir,
+            "agent-1",
+            ["echo", "hi"],
+            agent_dir,
         )
         # Should NOT wrap with docker
         assert envelope.cmd == ["echo", "hi"]
         assert envelope.container_id is None
 
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_container_volume_mount(
-        self, mock_which: object, tmp_path: Path
-    ) -> None:
+    def test_container_volume_mount(self, mock_which: object, tmp_path: Path) -> None:
         agent_dir = tmp_path / "agent-1"
         agent_dir.mkdir()
         enforcer = ContainerIsolation(agents_dir=tmp_path)
         envelope = enforcer.prepare_terminal_env(
-            "agent-1", ["echo"], agent_dir,
+            "agent-1",
+            ["echo"],
+            agent_dir,
         )
         # Volume mount should map agent dir to /agent
         volume_flag_idx = envelope.cmd.index("-v")
@@ -303,9 +306,7 @@ class TestContainerIsolation:
         assert str(agent_dir.resolve()) in volume_arg
 
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_default_network_is_bridge(
-        self, mock_which: object, tmp_path: Path
-    ) -> None:
+    def test_default_network_is_bridge(self, mock_which: object, tmp_path: Path) -> None:
         """Default container network should be bridge for API access."""
         agent_dir = tmp_path / "agent-1"
         agent_dir.mkdir()
@@ -314,9 +315,7 @@ class TestContainerIsolation:
         assert "--network=bridge" in envelope.cmd
 
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_shm_size_flag(
-        self, mock_which: object, tmp_path: Path
-    ) -> None:
+    def test_shm_size_flag(self, mock_which: object, tmp_path: Path) -> None:
         agent_dir = tmp_path / "agent-1"
         agent_dir.mkdir()
         config = IsolationConfig(
@@ -328,9 +327,7 @@ class TestContainerIsolation:
         assert "--shm-size=512m" in envelope.cmd
 
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_browser_endpoint_injected(
-        self, mock_which: object, tmp_path: Path
-    ) -> None:
+    def test_browser_endpoint_injected(self, mock_which: object, tmp_path: Path) -> None:
         agent_dir = tmp_path / "agent-1"
         agent_dir.mkdir()
         config = IsolationConfig(
@@ -342,7 +339,7 @@ class TestContainerIsolation:
         enforcer = ContainerIsolation(agents_dir=tmp_path, config=config)
         envelope = enforcer.prepare_terminal_env("agent-1", ["echo"], agent_dir)
         assert "-e" in envelope.cmd
-        idx = len(envelope.cmd) - 1
+        idx = len(envelope.cmd) - 1  # noqa: F841
         found = False
         for i, arg in enumerate(envelope.cmd):
             if arg == "-e" and i + 1 < len(envelope.cmd):
@@ -352,9 +349,7 @@ class TestContainerIsolation:
         assert found, "BROWSER_WS_ENDPOINT not found in container command"
 
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_no_browser_endpoint_when_empty(
-        self, mock_which: object, tmp_path: Path
-    ) -> None:
+    def test_no_browser_endpoint_when_empty(self, mock_which: object, tmp_path: Path) -> None:
         agent_dir = tmp_path / "agent-1"
         agent_dir.mkdir()
         enforcer = ContainerIsolation(agents_dir=tmp_path)

@@ -135,7 +135,7 @@ class TestTerminateAgent:
         agents_dir.mkdir()
         agent_dir = _setup_agent(agents_dir)
 
-        record = terminate_agent(agent_dir, reason="test")
+        record = terminate_agent(agent_dir, reason="test")  # noqa: F841
 
         # Snapshot should exist in the archived directory
         archive = agents_dir / ".archive" / "agent-001"
@@ -150,9 +150,7 @@ class TestTerminateAgent:
         agents_dir.mkdir()
         agent_dir = _setup_agent(agents_dir)
 
-        record = terminate_agent(
-            agent_dir, reason="replaced", successor_id="nonexistent"
-        )
+        record = terminate_agent(agent_dir, reason="replaced", successor_id="nonexistent")
 
         assert record.successor_id == "nonexistent"
         assert not agent_dir.exists()

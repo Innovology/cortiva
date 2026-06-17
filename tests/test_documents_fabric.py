@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from cortiva.adapters.memory.inmemory import InMemoryAdapter
-from cortiva.core.agent import Agent, WORKSPACE_DIRS
+from cortiva.core.agent import WORKSPACE_DIRS, Agent
 from cortiva.core.fabric import Fabric
 from cortiva.core.reflection import parse_reflection_suffix
 
@@ -68,7 +68,15 @@ def test_reflection_document_absent_is_none():
 def test_queue_outbound_document_writes_outbox(tmp_path):
     f = _fabric(tmp_path)
     a = _agent(tmp_path)
-    f._queue_outbound_document(a, {"title": "Q3 report", "content": "# numbers", "visibility": "department", "department": "finance"})
+    f._queue_outbound_document(
+        a,
+        {
+            "title": "Q3 report",
+            "content": "# numbers",
+            "visibility": "department",
+            "department": "finance",
+        },
+    )
     out = list((a.directory / "outbox" / "documents").glob("*.json"))
     assert len(out) == 1
     rec = json.loads(out[0].read_text())
@@ -102,10 +110,18 @@ def test_documents_context_renders_delivered(tmp_path):
     a = _agent(tmp_path)
     ddir = a.directory / "documents"
     ddir.mkdir()
-    (ddir / "d1.json").write_text(json.dumps({
-        "doc_id": "d1", "title": "Companies House", "content": "Innovology Ltd 11778435",
-        "visibility": "department", "owner_display": "Cortiva", "updated_at": "2026-06-09",
-    }))
+    (ddir / "d1.json").write_text(
+        json.dumps(
+            {
+                "doc_id": "d1",
+                "title": "Companies House",
+                "content": "Innovology Ltd 11778435",
+                "visibility": "department",
+                "owner_display": "Cortiva",
+                "updated_at": "2026-06-09",
+            }
+        )
+    )
     ctx = f._documents_context(a)
     assert "Documents (shared with you)" in ctx
     assert "Companies House" in ctx

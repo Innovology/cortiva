@@ -32,13 +32,11 @@ class EngramMemoryAdapter:
         if agent_id not in self._memories:
             try:
                 from engram import Memory
-                self._memories[agent_id] = Memory(
-                    namespace=f"{self._prefix}_{agent_id}"
-                )
+
+                self._memories[agent_id] = Memory(namespace=f"{self._prefix}_{agent_id}")
             except ImportError:
                 raise ImportError(
-                    "engram-core is not installed. "
-                    "Install it with: pip install engram-core"
+                    "engram-core is not installed. Install it with: pip install engram-core"
                 )
         return self._memories[agent_id]
 
@@ -79,13 +77,15 @@ class EngramMemoryAdapter:
         for r in results[:limit]:
             importance = getattr(r, "importance", 5)
             if importance >= min_importance:
-                records.append(MemoryRecord(
-                    id=getattr(r, "id", str(uuid.uuid4())),
-                    content=getattr(r, "content", str(r)),
-                    agent_id=agent_id,
-                    tags=getattr(r, "tags", []),
-                    importance=float(importance),
-                ))
+                records.append(
+                    MemoryRecord(
+                        id=getattr(r, "id", str(uuid.uuid4())),
+                        content=getattr(r, "content", str(r)),
+                        agent_id=agent_id,
+                        tags=getattr(r, "tags", []),
+                        importance=float(importance),
+                    )
+                )
         return records
 
     async def recall(
@@ -102,13 +102,15 @@ class EngramMemoryAdapter:
         for r in results:
             importance = getattr(r, "importance", 5)
             if importance >= min_importance:
-                records.append(MemoryRecord(
-                    id=getattr(r, "id", str(uuid.uuid4())),
-                    content=getattr(r, "content", str(r)),
-                    agent_id=agent_id,
-                    tags=getattr(r, "tags", []),
-                    importance=float(importance),
-                ))
+                records.append(
+                    MemoryRecord(
+                        id=getattr(r, "id", str(uuid.uuid4())),
+                        content=getattr(r, "content", str(r)),
+                        agent_id=agent_id,
+                        tags=getattr(r, "tags", []),
+                        importance=float(importance),
+                    )
+                )
         return records
 
     async def delete(self, agent_id: str, memory_id: str) -> bool:

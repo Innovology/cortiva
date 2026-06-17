@@ -18,10 +18,11 @@ logger = logging.getLogger("cortiva.models")
 @dataclass
 class ModelEndpoint:
     """Resolved endpoint for a model request."""
+
     node_id: str
     model_name: str
-    provider: str        # "ollama", "vllm", "llamacpp", "terminal"
-    url: str = ""        # API URL for remote models
+    provider: str  # "ollama", "vllm", "llamacpp", "terminal"
+    url: str = ""  # API URL for remote models
     is_local: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -37,6 +38,7 @@ class ModelEndpoint:
 @dataclass
 class NodeModels:
     """Models available on a single node."""
+
     node_id: str
     host: str = "localhost"
     port: int = 11434
@@ -119,7 +121,9 @@ class ClusterModels:
         # For routine/embedding, try local first
         if prefer_local:
             endpoint = self._find_on_node(
-                requesting_node, need, model_name,
+                requesting_node,
+                need,
+                model_name,
             )
             if endpoint:
                 return endpoint
@@ -131,7 +135,7 @@ class ClusterModels:
                 continue  # Already checked
             endpoint = self._find_on_node(nid, need, model_name)
             if endpoint:
-                endpoint.is_local = (nid == requesting_node)
+                endpoint.is_local = nid == requesting_node
                 candidates.append((node_models.agent_count, endpoint))
 
         if not candidates:
@@ -207,24 +211,30 @@ class ClusterModels:
         for node_id, node in self._nodes.items():
             entries: list[dict[str, Any]] = []
             for model in node.models:
-                entries.append({
-                    "name": model.get("name", ""),
-                    "provider": "ollama",
-                    "family": model.get("family", ""),
-                    "size_bytes": model.get("size_bytes", 0),
-                })
+                entries.append(
+                    {
+                        "name": model.get("name", ""),
+                        "provider": "ollama",
+                        "family": model.get("family", ""),
+                        "size_bytes": model.get("size_bytes", 0),
+                    }
+                )
             for agent_name in node.terminal_agents:
-                entries.append({
-                    "name": agent_name,
-                    "provider": "terminal",
-                })
+                entries.append(
+                    {
+                        "name": agent_name,
+                        "provider": "terminal",
+                    }
+                )
             for ep in node.custom_endpoints:
                 for m in ep.get("models", []):
-                    entries.append({
-                        "name": m,
-                        "provider": ep.get("provider", "custom"),
-                        "url": ep.get("url", ""),
-                    })
+                    entries.append(
+                        {
+                            "name": m,
+                            "provider": ep.get("provider", "custom"),
+                            "url": ep.get("url", ""),
+                        }
+                    )
             result[node_id] = entries
         return result
 

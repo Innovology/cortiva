@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -192,7 +191,10 @@ def install_skill(agent_dir: Path, skill: Skill) -> list[str]:
     )
     if skill_knowledge:
         _append_to_identity_file(
-            agent_dir, "skills", skill.name, skill_knowledge,
+            agent_dir,
+            "skills",
+            skill.name,
+            skill_knowledge,
         )
         modified.append("identity/skills.md")
 
@@ -243,9 +245,7 @@ def uninstall_skill(agent_dir: Path, skill_name: str) -> list[str]:
 
     # Update manifest
     manifest = _read_manifest(agent_dir)
-    manifest["installed"] = [
-        s for s in manifest["installed"] if s.get("name") != skill_name
-    ]
+    manifest["installed"] = [s for s in manifest["installed"] if s.get("name") != skill_name]
     _write_manifest(agent_dir, manifest)
     modified.append("identity/skills_manifest.json")
 
@@ -254,7 +254,10 @@ def uninstall_skill(agent_dir: Path, skill_name: str) -> list[str]:
 
 
 def _append_to_identity_file(
-    agent_dir: Path, file_key: str, skill_name: str, content: str,
+    agent_dir: Path,
+    file_key: str,
+    skill_name: str,
+    content: str,
 ) -> None:
     """Append skill content to an identity file with markers."""
     from cortiva.core.agent import IDENTITY_FILES
@@ -271,7 +274,9 @@ def _append_to_identity_file(
 
 
 def _remove_from_identity_file(
-    agent_dir: Path, file_key: str, skill_name: str,
+    agent_dir: Path,
+    file_key: str,
+    skill_name: str,
 ) -> bool:
     """Remove skill-marked content from an identity file."""
     from cortiva.core.agent import IDENTITY_FILES

@@ -1,7 +1,11 @@
 """DevSessionManager: cap, detach, drain/reap, crash-safety."""
+
 from __future__ import annotations
+
 import asyncio
+
 import pytest
+
 from cortiva.core.dev_sessions import DevSessionManager, SessionResult
 
 
@@ -12,6 +16,7 @@ def _runner(agent, task, *, delay=0.0, boom=False):
         if boom:
             raise RuntimeError("kaboom")
         return SessionResult(agent_id=agent, task_id=task, ok=True, outcome="did it")
+
     return run
 
 
@@ -36,8 +41,8 @@ async def test_drain_returns_results_and_frees_slot():
     await asyncio.sleep(0.15)
     done = m.drain_completed("a")
     assert len(done) == 1 and done[0].ok and done[0].outcome == "did it"
-    assert m.drain_completed("a") == []          # drained once
-    assert not m.is_in_flight("a", "t1")          # slot freed
+    assert m.drain_completed("a") == []  # drained once
+    assert not m.is_in_flight("a", "t1")  # slot freed
     assert m.can_launch("a")
 
 

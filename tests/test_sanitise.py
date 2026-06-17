@@ -3,11 +3,7 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from cortiva.core.sanitise import (
-    RedactionMatch,
-    SanitisationRule,
     SanitisationRules,
     SnapshotSanitiser,
 )
@@ -37,8 +33,15 @@ def _make_snapshot(tmp_path: Path) -> Path:
         json.dumps({"tasks": [], "summary": {"done": 12}})
     )
     (snap / "snapshot.json").write_text(
-        json.dumps({"agent_id": "bookkeep-01", "snapshot_id": snap.name,
-                     "name": "test", "created_at": "2026-03-09", "trigger": "manual"})
+        json.dumps(
+            {
+                "agent_id": "bookkeep-01",
+                "snapshot_id": snap.name,
+                "name": "test",
+                "created_at": "2026-03-09",
+                "trigger": "manual",
+            }
+        )
     )
     return snap
 
@@ -114,7 +117,6 @@ class TestSnapshotSanitiser:
         sanitiser = SnapshotSanitiser(rules)
 
         import tarfile
-        import tempfile
 
         output = tmp_path / "out.tar.gz"
         sanitiser.sanitise_and_export(snap, output)
@@ -152,7 +154,7 @@ class TestSnapshotSanitiser:
         sanitiser = SnapshotSanitiser(rules)
 
         sanitiser.sanitise_in_place(snap)
-        journal_gone = not (snap / "journal").exists()
+        journal_gone = not (snap / "journal").exists()  # noqa: F841
         # Check identity files for company redaction
         content = (snap / "identity" / "identity.md").read_text()
         assert "Acme Corp" not in content

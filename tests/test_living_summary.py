@@ -23,11 +23,14 @@ def _no_frontier_regen(monkeypatch):
     override the StubConsciousness; disable it so the fabric-integration tests
     exercise the deterministic local path. Unit tests that pass their own
     frontier_reflect to regenerate() are unaffected."""
+
     async def _none(self, _prompt):
         return None
+
     monkeypatch.setattr(
         "cortiva.core.fabric.Fabric._frontier_identity_reflect",
-        _none, raising=False,
+        _none,
+        raising=False,
     )
 
 
@@ -101,8 +104,7 @@ class TestSplitIdentityAndDayReport:
 
     def test_delimiter_only_splits_once(self) -> None:
         content = (
-            f"# Identity\n{DAY_REPORT_DELIMITER}\n"
-            f"Report mentioning {DAY_REPORT_DELIMITER} inline."
+            f"# Identity\n{DAY_REPORT_DELIMITER}\nReport mentioning {DAY_REPORT_DELIMITER} inline."
         )
         identity, report = split_identity_and_day_report(content)
         assert identity == "# Identity"
@@ -119,7 +121,8 @@ class TestLivingSummaryRegenerator:
         memory = memory or InMemoryAdapter()
         consciousness = consciousness or AsyncMock()
         return LivingSummaryRegenerator(
-            memory=memory, consciousness=consciousness,
+            memory=memory,
+            consciousness=consciousness,
         )
 
     @pytest.mark.asyncio
@@ -133,9 +136,13 @@ class TestLivingSummaryRegenerator:
     @pytest.mark.asyncio
     async def test_gather_experience_with_data(self) -> None:
         memory = InMemoryAdapter()
-        await memory.store("a", "Task: Process invoice. Outcome: done", tags=["task"], importance=7.0)
+        await memory.store(
+            "a", "Task: Process invoice. Outcome: done", tags=["task"], importance=7.0
+        )
         await memory.store("a", "Task: Review report. Outcome: done", tags=["task"], importance=7.0)
-        await memory.store("a", "learned to verify amounts first", tags=["learning"], importance=8.0)
+        await memory.store(
+            "a", "learned to verify amounts first", tags=["learning"], importance=8.0
+        )
 
         regen = self._make_regen(memory=memory)
         exp = await regen.gather_experience("a")
@@ -191,8 +198,12 @@ class TestLivingSummaryRegenerator:
 
     def _exp(self):
         return {
-            "key_memories": [], "learnings": [], "themes": [],
-            "task_count": 0, "terminal_task_count": 0, "escalated_count": 0,
+            "key_memories": [],
+            "learnings": [],
+            "themes": [],
+            "task_count": 0,
+            "terminal_task_count": 0,
+            "escalated_count": 0,
         }
 
     def test_ground_truth_block_and_rule_present(self) -> None:
@@ -202,8 +213,11 @@ class TestLivingSummaryRegenerator:
         agent = MagicMock()
         gt = "## Live capability check\n- **Email: LIVE** — you CAN email humans"
         prompt = regen.build_regeneration_prompt(
-            agent, current_identity="# I route comms internally",
-            day_summary="s", experience=self._exp(), ground_truth=gt,
+            agent,
+            current_identity="# I route comms internally",
+            day_summary="s",
+            experience=self._exp(),
+            ground_truth=gt,
         )
         assert "Verified reality" in prompt
         assert "you CAN email humans" in prompt
@@ -216,7 +230,10 @@ class TestLivingSummaryRegenerator:
         regen = self._make_regen()
         agent = MagicMock()
         prompt = regen.build_regeneration_prompt(
-            agent, current_identity="# x", day_summary="s", experience=self._exp(),
+            agent,
+            current_identity="# x",
+            day_summary="s",
+            experience=self._exp(),
         )
         # The section header is conditional (the reconciliation RULE always
         # mentions the block by name, so assert on the section, not the phrase).
@@ -224,7 +241,7 @@ class TestLivingSummaryRegenerator:
 
     @pytest.mark.asyncio
     async def test_regenerate_passes_ground_truth(self) -> None:
-        from unittest.mock import AsyncMock as _AM
+        from unittest.mock import AsyncMock as _AM  # noqa: N814
 
         memory = InMemoryAdapter()
         await memory.store("a", "Task: x. Outcome: done", tags=["task"], importance=7.0)
@@ -252,6 +269,7 @@ class TestLivingSummaryRegenerator:
         agent.identity_history.return_value = []
 
         seen = {}
+
         async def _frontier(prompt):
             seen["prompt"] = prompt
             return "# frontier-rewritten identity"
@@ -302,7 +320,9 @@ class TestLivingSummaryRegenerator:
     @pytest.mark.asyncio
     async def test_regenerate_returns_content(self) -> None:
         memory = InMemoryAdapter()
-        await memory.store("a", "Task: Important work. Outcome: done", tags=["task"], importance=7.0)
+        await memory.store(
+            "a", "Task: Important work. Outcome: done", tags=["task"], importance=7.0
+        )
 
         consciousness = AsyncMock()
         consciousness.reflect.return_value = ConsciousResponse(
@@ -368,6 +388,7 @@ class TestFabricLivingSummaryIntegration:
         class StubConsciousness:
             async def think(self, **kw):
                 return ConsciousResponse(content="- [ ] Plan item", model="stub")
+
             async def reflect(self, **kw):
                 return ConsciousResponse(
                     content=(
@@ -383,11 +404,13 @@ class TestFabricLivingSummaryIntegration:
             memory=memory,
             consciousness=StubConsciousness(),
         )
+
         # Disable the frontier (claude CLI) regen path so these tests exercise
         # the local StubConsciousness deterministically instead of spawning the
         # real `claude` subprocess.
         async def _no_frontier(_prompt):
             return None
+
         fabric._frontier_identity_reflect = _no_frontier
         return fabric
 
@@ -398,11 +421,14 @@ class TestFabricLivingSummaryIntegration:
 
         # Store some experience so regeneration isn't skipped
         await fabric.memory.store(
-            "agent-01", "Task: Did important work. Outcome: success",
-            tags=["task"], importance=7.0,
+            "agent-01",
+            "Task: Did important work. Outcome: success",
+            tags=["task"],
+            importance=7.0,
         )
 
         from cortiva.core.agent import AgentState
+
         agent.state = AgentState.WAKING
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)
@@ -421,11 +447,14 @@ class TestFabricLivingSummaryIntegration:
         agent = fabric.register_agent("agent-01")
 
         await fabric.memory.store(
-            "agent-01", "Task: work. Outcome: ok",
-            tags=["task"], importance=7.0,
+            "agent-01",
+            "Task: work. Outcome: ok",
+            tags=["task"],
+            importance=7.0,
         )
 
         from cortiva.core.agent import AgentState
+
         agent.state = AgentState.WAKING
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)
@@ -450,6 +479,7 @@ class TestFabricLivingSummaryIntegration:
         original_identity = agent.read_identity("identity")
 
         from cortiva.core.agent import AgentState
+
         agent.state = AgentState.WAKING
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)
@@ -467,7 +497,8 @@ class TestFabricLivingSummaryIntegration:
 
     @pytest.mark.asyncio
     async def test_sleep_journal_falls_back_without_delimiter(
-        self, tmp_path,
+        self,
+        tmp_path,
     ) -> None:
         """Reflection response without a day report → journal gets stats."""
         from cortiva.core.fabric import Fabric
@@ -475,9 +506,11 @@ class TestFabricLivingSummaryIntegration:
         class NoReportConsciousness:
             async def think(self, **kw):
                 return ConsciousResponse(content="- [ ] Plan", model="stub")
+
             async def reflect(self, **kw):
                 return ConsciousResponse(
-                    content="# Updated Identity only", model="stub",
+                    content="# Updated Identity only",
+                    model="stub",
                 )
 
         fabric = Fabric(
@@ -487,11 +520,14 @@ class TestFabricLivingSummaryIntegration:
         )
         agent = fabric.register_agent("agent-01")
         await fabric.memory.store(
-            "agent-01", "Task: work. Outcome: ok",
-            tags=["task"], importance=7.0,
+            "agent-01",
+            "Task: work. Outcome: ok",
+            tags=["task"],
+            importance=7.0,
         )
 
         from cortiva.core.agent import AgentState
+
         agent.state = AgentState.WAKING
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)
@@ -569,7 +605,8 @@ class TestRegenerationAnchoring:
 
     def _prompt(self, **kwargs):
         regen = LivingSummaryRegenerator(
-            memory=InMemoryAdapter(), consciousness=AsyncMock(),
+            memory=InMemoryAdapter(),
+            consciousness=AsyncMock(),
         )
         return regen.build_regeneration_prompt(
             MagicMock(),
@@ -617,8 +654,10 @@ class TestRegenerationAnchoring:
 
         memory = InMemoryAdapter()
         await memory.store(
-            "agent-01", "Task: work. Outcome: ok",
-            tags=["task"], importance=7.0,
+            "agent-01",
+            "Task: work. Outcome: ok",
+            tags=["task"],
+            importance=7.0,
         )
 
         captured = {}
@@ -640,7 +679,8 @@ class TestRegenerationAnchoring:
         agent.archive_identity("identity")
 
         regen = LivingSummaryRegenerator(
-            memory=memory, consciousness=CapturingConsciousness(),
+            memory=memory,
+            consciousness=CapturingConsciousness(),
         )
         result = await regen.regenerate(agent, "day summary")
         assert result is not None
@@ -662,7 +702,8 @@ class TestFabricArchivesIdentityOnRegen:
 
             async def reflect(self, **kw):
                 return ConsciousResponse(
-                    content="# Rewritten identity", model="stub",
+                    content="# Rewritten identity",
+                    model="stub",
                 )
 
         fabric = Fabric(
@@ -674,11 +715,14 @@ class TestFabricArchivesIdentityOnRegen:
         agent.write_identity("identity", "# The original me")
 
         await fabric.memory.store(
-            "agent-01", "Task: work. Outcome: ok",
-            tags=["task"], importance=7.0,
+            "agent-01",
+            "Task: work. Outcome: ok",
+            tags=["task"],
+            importance=7.0,
         )
 
         from cortiva.core.agent import AgentState
+
         agent.state = AgentState.WAKING
         agent.transition(AgentState.PLANNING)
         agent.transition(AgentState.EXECUTING)
