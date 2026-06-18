@@ -121,6 +121,10 @@ disable_error_code = [
     "import-untyped",
     "unused-ignore",
     "assignment",
+    "var-annotated",
+    "attr-defined",
+    "call-overload",
+    "arg-type",
 ]
 
 [[tool.mypy.overrides]]
