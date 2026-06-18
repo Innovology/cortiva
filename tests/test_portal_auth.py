@@ -2,9 +2,7 @@
 
 from pathlib import Path
 
-import pytest
-
-from cortiva.portal.auth import AuthDB, Role, User
+from cortiva.portal.auth import AuthDB, Role
 
 
 class TestAuthDB:

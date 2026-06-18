@@ -128,16 +128,19 @@ class TestGetVaultClient:
             ),
         ):
             # Patch the imports inside _get_vault_client
-            with patch.dict("sys.modules", {
-                "azure": MagicMock(),
-                "azure.identity": MagicMock(
-                    DefaultAzureCredential=MagicMock(return_value=mock_credential)
-                ),
-                "azure.keyvault": MagicMock(),
-                "azure.keyvault.secrets": MagicMock(
-                    SecretClient=MagicMock(return_value=mock_secret_client)
-                ),
-            }):
+            with patch.dict(
+                "sys.modules",
+                {
+                    "azure": MagicMock(),
+                    "azure.identity": MagicMock(
+                        DefaultAzureCredential=MagicMock(return_value=mock_credential)
+                    ),
+                    "azure.keyvault": MagicMock(),
+                    "azure.keyvault.secrets": MagicMock(
+                        SecretClient=MagicMock(return_value=mock_secret_client)
+                    ),
+                },
+            ):
                 client = provider._get_vault_client()
                 assert client is not None
                 # Second call should return cached
@@ -151,12 +154,15 @@ class TestGetVaultClient:
         )
         provider = CredentialProvider(config)
 
-        with patch.dict("sys.modules", {
-            "azure": None,
-            "azure.identity": None,
-            "azure.keyvault": None,
-            "azure.keyvault.secrets": None,
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "azure": None,
+                "azure.identity": None,
+                "azure.keyvault": None,
+                "azure.keyvault.secrets": None,
+            },
+        ):
             with pytest.raises(ImportError, match="Azure Key Vault"):
                 provider._get_vault_client()
 
@@ -179,12 +185,15 @@ class TestGetToken:
         mock_credential = MagicMock()
         mock_credential.get_token.return_value = mock_token
 
-        with patch.dict("sys.modules", {
-            "azure": MagicMock(),
-            "azure.identity": MagicMock(
-                DefaultAzureCredential=MagicMock(return_value=mock_credential)
-            ),
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "azure": MagicMock(),
+                "azure.identity": MagicMock(
+                    DefaultAzureCredential=MagicMock(return_value=mock_credential)
+                ),
+            },
+        ):
             result = provider.get_token("https://management.azure.com")
             assert result == "azure-access-token"
 
@@ -198,12 +207,15 @@ class TestGetToken:
         mock_credential = MagicMock()
         mock_credential.get_token.return_value = mock_token
 
-        with patch.dict("sys.modules", {
-            "azure": MagicMock(),
-            "azure.identity": MagicMock(
-                DefaultAzureCredential=MagicMock(return_value=mock_credential)
-            ),
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "azure": MagicMock(),
+                "azure.identity": MagicMock(
+                    DefaultAzureCredential=MagicMock(return_value=mock_credential)
+                ),
+            },
+        ):
             result = provider.get_token()
             assert result == "kv-token"
 
@@ -211,14 +223,15 @@ class TestGetToken:
         config = CredentialConfig(provider="azure-managed-identity")
         provider = CredentialProvider(config)
 
-        with patch.dict("sys.modules", {
-            "azure": MagicMock(),
-            "azure.identity": MagicMock(
-                DefaultAzureCredential=MagicMock(
-                    side_effect=Exception("auth failed")
-                )
-            ),
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "azure": MagicMock(),
+                "azure.identity": MagicMock(
+                    DefaultAzureCredential=MagicMock(side_effect=Exception("auth failed"))
+                ),
+            },
+        ):
             result = provider.get_token()
             assert result is None
 
@@ -232,12 +245,15 @@ class TestGetToken:
         mock_credential = MagicMock()
         mock_credential.get_token.return_value = mock_token
 
-        with patch.dict("sys.modules", {
-            "azure": MagicMock(),
-            "azure.identity": MagicMock(
-                DefaultAzureCredential=MagicMock(return_value=mock_credential)
-            ),
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "azure": MagicMock(),
+                "azure.identity": MagicMock(
+                    DefaultAzureCredential=MagicMock(return_value=mock_credential)
+                ),
+            },
+        ):
             result = provider.get_token("https://graph.microsoft.com")
             assert result == "graph-token"
 
@@ -248,12 +264,14 @@ class TestCredentialConfigEdgeCases:
         assert config.provider == "env"
 
     def test_from_dict_agents_with_non_dict_value(self) -> None:
-        config = CredentialConfig.from_dict({
-            "provider": "env",
-            "agents": {
-                "dev": "not-a-dict",
-            },
-        })
+        config = CredentialConfig.from_dict(
+            {
+                "provider": "env",
+                "agents": {
+                    "dev": "not-a-dict",
+                },
+            }
+        )
         # Non-dict agent entries are skipped
         assert "dev" not in config.agents
 

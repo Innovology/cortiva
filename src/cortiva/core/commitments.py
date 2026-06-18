@@ -73,8 +73,8 @@ AT_RISK_UTILISATION = 1.0
 # balls in the air" cortisol), independent of any single deadline. Below the
 # comfort line it adds nothing; it ramps to full across the span above it.
 _COUNT_COMFORT = 4
-_COUNT_SPAN = 11.0     # comfort+span = ~15 open -> full count-load
-_COUNT_WEIGHT = 0.4    # how much count-load can add to felt pressure [0,1]
+_COUNT_SPAN = 11.0  # comfort+span = ~15 open -> full count-load
+_COUNT_WEIGHT = 0.4  # how much count-load can add to felt pressure [0,1]
 
 
 @dataclass
@@ -82,22 +82,22 @@ class Commitment:
     """One promise the agent has made, with a deadline and an effort estimate."""
 
     id: str
-    to: str = ""               # who it's owed to (email or name)
-    what: str = ""             # the deliverable, in the agent's words
-    due_at: str = ""           # ISO 8601; the deadline
+    to: str = ""  # who it's owed to (email or name)
+    what: str = ""  # the deliverable, in the agent's words
+    due_at: str = ""  # ISO 8601; the deadline
     effort_hours: float = 1.0  # the agent's own sizing of the whole job
-    progress: float = 0.0      # self-reported fraction [0,1] (fallback)
+    progress: float = 0.0  # self-reported fraction [0,1] (fallback)
     subtasks: list[dict[str, Any]] = field(default_factory=list)
     """``[{"desc": str, "done": bool}, ...]`` — when present, progress is
     derived from these (objective) rather than the self-reported float."""
-    status: str = "open"       # open | delivered | missed | withdrawn
+    status: str = "open"  # open | delivered | missed | withdrawn
     created_at: str = ""
     delivered_at: str = ""
-    artifact: str = ""         # optional proof link (URL / doc id / commit)
+    artifact: str = ""  # optional proof link (URL / doc id / commit)
     claimed_delivered_at: str = ""  # agent SAID delivered but no artifact found yet
-    verification: str = ""     # last reality-test result (evidence, or why unproven)
-    escalated_at: str = ""     # set once we've escalated it (idempotent)
-    original_due: str = ""     # the FIRST deadline committed to (kept across reschedules)
+    verification: str = ""  # last reality-test result (evidence, or why unproven)
+    escalated_at: str = ""  # set once we've escalated it (idempotent)
+    original_due: str = ""  # the FIRST deadline committed to (kept across reschedules)
     reschedule_count: int = 0
     last_reschedule_by: str = ""  # "counterparty" (legit relaxation) | "owner" (self-push)
 
@@ -266,9 +266,7 @@ def _sent_email_evidence(agent_dir: Path, c: Commitment) -> str:
             d = json.loads(p.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             continue
-        recips = " ".join(
-            str(d.get(k) or "") for k in ("to", "cc")
-        ).lower()
+        recips = " ".join(str(d.get(k) or "") for k in ("to", "cc")).lower()
         if to_addr and to_addr in recips:
             hit = True
         elif to_name and len(to_name) >= 3 and to_name in recips:
@@ -292,7 +290,7 @@ def _sent_email_evidence(agent_dir: Path, c: Commitment) -> str:
         if made and when and when < made:
             continue  # an older email to the same person isn't THIS delivery
         subj = str(d.get("subject") or "").strip()
-        return f"email to {c.to}" + (f" — \"{subj[:60]}\"" if subj else "")
+        return f"email to {c.to}" + (f' — "{subj[:60]}"' if subj else "")
     return ""
 
 
@@ -590,9 +588,7 @@ def update(
         # actually delivers. (require_evidence is off by default so the pure
         # unit-tested math path is unchanged; the fabric handler turns it on.)
         ev_dir = agent_dir_for_evidence or agent_dir
-        has_ev, desc = (
-            delivery_evidence(ev_dir, target) if require_evidence else (True, "")
-        )
+        has_ev, desc = delivery_evidence(ev_dir, target) if require_evidence else (True, "")
         if has_ev:
             target.status = "delivered"
             target.delivered_at = _now(now).isoformat()

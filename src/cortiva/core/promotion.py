@@ -9,7 +9,7 @@ knowledge accumulated in the previous role.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -319,13 +319,9 @@ def assess_probation(agent_dir: Path) -> PromotionAssessment | None:
         summary = data.get("summary", {})
         tasks_completed = summary.get("done", 0)
         tasks_escalated = summary.get("exception", summary.get("exceptions", 0))
-        total_tasks = sum(
-            v for k, v in summary.items() if k != "exceptions"
-        )
+        total_tasks = sum(v for k, v in summary.items() if k != "exceptions")
 
-    escalation_ratio = (
-        tasks_escalated / total_tasks if total_tasks > 0 else 0.0
-    )
+    escalation_ratio = tasks_escalated / total_tasks if total_tasks > 0 else 0.0
 
     # Decision quality heuristic: completed / (completed + escalated)
     denom = tasks_completed + tasks_escalated
@@ -336,7 +332,10 @@ def assess_probation(agent_dir: Path) -> PromotionAssessment | None:
     expired = now >= probation_end
 
     if expired:
-        if escalation_ratio <= config.escalation_ratio_target and decision_quality >= config.decision_quality_target:
+        if (
+            escalation_ratio <= config.escalation_ratio_target
+            and decision_quality >= config.decision_quality_target
+        ):
             recommendation = "confirm"
             notes = "Probation complete. Metrics meet targets."
         elif escalation_ratio > config.escalation_ratio_target:

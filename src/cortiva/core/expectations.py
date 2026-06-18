@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -50,13 +50,13 @@ class Expectation:
     """Something the agent is waiting to receive from someone, by a date."""
 
     id: str
-    sender: str = ""        # who owes it to the agent (email or name)
-    what: str = ""          # what's awaited
-    due_at: str = ""        # ISO 8601
-    status: str = "open"    # open | received | dropped | withdrawn
+    sender: str = ""  # who owes it to the agent (email or name)
+    what: str = ""  # what's awaited
+    due_at: str = ""  # ISO 8601
+    status: str = "open"  # open | received | dropped | withdrawn
     created_at: str = ""
     received_at: str = ""
-    chased_at: str = ""     # last time we surfaced a chase (idempotent nudges)
+    chased_at: str = ""  # last time we surfaced a chase (idempotent nudges)
     original_due: str = ""
     reschedule_count: int = 0
 
@@ -158,9 +158,7 @@ def chase_pressure(expectations: list[Expectation], now: datetime | None = None)
     chasing = [e for e in expectations if should_chase(e, now)]
     if not chasing:
         return 0.0
-    worst_overdue_h = max(
-        (max(0.0, -hours_to_due(e, now)) for e in chasing), default=0.0
-    )
+    worst_overdue_h = max((max(0.0, -hours_to_due(e, now)) for e in chasing), default=0.0)
     # 0 at due time, ~0.5 a day overdue, saturating; + a touch per extra item.
     base = min(0.6, worst_overdue_h / 48.0)
     return min(1.0, base + 0.1 * (len(chasing) - 1))
@@ -225,7 +223,11 @@ def register(
     due_iso = parse_due(due)
     key = (str(sender).strip().lower(), str(what).strip().lower(), due_iso)
     for e in items:
-        if (e.sender.strip().lower(), e.what.strip().lower(), e.due_at) == key and e.status == "open":
+        if (
+            e.sender.strip().lower(),
+            e.what.strip().lower(),
+            e.due_at,
+        ) == key and e.status == "open":
             return e
     e = Expectation(
         id=uuid.uuid4().hex,
@@ -281,7 +283,9 @@ def update(
     return target
 
 
-def mark_received(agent_dir: Path, expectation_id: str, now: datetime | None = None) -> Expectation | None:
+def mark_received(
+    agent_dir: Path, expectation_id: str, now: datetime | None = None
+) -> Expectation | None:
     items = load(agent_dir)
     for e in items:
         if e.id == expectation_id or e.id.startswith(expectation_id):

@@ -43,8 +43,8 @@ from __future__ import annotations
 
 import importlib
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 logger = logging.getLogger("cortiva.plugins")
 
@@ -85,12 +85,18 @@ class FabricPlugin:
         """Called at the start of each cycle, before task selection."""
 
     async def on_task_complete(
-        self, agent_id: str, task: Any, outcome: str,
+        self,
+        agent_id: str,
+        task: Any,
+        outcome: str,
     ) -> None:
         """Called when a task completes successfully."""
 
     async def on_task_fail(
-        self, agent_id: str, task: Any, error: str,
+        self,
+        agent_id: str,
+        task: Any,
+        error: str,
     ) -> None:
         """Called when a task fails or is deferred."""
 
@@ -227,7 +233,10 @@ class PluginManager:
                 logger.error("Plugin %s on_cycle error: %s", p.name, exc)
 
     async def dispatch_task_complete(
-        self, agent_id: str, task: Any, outcome: str,
+        self,
+        agent_id: str,
+        task: Any,
+        outcome: str,
     ) -> None:
         for p in self._plugins:
             try:
@@ -236,7 +245,10 @@ class PluginManager:
                 logger.error("Plugin %s on_task_complete error: %s", p.name, exc)
 
     async def dispatch_task_fail(
-        self, agent_id: str, task: Any, error: str,
+        self,
+        agent_id: str,
+        task: Any,
+        error: str,
     ) -> None:
         for p in self._plugins:
             try:
@@ -259,7 +271,10 @@ class PluginManager:
                 logger.error("Plugin %s on_heartbeat error: %s", p.name, exc)
 
     async def dispatch_hook(
-        self, source: str, event_type: str, payload: dict,
+        self,
+        source: str,
+        event_type: str,
+        payload: dict,
     ) -> None:
         for p in self._plugins:
             try:
@@ -278,7 +293,9 @@ class PluginManager:
         return False
 
     async def dispatch_should_reassess(
-        self, agent_id: str, messages: list[Any],
+        self,
+        agent_id: str,
+        messages: list[Any],
     ) -> bool:
         """True if ANY plugin judges something salient warrants a rethink."""
         for p in self._plugins:
@@ -316,7 +333,9 @@ class PluginManager:
                     parts.append(ctx)
             except Exception as exc:
                 logger.error(
-                    "Plugin %s task_context_provider error: %s", p.name, exc,
+                    "Plugin %s task_context_provider error: %s",
+                    p.name,
+                    exc,
                 )
         return "\n\n---\n\n".join(parts) if parts else ""
 

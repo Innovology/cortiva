@@ -170,16 +170,14 @@ CONVICTION_SEEDS: tuple[str, ...] = (
     "the pain. Listen to the wound, ignore the prescription.",
     "Polish IS the product. Anyone can ship the rough version; the difference "
     "that people pay for lives in the last 10%.",
-    "Consensus is where good ideas go to get averaged into mediocrity. "
-    "Someone should just decide.",
+    "Consensus is where good ideas go to get averaged into mediocrity. Someone should just decide.",
     "If you can't measure it you're guessing, and guessing dressed up as "
     "judgement is how teams fool themselves for months.",
     "Numbers lie more confidently than people do. Trust the metric only after "
     "you've watched the thing it claims to describe with your own eyes.",
     "Simplicity is a feature you have to fight for every single day — every "
     "addition is a withdrawal from the user's attention.",
-    "Do the boring, unglamorous thing properly. Reliability compounds; "
-    "cleverness decays.",
+    "Do the boring, unglamorous thing properly. Reliability compounds; cleverness decays.",
     "Deadlines are a creative tool, not a constraint. Cut scope, never "
     "quality — a smaller thing done well beats a bigger thing done badly.",
     "Write it down or it didn't happen. Untracked decisions get relitigated "

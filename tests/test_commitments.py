@@ -51,7 +51,9 @@ def test_progress_reduces_pressure(tmp_path) -> None:
 
 def test_subtasks_drive_objective_progress() -> None:
     c = cm.Commitment(
-        id="a", what="x", effort_hours=4,
+        id="a",
+        what="x",
+        effort_hours=4,
         subtasks=[{"desc": "one", "done": True}, {"desc": "two", "done": False}],
     )
     assert cm.progress_of(c) == 0.5
@@ -109,7 +111,10 @@ def test_update_no_id_targets_most_pressing(tmp_path) -> None:
     now = datetime(2026, 6, 14, 9, 0, tzinfo=UTC)
     cm.register(tmp_path, to="a@x", what="relaxed", due="2026-12-31", effort_hours=1)
     hot = cm.register(
-        tmp_path, to="b@x", what="urgent", due=(now + timedelta(hours=1)).isoformat(),
+        tmp_path,
+        to="b@x",
+        what="urgent",
+        due=(now + timedelta(hours=1)).isoformat(),
         effort_hours=10,
     )
     cm.update(tmp_path, delivered=True, now=now)  # no id → the pressing one
@@ -130,7 +135,9 @@ def test_summarise_reports_top_and_counts() -> None:
     soon = (now + timedelta(hours=1)).isoformat()
     items = [
         cm.Commitment(id="a", to="founder@x", what="big", due_at=soon, effort_hours=20),
-        cm.Commitment(id="b", to="peer@x", what="small", due_at="2026-12-31T17:00:00+00:00", effort_hours=1),
+        cm.Commitment(
+            id="b", to="peer@x", what="small", due_at="2026-12-31T17:00:00+00:00", effort_hours=1
+        ),
     ]
     s = cm.summarise(items, now)
     assert s["open"] == 2 and s["at_risk"] >= 1
@@ -157,12 +164,17 @@ def test_commitment_tools_offered_to_every_agent() -> None:
 
 def test_tool_calls_overlay_onto_suffix() -> None:
     suffix = ReflectionSuffix()
-    apply_tool_calls_to_suffix(suffix, [
-        {"name": "register_commitment",
-         "arguments": {"to": "a@x", "what": "job", "due": "2026-06-20", "effort_hours": 3}},
-        {"name": "update_commitment", "arguments": {"progress": 0.5}},
-        {"name": "drink_coffee", "arguments": {}},
-    ])
+    apply_tool_calls_to_suffix(
+        suffix,
+        [
+            {
+                "name": "register_commitment",
+                "arguments": {"to": "a@x", "what": "job", "due": "2026-06-20", "effort_hours": 3},
+            },
+            {"name": "update_commitment", "arguments": {"progress": 0.5}},
+            {"name": "drink_coffee", "arguments": {}},
+        ],
+    )
     assert suffix.register_commitment["what"] == "job"
     assert suffix.update_commitment["progress"] == 0.5
     assert suffix.drink_coffee == {}  # empty-but-present → handler fires on `is not None`
@@ -170,6 +182,7 @@ def test_tool_calls_overlay_onto_suffix() -> None:
 
 def test_register_commitment_schema_requires_core_fields() -> None:
     from cortiva.core.agent_tools import REGISTER_COMMITMENT_TOOL
+
     req = REGISTER_COMMITMENT_TOOL["function"]["parameters"]["required"]
     assert set(req) == {"to", "what", "due", "effort_hours"}
 
@@ -180,16 +193,18 @@ def test_register_commitment_schema_requires_core_fields() -> None:
 def test_count_load_grows_with_number_of_open_commitments() -> None:
     now = datetime(2026, 6, 14, 9, 0, tzinfo=UTC)
     far = (now + timedelta(days=30)).isoformat()
+
     def stack(n):
         return [cm.Commitment(id=str(i), what="x", due_at=far, effort_hours=1) for i in range(n)]
+
     # All far-future + tiny → ~no deadline pressure, but the PILE itself bites.
-    assert cm.count_load(stack(3)) == 0.0     # under the comfort line: count adds nothing
-    assert cm.count_load(stack(20)) == 1.0    # well over → full count-load
+    assert cm.count_load(stack(3)) == 0.0  # under the comfort line: count adds nothing
+    assert cm.count_load(stack(20)) == 1.0  # well over → full count-load
     p_few = cm.felt_pressure(stack(3), now)
     p_many = cm.felt_pressure(stack(12), now)
     p_huge = cm.felt_pressure(stack(20), now)
-    assert p_few < p_many < p_huge            # pressure grows with the count
-    assert p_huge >= 0.4                       # a big stack is real pressure on its own
+    assert p_few < p_many < p_huge  # pressure grows with the count
+    assert p_huge >= 0.4  # a big stack is real pressure on its own
 
 
 def test_reschedule_keeps_original_due_and_counts(tmp_path) -> None:
@@ -199,7 +214,7 @@ def test_reschedule_keeps_original_due_and_counts(tmp_path) -> None:
     cm.update(tmp_path, commitment_id=c.id, due="2026-06-25", reschedule_by="owner")
     g = cm.load(tmp_path)[0]
     assert g.due_at.startswith("2026-06-25")
-    assert g.original_due.startswith("2026-06-18")   # original preserved
+    assert g.original_due.startswith("2026-06-18")  # original preserved
     assert g.reschedule_count == 1
     assert g.last_reschedule_by == "owner"
 
@@ -208,27 +223,43 @@ def test_reschedule_by_counterparty_is_legit(tmp_path) -> None:
     c = cm.register(tmp_path, to="maren@x", what="deck", due="2026-06-19", effort_hours=2)
     cm.update(tmp_path, commitment_id=c.id, due="2026-07-20", reschedule_by="counterparty")
     g = cm.load(tmp_path)[0]
-    assert g.last_reschedule_by == "counterparty"   # Maren relaxed it — no scar on the agent
+    assert g.last_reschedule_by == "counterparty"  # Maren relaxed it — no scar on the agent
 
 
 def test_reschedule_drops_pressure(tmp_path) -> None:
     now = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
     # 10h of work due in 2h = panic.
-    c = cm.register(tmp_path, to="a@x", what="big", due=(now + timedelta(hours=2)).isoformat(),
-                    effort_hours=10, now=now)
+    c = cm.register(
+        tmp_path,
+        to="a@x",
+        what="big",
+        due=(now + timedelta(hours=2)).isoformat(),
+        effort_hours=10,
+        now=now,
+    )
     assert cm.required_utilisation(cm.load(tmp_path)[0], now) >= cm.AT_RISK_UTILISATION
     # requester bumps it a month → pressure collapses.
-    cm.update(tmp_path, commitment_id=c.id, due=(now + timedelta(days=30)).isoformat(),
-              reschedule_by="counterparty")
+    cm.update(
+        tmp_path,
+        commitment_id=c.id,
+        due=(now + timedelta(days=30)).isoformat(),
+        reschedule_by="counterparty",
+    )
     assert cm.required_utilisation(cm.load(tmp_path)[0], now) < 0.05
 
 
 def test_update_subtasks_artifact_effort_and_prefix_id(tmp_path) -> None:
-    c = cm.register(tmp_path, to="a@x", what="job", due="2026-06-20", effort_hours=4,
-                    subtasks=["one", "two"])
+    c = cm.register(
+        tmp_path, to="a@x", what="job", due="2026-06-20", effort_hours=4, subtasks=["one", "two"]
+    )
     # tick a subtask, re-estimate, attach proof — addressed by an id PREFIX
-    cm.update(tmp_path, commitment_id=c.id[:6], subtasks_done=["one"],
-              effort_hours=6, artifact="https://proof")
+    cm.update(
+        tmp_path,
+        commitment_id=c.id[:6],
+        subtasks_done=["one"],
+        effort_hours=6,
+        artifact="https://proof",
+    )
     g = cm.load(tmp_path)[0]
     assert cm.progress_of(g) == 0.5 and g.effort_hours == 6 and g.artifact == "https://proof"
 
@@ -236,9 +267,15 @@ def test_update_subtasks_artifact_effort_and_prefix_id(tmp_path) -> None:
 def test_update_no_id_picks_most_pressing(tmp_path) -> None:
     now = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
     cm.register(tmp_path, to="a@x", what="relaxed", due="2026-12-31", effort_hours=1, now=now)
-    hot = cm.register(tmp_path, to="b@x", what="urgent",
-                      due=(now + timedelta(hours=1)).isoformat(), effort_hours=10, now=now)
-    cm.update(tmp_path, progress=0.5, now=now)   # no id → most pressing
+    hot = cm.register(
+        tmp_path,
+        to="b@x",
+        what="urgent",
+        due=(now + timedelta(hours=1)).isoformat(),
+        effort_hours=10,
+        now=now,
+    )
+    cm.update(tmp_path, progress=0.5, now=now)  # no id → most pressing
     assert {c.id: c for c in cm.load(tmp_path)}[hot.id].progress == 0.5
 
 
@@ -248,14 +285,20 @@ def test_update_missing_returns_none(tmp_path) -> None:
 
 def test_withdraw_is_clean_close_not_failure(tmp_path) -> None:
     now = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
-    c = cm.register(tmp_path, to="a@x", what="pulled", due=(now - timedelta(hours=5)).isoformat(),
-                    effort_hours=3, now=now)
+    c = cm.register(
+        tmp_path,
+        to="a@x",
+        what="pulled",
+        due=(now - timedelta(hours=5)).isoformat(),
+        effort_hours=3,
+        now=now,
+    )
     # overdue → would be at-risk, but the requester withdrew it.
     cm.update(tmp_path, commitment_id=c.id, withdrawn=True)
     g = cm.load(tmp_path)[0]
     assert g.status == "withdrawn"
-    assert cm.required_utilisation(g, now) == 0.0      # no pressure
-    assert not cm.is_overdue(g, now)                    # not a failure
+    assert cm.required_utilisation(g, now) == 0.0  # no pressure
+    assert not cm.is_overdue(g, now)  # not a failure
     assert cm.summarise(cm.load(tmp_path), now)["open"] == 0
 
 
@@ -268,39 +311,45 @@ def test_withdraw_is_clean_close_not_failure(tmp_path) -> None:
 def _write_sent_email(agent_dir, to, subject="hi", when=None):
     """Drop a fake 'sent' email into the agent's outbox/email/sent/ folder."""
     import json
+
     sent = agent_dir / "outbox" / "email" / "sent"
     sent.mkdir(parents=True, exist_ok=True)
-    payload = {"to": to, "subject": subject, "body": "...",
-               "queued_at": (when or datetime.now(UTC)).isoformat()}
+    payload = {
+        "to": to,
+        "subject": subject,
+        "body": "...",
+        "queued_at": (when or datetime.now(UTC)).isoformat(),
+    }
     p = sent / f"{subject.replace(' ', '_')}.json"
     p.write_text(json.dumps(payload), encoding="utf-8")
     return p
 
 
 def test_delivered_without_evidence_stays_open(tmp_path) -> None:
-    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20",
-                    effort_hours=2)
+    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20", effort_hours=2)
     g = cm.update(tmp_path, commitment_id=c.id, delivered=True, require_evidence=True)
     # No email, no artifact → it did NOT close.
     assert g.status == "open"
     assert g.claimed_delivered_at != ""
     assert "no artifact" in g.verification.lower() or "claimed delivered" in g.verification.lower()
-    assert cm.load(tmp_path)[0].status == "open"   # persisted as still owed
+    assert cm.load(tmp_path)[0].status == "open"  # persisted as still owed
 
 
 def test_delivered_with_artifact_reference_closes(tmp_path) -> None:
-    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20",
-                    effort_hours=2)
-    g = cm.update(tmp_path, commitment_id=c.id, delivered=True,
-                  artifact="https://github.com/Innovology/x/pull/42",
-                  require_evidence=True)
+    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20", effort_hours=2)
+    g = cm.update(
+        tmp_path,
+        commitment_id=c.id,
+        delivered=True,
+        artifact="https://github.com/Innovology/x/pull/42",
+        require_evidence=True,
+    )
     assert g.status == "delivered"
     assert g.delivered_at != "" and g.claimed_delivered_at == ""
 
 
 def test_delivered_with_sent_email_closes(tmp_path) -> None:
-    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20",
-                    effort_hours=2)
+    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20", effort_hours=2)
     _write_sent_email(tmp_path, "alex@x.io", subject="The org chart")
     g = cm.update(tmp_path, commitment_id=c.id, delivered=True, require_evidence=True)
     assert g.status == "delivered"
@@ -310,12 +359,12 @@ def test_delivered_with_sent_email_closes(tmp_path) -> None:
 def test_evidence_requires_email_after_commitment_made(tmp_path) -> None:
     now = datetime(2026, 6, 16, 9, 0, tzinfo=UTC)
     # An email to alex sent BEFORE the commitment was made is not THIS delivery.
-    _write_sent_email(tmp_path, "alex@x.io", subject="earlier note",
-                      when=now - timedelta(days=2))
-    c = cm.register(tmp_path, to="alex@x.io", what="org chart", due="2026-06-20",
-                    effort_hours=2, now=now)
+    _write_sent_email(tmp_path, "alex@x.io", subject="earlier note", when=now - timedelta(days=2))
+    c = cm.register(
+        tmp_path, to="alex@x.io", what="org chart", due="2026-06-20", effort_hours=2, now=now
+    )
     g = cm.update(tmp_path, commitment_id=c.id, delivered=True, require_evidence=True)
-    assert g.status == "open"          # the stale email doesn't count
+    assert g.status == "open"  # the stale email doesn't count
 
 
 def test_require_evidence_off_preserves_legacy_behaviour(tmp_path) -> None:
@@ -328,12 +377,9 @@ def test_dedup_ignores_due_so_org_chart_registers_once(tmp_path) -> None:
     # The org-chart-11x bug: same promise, a different due each cycle. With
     # dedup on (to, what) regardless of due, it stays a SINGLE commitment whose
     # deadline is rescheduled — never duplicated.
-    cm.register(tmp_path, to="alex@x.io", what="Action the directive: org chart",
-                due="2026-06-18")
-    cm.register(tmp_path, to="alex@x.io", what="action the directive  org chart.",
-                due="2026-06-19")
-    cm.register(tmp_path, to="ALEX@X.IO", what="Action the directive: Org Chart",
-                due="2026-06-20")
+    cm.register(tmp_path, to="alex@x.io", what="Action the directive: org chart", due="2026-06-18")
+    cm.register(tmp_path, to="alex@x.io", what="action the directive  org chart.", due="2026-06-19")
+    cm.register(tmp_path, to="ALEX@X.IO", what="Action the directive: Org Chart", due="2026-06-20")
     items = cm.load(tmp_path)
     assert len(items) == 1
-    assert items[0].due_at[:10] == "2026-06-20"   # rescheduled to the latest
+    assert items[0].due_at[:10] == "2026-06-20"  # rescheduled to the latest

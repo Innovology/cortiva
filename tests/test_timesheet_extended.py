@@ -168,7 +168,8 @@ class TestWeek:
                 ],
             }
             (journal_dir / f"timesheet-{date_str}.json").write_text(
-                json.dumps(history_data), encoding="utf-8",
+                json.dumps(history_data),
+                encoding="utf-8",
             )
 
         ts = Timesheet(agent_dir)
@@ -243,7 +244,8 @@ class TestTimesheetLoadCorruptData:
             yesterday = now - timedelta(days=1)
             date_str = yesterday.strftime("%Y-%m-%d")
             (journal_dir / f"timesheet-{date_str}.json").write_text(
-                "broken{json", encoding="utf-8",
+                "broken{json",
+                encoding="utf-8",
             )
 
             ts = Timesheet(agent_dir)

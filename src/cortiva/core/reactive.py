@@ -152,14 +152,16 @@ class ReactiveEngine:
                 notify_channel=act_data.get("notify_channel", ""),
                 notify_message=act_data.get("notify_message", ""),
             )
-            self._triggers.append(ReactiveTrigger(
-                name=entry.get("name", ""),
-                agent=entry.get("agent", "*"),
-                condition=condition,
-                action=action,
-                enabled=entry.get("enabled", True),
-                max_fires=int(entry.get("max_fires", 0)),
-            ))
+            self._triggers.append(
+                ReactiveTrigger(
+                    name=entry.get("name", ""),
+                    agent=entry.get("agent", "*"),
+                    condition=condition,
+                    action=action,
+                    enabled=entry.get("enabled", True),
+                    max_fires=int(entry.get("max_fires", 0)),
+                )
+            )
 
     def add_trigger(self, trigger: ReactiveTrigger) -> None:
         """Add a trigger programmatically."""
@@ -178,7 +180,10 @@ class ReactiveEngine:
         return list(self._triggers)
 
     def check_hook(
-        self, source: str, event_type: str, agent_ids: list[str],
+        self,
+        source: str,
+        event_type: str,
+        agent_ids: list[str],
     ) -> list[FiredTrigger]:
         """Check hook-based triggers.  Called when a hook arrives."""
         fired: list[FiredTrigger] = []
@@ -198,16 +203,20 @@ class ReactiveEngine:
             for agent_id in targets:
                 if agent_id in agent_ids or trigger.agent == "*":
                     trigger.fire_count += 1
-                    fired.append(FiredTrigger(
-                        trigger_name=trigger.name,
-                        agent_id=agent_id,
-                        action=trigger.action,
-                        context={"source": source, "event_type": event_type},
-                    ))
+                    fired.append(
+                        FiredTrigger(
+                            trigger_name=trigger.name,
+                            agent_id=agent_id,
+                            action=trigger.action,
+                            context={"source": source, "event_type": event_type},
+                        )
+                    )
         return fired
 
     def check_budget(
-        self, agent_id: str, usage_ratio: float,
+        self,
+        agent_id: str,
+        usage_ratio: float,
     ) -> list[FiredTrigger]:
         """Check budget-threshold triggers for an agent."""
         fired: list[FiredTrigger] = []
@@ -224,16 +233,20 @@ class ReactiveEngine:
                 continue
 
             trigger.fire_count += 1
-            fired.append(FiredTrigger(
-                trigger_name=trigger.name,
-                agent_id=agent_id,
-                action=trigger.action,
-                context={"usage_ratio": usage_ratio},
-            ))
+            fired.append(
+                FiredTrigger(
+                    trigger_name=trigger.name,
+                    agent_id=agent_id,
+                    action=trigger.action,
+                    context={"usage_ratio": usage_ratio},
+                )
+            )
         return fired
 
     def check_message(
-        self, agent_id: str, message_content: str,
+        self,
+        agent_id: str,
+        message_content: str,
     ) -> list[FiredTrigger]:
         """Check message-based triggers (urgent keywords, etc.)."""
         fired: list[FiredTrigger] = []
@@ -250,12 +263,14 @@ class ReactiveEngine:
                 continue
 
             trigger.fire_count += 1
-            fired.append(FiredTrigger(
-                trigger_name=trigger.name,
-                agent_id=agent_id,
-                action=trigger.action,
-                context={"message": message_content[:200]},
-            ))
+            fired.append(
+                FiredTrigger(
+                    trigger_name=trigger.name,
+                    agent_id=agent_id,
+                    action=trigger.action,
+                    context={"message": message_content[:200]},
+                )
+            )
         return fired
 
     def _check_max_fires(self, trigger: ReactiveTrigger) -> bool:

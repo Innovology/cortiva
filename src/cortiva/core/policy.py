@@ -47,7 +47,6 @@ import fnmatch
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("cortiva.policy")
@@ -134,7 +133,8 @@ class ToolPolicy:
         if self.allowed:
             # Filter out any that are also denied
             return [
-                t for t in self.allowed
+                t
+                for t in self.allowed
                 if not any(fnmatch.fnmatch(t.lower(), d.lower()) for d in self.denied)
             ]
         return None
@@ -222,7 +222,7 @@ class FilesystemPolicy:
                         )
                 return PolicyResult(
                     decision=Decision.DENY,
-                    reason=f"Path outside workspace (workspace_only=true)",
+                    reason="Path outside workspace (workspace_only=true)",
                 )
 
         return PolicyResult(decision=Decision.ALLOW)
@@ -327,7 +327,9 @@ class PolicyManager:
                 self._policies[agent_id] = merged
 
     def _merge_with_defaults(
-        self, agent_id: str, agent_data: dict[str, Any],
+        self,
+        agent_id: str,
+        agent_data: dict[str, Any],
     ) -> AgentPolicy:
         """Merge agent-specific config with defaults."""
         # Start with defaults

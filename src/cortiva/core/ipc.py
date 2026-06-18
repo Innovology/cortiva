@@ -12,9 +12,9 @@ import asyncio
 import json
 import logging
 import os
-import signal
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 logger = logging.getLogger("cortiva.ipc")
 
@@ -64,9 +64,7 @@ class FabricServer:
         if path.exists():
             path.unlink()
 
-        self._server = await asyncio.start_unix_server(
-            self._handle_connection, path=str(path)
-        )
+        self._server = await asyncio.start_unix_server(self._handle_connection, path=str(path))
         # Make socket readable/writable by owner only
         path.chmod(0o600)
         logger.info("IPC server listening on %s", path)

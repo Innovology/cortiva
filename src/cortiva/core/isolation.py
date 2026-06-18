@@ -84,10 +84,19 @@ class IsolationConfig:
 
     tier: IsolationTier = IsolationTier.NONE
 
-    allowed_env: list[str] = field(default_factory=lambda: [
-        "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ",
-        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
-    ])
+    allowed_env: list[str] = field(
+        default_factory=lambda: [
+            "PATH",
+            "HOME",
+            "USER",
+            "LANG",
+            "LC_ALL",
+            "TZ",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+        ]
+    )
     """Environment variables allowed through to agent subprocesses (Tier 2+)."""
 
     container: ContainerConfig = field(default_factory=ContainerConfig)
@@ -101,10 +110,17 @@ class IsolationConfig:
         allowed_env = data.get("allowed_env", default_env)
 
         container_data = data.get("container", {})
-        container = ContainerConfig(**{
-            k: v for k, v in container_data.items()
-            if k in ContainerConfig.__dataclass_fields__
-        }) if container_data else ContainerConfig()
+        container = (
+            ContainerConfig(
+                **{
+                    k: v
+                    for k, v in container_data.items()
+                    if k in ContainerConfig.__dataclass_fields__
+                }
+            )
+            if container_data
+            else ContainerConfig()
+        )
 
         return cls(tier=tier, allowed_env=allowed_env, container=container)
 
@@ -204,8 +220,7 @@ class SoftIsolation(NoIsolation):
         resolved = path.resolve()
         if not (resolved == agent_dir or str(resolved).startswith(str(agent_dir) + os.sep)):
             raise PermissionError(
-                f"Agent {agent_id!r} attempted to access path outside its "
-                f"workspace: {resolved}"
+                f"Agent {agent_id!r} attempted to access path outside its workspace: {resolved}"
             )
         return resolved
 
@@ -214,7 +229,8 @@ class SoftIsolation(NoIsolation):
         if caller_id != target_id:
             logger.warning(
                 "Blocked cross-agent memory access: %s tried to access %s",
-                caller_id, target_id,
+                caller_id,
+                target_id,
             )
             return False
         return True
@@ -232,7 +248,9 @@ class SoftIsolation(NoIsolation):
         if not (resolved_cwd == agent_dir or str(resolved_cwd).startswith(str(agent_dir) + os.sep)):
             logger.warning(
                 "Agent %s terminal cwd %s outside workspace, resetting to %s",
-                agent_id, resolved_cwd, agent_dir / "workspace",
+                agent_id,
+                resolved_cwd,
+                agent_dir / "workspace",
             )
             resolved_cwd = agent_dir / "workspace"
             resolved_cwd.mkdir(parents=True, exist_ok=True)
@@ -345,7 +363,8 @@ class ContainerIsolation(OSIsolation):
         if not self._runtime_available():
             logger.warning(
                 "%s not found on PATH, falling back to OS isolation for %s",
-                self._runtime, agent_id,
+                self._runtime,
+                agent_id,
             )
             return super().prepare_terminal_env(agent_id, cmd, cwd)
 
@@ -357,19 +376,25 @@ class ContainerIsolation(OSIsolation):
         env_vars = self._filter_env(agent_id)
 
         container_cmd: list[str] = [
-            self._runtime, "run",
+            self._runtime,
+            "run",
             "--rm",
-            "--name", container_name,
+            "--name",
+            container_name,
             # Resource limits
-            "--cpus", cc.cpu_limit,
-            "--memory", cc.memory_limit,
+            "--cpus",
+            cc.cpu_limit,
+            "--memory",
+            cc.memory_limit,
             f"--shm-size={cc.shm_size}",
             # Network isolation
             f"--network={cc.network}",
             # Mount agent directory only
-            "-v", f"{agent_dir}:/agent:rw",
+            "-v",
+            f"{agent_dir}:/agent:rw",
             # Working directory inside container
-            "-w", "/agent/workspace",
+            "-w",
+            "/agent/workspace",
         ]
 
         # Pass through allowed env vars
@@ -378,9 +403,12 @@ class ContainerIsolation(OSIsolation):
 
         # Inject browser sidecar endpoint if configured
         if cc.browser_endpoint:
-            container_cmd.extend([
-                "-e", f"BROWSER_WS_ENDPOINT={cc.browser_endpoint}",
-            ])
+            container_cmd.extend(
+                [
+                    "-e",
+                    f"BROWSER_WS_ENDPOINT={cc.browser_endpoint}",
+                ]
+            )
 
         # Run as non-root (UID 1000)
         container_cmd.extend(["--user", "1000:1000"])

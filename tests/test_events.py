@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from cortiva.core.events import EventBus, EventFilter, EventTypes, FabricEvent
 
 
@@ -22,6 +20,7 @@ class TestFabricEvent:
 
     def test_to_json_and_back(self) -> None:
         import json
+
         event = FabricEvent(event_type="agent.sleep", agent_id="a1")
         j = event.to_json()
         restored = FabricEvent.from_dict(json.loads(j))

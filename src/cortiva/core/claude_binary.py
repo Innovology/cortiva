@@ -187,8 +187,12 @@ def _validate(path: str) -> bool:
 def _version_of(path: str) -> str:
     try:
         proc = subprocess.run(
-            [path, "--version"], capture_output=True, text=True,
-            timeout=_VERSION_TIMEOUT_S, check=False, stdin=subprocess.DEVNULL,
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_VERSION_TIMEOUT_S,
+            check=False,
+            stdin=subprocess.DEVNULL,
         )
         return proc.stdout.strip() if proc.returncode == 0 else ""
     except (subprocess.TimeoutExpired, OSError):
@@ -227,17 +231,18 @@ def claude_binary() -> str:
         try:
             path = _lay_copy(source, 0)
         except OSError:
-            logger.warning("could not lay managed claude copy; using source",
-                           exc_info=True)
+            logger.warning("could not lay managed claude copy; using source", exc_info=True)
             return str(source)
-        _write_state({
-            "managed_path": path,
-            "source_path": str(source),
-            "source_sig": _source_sig(source),
-            "generation": 0,
-            "validated_at": 0.0,
-            "version": "",
-        })
+        _write_state(
+            {
+                "managed_path": path,
+                "source_path": str(source),
+                "source_sig": _source_sig(source),
+                "generation": 0,
+                "validated_at": 0.0,
+                "version": "",
+            }
+        )
         _prune_old(path)
         _cached_path = path
         return path
@@ -279,15 +284,20 @@ def ensure_healthy_claude(force: bool = False) -> str | None:
                 logger.warning(
                     "claude upstream changed (brew upgrade?): sig %s -> %s — "
                     "re-laying managed copy from %s",
-                    state.get("source_sig"), sig, source,
+                    state.get("source_sig"),
+                    sig,
+                    source,
                 )
             generation = 0 if upgraded else generation
             path = _lay_copy(source, generation)
             ok = _validate(path)
             _commit(path, source, sig, generation, ok)
             if not ok:
-                logger.error("freshly-laid claude copy %s failed --version "
-                             "probe (claude itself may be broken)", path)
+                logger.error(
+                    "freshly-laid claude copy %s failed --version "
+                    "probe (claude itself may be broken)",
+                    path,
+                )
             return path
 
         # Past the missing/upgraded branch, the managed copy exists on disk.
@@ -311,18 +321,23 @@ def ensure_healthy_claude(force: bool = False) -> str | None:
             "claude at %s is WEDGED — `--version` did not return within %.0fs "
             "(the path-launch-wedge). Curing: laying a fresh copy at a new path "
             "(generation %d -> %d).",
-            managed, _VERSION_TIMEOUT_S, generation, generation + 1,
+            managed,
+            _VERSION_TIMEOUT_S,
+            generation,
+            generation + 1,
         )
         generation += 1
         path = _lay_copy(source, generation)
         ok = _validate(path)
         _commit(path, source, sig, generation, ok)
         if ok:
-            logger.warning("claude CURED — fresh copy at %s passes `--version`; "
-                           "voice-compose and dev sessions are healthy again.", path)
+            logger.warning(
+                "claude CURED — fresh copy at %s passes `--version`; "
+                "voice-compose and dev sessions are healthy again.",
+                path,
+            )
         else:
-            logger.error("claude STILL wedged after curing at %s — will retry "
-                         "next cycle.", path)
+            logger.error("claude STILL wedged after curing at %s — will retry next cycle.", path)
         return path
 
 
@@ -330,13 +345,15 @@ def _commit(path: str, source: Path, sig: str, generation: int, ok: bool) -> Non
     """Persist a new managed copy as the current one, prune the old, refresh the
     hot-path cache. Caller holds ``_LOCK``."""
     global _cached_path
-    _write_state({
-        "managed_path": path,
-        "source_path": str(source),
-        "source_sig": sig,
-        "generation": generation,
-        "validated_at": time.time() if ok else 0.0,
-        "version": _version_of(path) if ok else "",
-    })
+    _write_state(
+        {
+            "managed_path": path,
+            "source_path": str(source),
+            "source_sig": sig,
+            "generation": generation,
+            "validated_at": time.time() if ok else 0.0,
+            "version": _version_of(path) if ok else "",
+        }
+    )
     _prune_old(path)
     _cached_path = path

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,24 +11,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from cortiva.core.cluster import (
+    HEARTBEAT_TIMEOUT,
     AgentRegistry,
     Cluster,
     ClusterNode,
-    HEARTBEAT_TIMEOUT,
     MoveResult,
-    move_agent,
-    sync_via_rsync,
-    _discover_static,
     _discover_config,
     _discover_mdns,
+    _discover_static,
     _fetch_node_status,
+    move_agent,
 )
 from cortiva.core.models import (
     ClusterModels,
     ModelEndpoint,
     NodeModels,
 )
-
 
 # ---------------------------------------------------------------------------
 # ClusterNode
@@ -39,8 +36,11 @@ from cortiva.core.models import (
 class TestClusterNode:
     def test_to_dict_roundtrip(self) -> None:
         node = ClusterNode(
-            node_id="n1", host="10.0.0.1", port=9400,
-            agents=["a1", "a2"], status="online",
+            node_id="n1",
+            host="10.0.0.1",
+            port=9400,
+            agents=["a1", "a2"],
+            status="online",
         )
         d = node.to_dict()
         assert d["node_id"] == "n1"
@@ -168,7 +168,7 @@ class TestCluster:
 
     def test_check_timeouts(self) -> None:
         cluster = Cluster()
-        old_time = datetime.now(timezone.utc) - timedelta(seconds=HEARTBEAT_TIMEOUT + 10)
+        old_time = datetime.now(UTC) - timedelta(seconds=HEARTBEAT_TIMEOUT + 10)
         node = ClusterNode(node_id="n1", last_heartbeat=old_time, status="online")
         cluster.nodes["n1"] = node
 
@@ -241,12 +241,16 @@ class TestDiscovery:
     @pytest.mark.asyncio
     async def test_discover_config_json(self, tmp_path: Path) -> None:
         config_file = tmp_path / "cluster.json"
-        config_file.write_text(json.dumps({
-            "nodes": [
-                {"node_id": "n1", "host": "h1"},
-                {"node_id": "n2", "host": "h2"},
-            ]
-        }))
+        config_file.write_text(
+            json.dumps(
+                {
+                    "nodes": [
+                        {"node_id": "n1", "host": "h1"},
+                        {"node_id": "n2", "host": "h2"},
+                    ]
+                }
+            )
+        )
         nodes = await _discover_config(str(config_file))
         assert len(nodes) == 2
         assert nodes[0].node_id == "n1"
@@ -274,7 +278,7 @@ class TestDiscovery:
                 ClusterNode(node_id="local"),  # Should be skipped
             ],
         ):
-            peers = await cluster.discover(
+            _peers = await cluster.discover(
                 static_nodes=[{"host": "x", "node_id": "peer1"}],
             )
         # peer1 joined, local was skipped
@@ -415,9 +419,13 @@ class TestClusterModels:
     def test_resolve_routine_fallback_remote(self) -> None:
         reg = ClusterModels(local_node_id="local")
         reg.update_node("local", models=[])
-        reg.update_node("remote", host="10.0.0.2", models=[
-            {"name": "llama3:8b", "family": "llama"},
-        ])
+        reg.update_node(
+            "remote",
+            host="10.0.0.2",
+            models=[
+                {"name": "llama3:8b", "family": "llama"},
+            ],
+        )
 
         endpoint = reg.resolve("routine")
         assert endpoint is not None
@@ -426,28 +434,37 @@ class TestClusterModels:
 
     def test_resolve_embedding(self) -> None:
         reg = ClusterModels(local_node_id="local")
-        reg.update_node("local", models=[
-            {"name": "nomic-embed-text", "family": "nomic"},
-        ])
+        reg.update_node(
+            "local",
+            models=[
+                {"name": "nomic-embed-text", "family": "nomic"},
+            ],
+        )
         endpoint = reg.resolve("embedding")
         assert endpoint is not None
         assert endpoint.model_name == "nomic-embed-text"
 
     def test_resolve_specific_model_name(self) -> None:
         reg = ClusterModels(local_node_id="local")
-        reg.update_node("local", models=[
-            {"name": "qwen3.5:35b", "family": "qwen"},
-            {"name": "llama3:8b", "family": "llama"},
-        ])
+        reg.update_node(
+            "local",
+            models=[
+                {"name": "qwen3.5:35b", "family": "qwen"},
+                {"name": "llama3:8b", "family": "llama"},
+            ],
+        )
         endpoint = reg.resolve("routine", model_name="llama3")
         assert endpoint is not None
         assert "llama3" in endpoint.model_name
 
     def test_resolve_custom_endpoint(self) -> None:
         reg = ClusterModels(local_node_id="local")
-        reg.update_node("local", custom_endpoints=[
-            {"provider": "vllm", "url": "http://gpu:8000", "models": ["mixtral"]},
-        ])
+        reg.update_node(
+            "local",
+            custom_endpoints=[
+                {"provider": "vllm", "url": "http://gpu:8000", "models": ["mixtral"]},
+            ],
+        )
         endpoint = reg.resolve("routine", model_name="mixtral")
         assert endpoint is not None
         assert endpoint.provider == "vllm"
@@ -481,9 +498,12 @@ class TestClusterModels:
     def test_all_model_names(self) -> None:
         reg = ClusterModels(local_node_id="local")
         reg.update_node("n1", models=[{"name": "m1"}], terminal_agents=["ta"])
-        reg.update_node("n2", custom_endpoints=[
-            {"models": ["m2", "m3"]},
-        ])
+        reg.update_node(
+            "n2",
+            custom_endpoints=[
+                {"models": ["m2", "m3"]},
+            ],
+        )
         names = reg.all_model_names()
         assert names == ["m1", "m2", "m3", "ta"]
 
@@ -507,8 +527,11 @@ class TestNodeModels:
 class TestModelEndpoint:
     def test_to_dict(self) -> None:
         ep = ModelEndpoint(
-            node_id="n1", model_name="m1", provider="ollama",
-            url="http://localhost:11434", is_local=True,
+            node_id="n1",
+            model_name="m1",
+            provider="ollama",
+            url="http://localhost:11434",
+            is_local=True,
         )
         d = ep.to_dict()
         assert d["node_id"] == "n1"
@@ -622,6 +645,7 @@ class TestFabricClusterIPC:
 class TestCLIParser:
     def test_cluster_status_parser(self) -> None:
         from cortiva.cli.main import build_parser
+
         parser = build_parser()
         args = parser.parse_args(["cluster", "status"])
         assert args.command == "cluster"
@@ -629,6 +653,7 @@ class TestCLIParser:
 
     def test_cluster_nodes_parser(self) -> None:
         from cortiva.cli.main import build_parser
+
         parser = build_parser()
         args = parser.parse_args(["cluster", "nodes"])
         assert args.command == "cluster"
@@ -636,6 +661,7 @@ class TestCLIParser:
 
     def test_agent_move_parser(self) -> None:
         from cortiva.cli.main import build_parser
+
         parser = build_parser()
         args = parser.parse_args(["agent", "move", "a1", "--to", "n2"])
         assert args.command == "agent"

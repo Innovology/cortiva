@@ -10,10 +10,10 @@ import pytest
 from cortiva.adapters.channel.internal import InternalChannelAdapter
 from cortiva.adapters.protocols import ChannelAdapter, Message
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def adapter() -> InternalChannelAdapter:
@@ -24,6 +24,7 @@ def adapter() -> InternalChannelAdapter:
 # Protocol conformance
 # ---------------------------------------------------------------------------
 
+
 def test_implements_channel_adapter_protocol():
     assert isinstance(InternalChannelAdapter(), ChannelAdapter)
 
@@ -31,6 +32,7 @@ def test_implements_channel_adapter_protocol():
 # ---------------------------------------------------------------------------
 # Direct messaging
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_send_and_receive_direct(adapter: InternalChannelAdapter):
@@ -78,6 +80,7 @@ async def test_direct_message_only_reaches_recipient(adapter: InternalChannelAda
 # ---------------------------------------------------------------------------
 # Broadcast / channel messaging
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_broadcast_to_channel(adapter: InternalChannelAdapter):
@@ -132,6 +135,7 @@ async def test_unsubscribed_agent_gets_no_broadcast(adapter: InternalChannelAdap
 # since filter
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_receive_since_filters_old_messages(adapter: InternalChannelAdapter):
     await adapter.send("alice", "bob", "old message")
@@ -151,6 +155,7 @@ async def test_receive_since_filters_old_messages(adapter: InternalChannelAdapte
 # limit
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_receive_limit(adapter: InternalChannelAdapter):
     for i in range(5):
@@ -168,6 +173,7 @@ async def test_receive_limit(adapter: InternalChannelAdapter):
 # thread_id
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_thread_id_preserved(adapter: InternalChannelAdapter):
     await adapter.send("alice", "bob", "threaded", thread_id="t-123")
@@ -179,6 +185,7 @@ async def test_thread_id_preserved(adapter: InternalChannelAdapter):
 # ---------------------------------------------------------------------------
 # Message fields
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_message_has_uuid_id(adapter: InternalChannelAdapter):
@@ -207,6 +214,7 @@ async def test_direct_message_metadata_empty(adapter: InternalChannelAdapter):
 # ---------------------------------------------------------------------------
 # Concurrency
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_concurrent_sends(adapter: InternalChannelAdapter):
@@ -252,6 +260,7 @@ async def test_concurrent_broadcast(adapter: InternalChannelAdapter):
 # Idempotent listen
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_listen_idempotent(adapter: InternalChannelAdapter):
     """Calling listen twice for the same channel does not duplicate messages."""
@@ -270,7 +279,6 @@ class TestDurablePeerMessaging:
     inter-agent messages (CEO→CFO etc., 2026-06-07)."""
 
     async def test_message_survives_new_adapter_instance(self, tmp_path):
-        import pytest
         from cortiva.adapters.channel.internal import InternalChannelAdapter
 
         # Process 1: CEO sends to CFO, CFO never reads

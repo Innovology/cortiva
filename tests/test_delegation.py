@@ -9,14 +9,15 @@ import pytest
 from cortiva.core.delegation import AssignmentStatus, DelegationManager, WorkAssignment
 from cortiva.core.org import OrgModel
 
-
-SAMPLE_ORG = OrgModel.from_dict({
-    "name": "Test Org",
-    "reporting": {
-        "dev-cortiva": "pm-cortiva",
-        "qa-cortiva": "pm-cortiva",
-    },
-})
+SAMPLE_ORG = OrgModel.from_dict(
+    {
+        "name": "Test Org",
+        "reporting": {
+            "dev-cortiva": "pm-cortiva",
+            "qa-cortiva": "pm-cortiva",
+        },
+    }
+)
 
 
 class TestWorkAssignment:
@@ -49,7 +50,10 @@ class TestDelegationManager:
         mgr = DelegationManager(tmp_path / ".delegation")
         # PM can delegate to dev
         a = mgr.create_assignment(
-            "pm-cortiva", "dev-cortiva", "Fix the bug", org=SAMPLE_ORG,
+            "pm-cortiva",
+            "dev-cortiva",
+            "Fix the bug",
+            org=SAMPLE_ORG,
         )
         assert a is not None
 
@@ -57,7 +61,10 @@ class TestDelegationManager:
         mgr = DelegationManager(tmp_path / ".delegation")
         with pytest.raises(PermissionError, match="delegation authority"):
             mgr.create_assignment(
-                "dev-cortiva", "pm-cortiva", "Assign me work", org=SAMPLE_ORG,
+                "dev-cortiva",
+                "pm-cortiva",
+                "Assign me work",
+                org=SAMPLE_ORG,
             )
 
     def test_get_assignments_for(self, tmp_path: Path) -> None:

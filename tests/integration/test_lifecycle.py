@@ -16,7 +16,6 @@ from cortiva.core.fabric import Fabric
 
 from .conftest import MockConsciousness, create_test_agent
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -52,7 +51,9 @@ class TestFullLifecycle:
         assert agent.state == AgentState.SLEEPING
         assert len(mock_consciousness.calls) >= 2
 
-        plan_calls = [c for c in mock_consciousness.calls if c.get("metadata", {}).get("call_type") == "plan"]
+        plan_calls = [
+            c for c in mock_consciousness.calls if c.get("metadata", {}).get("call_type") == "plan"
+        ]
         assert len(plan_calls) >= 1
 
         reflect_calls = [c for c in mock_consciousness.calls if c["method"] == "reflect"]

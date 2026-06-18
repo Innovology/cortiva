@@ -163,9 +163,7 @@ class OllamaRoutineAdapter:
         self._client = EmbeddingClient(model=model, endpoint=endpoint, timeout=timeout)
         self._confidence_threshold = confidence_threshold
         self._defer_threshold = defer_threshold
-        self._fallback = SimpleRoutineAdapter(
-            confidence_threshold=0.30, defer_threshold=0.15
-        )
+        self._fallback = SimpleRoutineAdapter(confidence_threshold=0.30, defer_threshold=0.15)
         self._index_cache: dict[str, ProcedureIndex] = {}
 
     async def assess(

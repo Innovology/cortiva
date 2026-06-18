@@ -27,8 +27,8 @@ def test_identity_strips_role_suffix_and_stray_bracket(tmp_path) -> None:
     fab = _fab(tmp_path)
     # the exact malformed string seen in SailCoach commits
     name, email = fab._agent_git_identity(_agent(tmp_path, "Samantha (CTO @ Innovology]"))
-    assert name == "Samantha"                 # not "Samantha (CTO @ Innovology]"
-    assert email.startswith("samantha@")      # first-name local part
+    assert name == "Samantha"  # not "Samantha (CTO @ Innovology]"
+    assert email.startswith("samantha@")  # first-name local part
 
 
 def test_identity_keeps_clean_full_name(tmp_path) -> None:

@@ -61,7 +61,7 @@ def demo_path_validation(agents_dir: Path) -> None:
     bad_path = agent_dir / ".." / "agent-2" / "identity" / "soul.md"
     try:
         enforcer.validate_path("agent-1", bad_path)
-        print(f"  ERROR: should have been blocked")
+        print("  ERROR: should have been blocked")
     except PermissionError as e:
         print(f"  BLOCKED: {bad_path}")
         print(f"    reason: {e}")
@@ -70,7 +70,7 @@ def demo_path_validation(agents_dir: Path) -> None:
     try:
         enforcer.validate_path("agent-1", Path("/etc/passwd"))
     except PermissionError as e:
-        print(f"  BLOCKED: /etc/passwd")
+        print("  BLOCKED: /etc/passwd")
         print(f"    reason: {e}")
     print()
 
@@ -114,11 +114,11 @@ def demo_env_filtering(agents_dir: Path) -> None:
     enforcer = OSIsolation(agents_dir=agents_dir, config=config)
     envelope = enforcer.prepare_terminal_env("agent-1", ["echo", "hello"], agent_dir)
 
-    print(f"  Allowed env vars: PATH, HOME")
+    print("  Allowed env vars: PATH, HOME")
     print(f"  Resulting env keys: {sorted(envelope.env.keys())}")
     print(f"  CORTIVA_AGENT_ID: {envelope.env.get('CORTIVA_AGENT_ID', 'not set')}")
     print(f"  TMPDIR: {envelope.env.get('TMPDIR', 'not set')}")
-    print(f"  (Secrets like AWS_SECRET_KEY would be stripped)")
+    print("  (Secrets like AWS_SECRET_KEY would be stripped)")
 
     enforcer.cleanup("agent-1")
     print()
@@ -155,7 +155,9 @@ def demo_container_command(agents_dir: Path) -> None:
     enforcer._runtime_available = lambda: True  # type: ignore[assignment]
 
     envelope = enforcer.prepare_terminal_env(
-        "agent-1", ["claude", "-p", "fix the bug"], agent_dir,
+        "agent-1",
+        ["claude", "-p", "fix the bug"],
+        agent_dir,
     )
 
     print(f"  Container ID: {envelope.container_id}")
@@ -166,9 +168,7 @@ def demo_container_command(agents_dir: Path) -> None:
     print()
 
     # Show browser endpoint was injected
-    has_browser = any(
-        "BROWSER_WS_ENDPOINT" in arg for arg in envelope.cmd
-    )
+    has_browser = any("BROWSER_WS_ENDPOINT" in arg for arg in envelope.cmd)
     print(f"  Browser endpoint injected: {has_browser}")
     print()
 

@@ -145,9 +145,14 @@ def _score_one(r: AgentEfficiencyInput) -> AgentEfficiency:
     )
     trend = (score - r.prior_score) if r.prior_score is not None else 0.0
     return AgentEfficiency(
-        agent_id=r.agent_id, name=r.name or r.agent_id,
-        throughput=throughput, quality=quality, cost_efficiency=cost_eff,
-        sustainability=sustainability, score=score, trend=trend,
+        agent_id=r.agent_id,
+        name=r.name or r.agent_id,
+        throughput=throughput,
+        quality=quality,
+        cost_efficiency=cost_eff,
+        sustainability=sustainability,
+        score=score,
+        trend=trend,
     )
 
 
@@ -171,25 +176,38 @@ def assess_workforce_efficiency(
     hotspots: list[EfficiencyHotspot] = []
     for a in scored:
         if a.trend <= -_DECLINE_PTS:
-            hotspots.append(EfficiencyHotspot(
-                "declining", a.agent_id, abs(a.trend),
-                f"{a.name}'s efficiency fell {abs(a.trend):.0f} pts to "
-                f"{a.score:.0f}/100 — find out why before it sets in.",
-            ))
+            hotspots.append(
+                EfficiencyHotspot(
+                    "declining",
+                    a.agent_id,
+                    abs(a.trend),
+                    f"{a.name}'s efficiency fell {abs(a.trend):.0f} pts to "
+                    f"{a.score:.0f}/100 — find out why before it sets in.",
+                )
+            )
         if a.quality < _AT_RISK or a.sustainability < _AT_RISK:
             why = "quality" if a.quality < _AT_RISK else "sustainability"
-            hotspots.append(EfficiencyHotspot(
-                "at_risk", a.agent_id, (1.0 - min(a.quality, a.sustainability)) * 20,
-                f"{a.name} at risk on {why} "
-                f"(quality {a.quality:.2f}, sustainability {a.sustainability:.2f}) — "
-                f"efficient output that needs rework or burns the agent out isn't real.",
-            ))
+            hotspots.append(
+                EfficiencyHotspot(
+                    "at_risk",
+                    a.agent_id,
+                    (1.0 - min(a.quality, a.sustainability)) * 20,
+                    f"{a.name} at risk on {why} "
+                    f"(quality {a.quality:.2f}, sustainability {a.sustainability:.2f}) — "
+                    f"efficient output that needs rework or burns the agent out isn't real.",
+                )
+            )
         if a.score >= _STANDOUT and a.trend >= 0:
-            hotspots.append(EfficiencyHotspot(
-                "standout", a.agent_id, a.score,
-                f"{a.name} performing strongly ({a.score:.0f}/100"
-                + (f", +{a.trend:.0f}" if a.trend > 0 else "") + ") — learn from how.",
-            ))
+            hotspots.append(
+                EfficiencyHotspot(
+                    "standout",
+                    a.agent_id,
+                    a.score,
+                    f"{a.name} performing strongly ({a.score:.0f}/100"
+                    + (f", +{a.trend:.0f}" if a.trend > 0 else "")
+                    + ") — learn from how.",
+                )
+            )
     # Worst things first: declining + at-risk outrank standouts.
     order = {"declining": 0, "at_risk": 1, "standout": 2}
     hotspots.sort(key=lambda h: (order.get(h.kind, 9), -h.severity))

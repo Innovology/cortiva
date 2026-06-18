@@ -27,12 +27,13 @@ class Task:
     it is NOT 'done'. This is the fix for marking intent as completion (ticking
     "reply to the founder" done before the reply is actually sent).
     """
+
     id: str
     description: str = ""
     # pending | acknowledged | in_progress | done | skipped | exception
     #   acknowledged = read & owned, work not finished (NOT done)
     status: str = "pending"
-    priority: int = 0         # 0=normal, 1=high, 2=critical
+    priority: int = 0  # 0=normal, 1=high, 2=critical
     outcome: str = ""
     error: str = ""
     subtasks: list[Task] = field(default_factory=list)
@@ -40,9 +41,7 @@ class Task:
     def can_complete(self) -> bool:
         """A task may only be marked done once every subtask is resolved
         (done or skipped). Open subtasks block the parent."""
-        return all(
-            st.status in ("done", "skipped") for st in self.subtasks
-        )
+        return all(st.status in ("done", "skipped") for st in self.subtasks)
 
     def is_done(self) -> bool:
         """Truly complete: marked done AND no subtask left open."""
@@ -52,6 +51,7 @@ class Task:
 @dataclass
 class TaskQueue:
     """Ordered queue of tasks with exception tracking."""
+
     tasks: list[Task] = field(default_factory=list)
     exceptions: list[Task] = field(default_factory=list)
     replan_count: int = 0
@@ -74,10 +74,12 @@ class TaskQueue:
     def all_done(self) -> bool:
         """True when no unit (task OR subtask) is still open. A parent marked
         'done' with open subtasks does NOT count — its leaves gate it."""
+
         def _open(t: Task) -> bool:
             if t.status in ("pending", "in_progress", "acknowledged"):
                 return True
             return any(_open(st) for st in t.subtasks)
+
         return not any(_open(t) for t in self.tasks)
 
     def completion_summary(self) -> dict[str, int]:
@@ -161,22 +163,23 @@ def _parse_plan(plan_text: str) -> TaskQueue:
 
 class AgentState(Enum):
     """Lifecycle states. Agents don't start/stop — they sleep/wake."""
-    ONBOARDING = "onboarding"    # First-time setup, no experience yet
-    SLEEPING = "sleeping"        # Idle, identity persists on disk
-    WAKING = "waking"            # Loading identity, checking queue
-    PLANNING = "planning"        # Building today's plan (conscious)
-    EXECUTING = "executing"      # Working through plan
-    REPLANNING = "replanning"    # Adjusting plan mid-cycle (conscious)
-    REFLECTING = "reflecting"    # End-of-day review (conscious)
+
+    ONBOARDING = "onboarding"  # First-time setup, no experience yet
+    SLEEPING = "sleeping"  # Idle, identity persists on disk
+    WAKING = "waking"  # Loading identity, checking queue
+    PLANNING = "planning"  # Building today's plan (conscious)
+    EXECUTING = "executing"  # Working through plan
+    REPLANNING = "replanning"  # Adjusting plan mid-cycle (conscious)
+    REFLECTING = "reflecting"  # End-of-day review (conscious)
 
 
 # Standard identity file names (subdirectory layout)
 IDENTITY_FILES = {
-    "identity": "identity/identity.md",           # Living Summary
-    "soul": "identity/soul.md",                   # Persona parameters
-    "skills": "identity/skills.md",               # Domain knowledge
+    "identity": "identity/identity.md",  # Living Summary
+    "soul": "identity/soul.md",  # Persona parameters
+    "skills": "identity/skills.md",  # Domain knowledge
     "responsibilities": "identity/responsibilities.md",  # Role & Responsibilities
-    "plan": "today/plan.md",                      # Current plan
+    "plan": "today/plan.md",  # Current plan
 }
 
 # Standard workspace subdirectories
@@ -442,10 +445,14 @@ class Agent:
             AgentState.WAKING: {AgentState.PLANNING, AgentState.SLEEPING},
             AgentState.PLANNING: {AgentState.EXECUTING, AgentState.SLEEPING},
             AgentState.EXECUTING: {
-                AgentState.REPLANNING, AgentState.REFLECTING, AgentState.SLEEPING,
+                AgentState.REPLANNING,
+                AgentState.REFLECTING,
+                AgentState.SLEEPING,
             },
             AgentState.REPLANNING: {
-                AgentState.EXECUTING, AgentState.REFLECTING, AgentState.SLEEPING,
+                AgentState.EXECUTING,
+                AgentState.REFLECTING,
+                AgentState.SLEEPING,
             },
             AgentState.REFLECTING: {AgentState.SLEEPING},
         }
@@ -454,9 +461,7 @@ class Agent:
     def transition(self, target: AgentState) -> None:
         """Transition to a new state."""
         if not self.can_transition(target):
-            raise ValueError(
-                f"Invalid transition: {self.state.value} → {target.value}"
-            )
+            raise ValueError(f"Invalid transition: {self.state.value} → {target.value}")
         if target == AgentState.WAKING:
             self.last_wake = datetime.utcnow()
             self.consciousness_budget_used = 0
