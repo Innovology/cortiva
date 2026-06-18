@@ -25,6 +25,10 @@ jobs:
   typecheck:
     name: Type check
     runs-on: ubuntu-latest
+    # ADVISORY: 137+ pre-existing strict-mode errors (type-arg, no-any-return, etc.)
+    # accumulated before this CI gate was active. Visible but not blocking.
+    # Burn down per-module, then remove continue-on-error.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -26,7 +26,7 @@ from cortiva.adapters.protocols import (
     RoutineAdapter,
     TerminalAgentAdapter,
 )
-from cortiva.core.agent import Agent, AgentState, Task
+from cortiva.core.agent import Agent, AgentState, Task, TaskQueue, _parse_plan  # noqa: F401
 from cortiva.core.approval import ApprovalQueue
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
