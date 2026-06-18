@@ -188,7 +188,10 @@ class TestClaudeCodeAdapter:
     @pytest.mark.asyncio
     async def test_is_available_false(self) -> None:
         adapter = ClaudeCodeAdapter()
-        with patch("shutil.which", return_value=None):
+        # Genuinely not installed: neither on PATH nor in a known location.
+        with patch("shutil.which", return_value=None), patch(
+            "cortiva.core.claude_binary.os.path.exists", return_value=False,
+        ):
             result = await adapter.is_available()
         assert result is False
 

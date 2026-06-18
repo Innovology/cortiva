@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import time
 from pathlib import Path
 from typing import Any
 
 from cortiva.adapters.protocols import AgentResponse, ToolCapabilities
 from cortiva.core.claude_auth import claude_oauth_env
+from cortiva.core.claude_binary import claude_binary
 
 
 class ClaudeCodeAdapter:
@@ -44,7 +44,9 @@ class ClaudeCodeAdapter:
         Claude Code conversation about its own work — its persistent dev
         session — instead of a cold context every task.
         """
-        cmd: list[str] = ["claude", "-p", prompt, "--output-format", output_format]
+        # claude_binary() returns a node-managed copy at a launchable path,
+        # never the brew/Caskroom path that is prone to the startup wedge.
+        cmd: list[str] = [claude_binary(), "-p", prompt, "--output-format", output_format]
         if resume_session:
             cmd.extend(["--resume", resume_session])
         if self._model:
@@ -140,9 +142,11 @@ class ClaudeCodeAdapter:
         )
 
     async def is_available(self) -> bool:
-        """Check if the ``claude`` binary is on PATH."""
+        """Check if the ``claude`` binary is installed (PATH or known location)."""
         if self._which_cache is None:
-            self._which_cache = shutil.which("claude") is not None
+            from cortiva.core.claude_binary import _resolve_source
+
+            self._which_cache = _resolve_source() is not None
         return self._which_cache
 
     async def capabilities(self) -> ToolCapabilities:

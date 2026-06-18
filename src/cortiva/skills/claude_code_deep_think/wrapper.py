@@ -109,7 +109,9 @@ def deep_think(
 
     _check_preconditions()
 
-    cmd: list[str] = [_resolve_claude() or _BINARY, "-p", prompt]
+    from cortiva.core.claude_binary import claude_binary
+
+    cmd: list[str] = [claude_binary(), "-p", prompt]
     if extra_args:
         cmd.extend(extra_args)
 
@@ -126,6 +128,17 @@ def deep_think(
         )
     except subprocess.TimeoutExpired as exc:
         elapsed = time.monotonic() - started
+        # A timeout here is the headline symptom of the claude path-launch-wedge
+        # (the binary hangs at startup and never produces output). Cure the
+        # binary now — lay a fresh-path copy if it's wedged — so the NEXT call
+        # uses a launchable claude instead of timing out again. Best-effort:
+        # never let healing mask the original failure.
+        try:
+            from cortiva.core.claude_binary import ensure_healthy_claude
+
+            ensure_healthy_claude(force=True)
+        except Exception:
+            logger.debug("claude self-heal after timeout failed", exc_info=True)
         raise DeepThinkError(
             f"claude -p timed out after {elapsed:.1f}s "
             f"(limit {timeout_s}s); kill or simplify the prompt",

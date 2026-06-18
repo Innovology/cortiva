@@ -117,8 +117,12 @@ class ClaudeSession:
         self.started_at: float = 0.0
 
     def _build_cmd(self) -> list[str]:
+        from cortiva.core.claude_binary import claude_binary
+
+        # A node-managed copy at a launchable path, not the wedge-prone
+        # brew/Caskroom path.
         cmd = [
-            _BINARY, "-p",
+            claude_binary(), "-p",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
