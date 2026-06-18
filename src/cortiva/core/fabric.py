@@ -3078,6 +3078,9 @@ class Fabric:
         config_dir = cwd / ".claude"
         config_dir.mkdir(parents=True, exist_ok=True)
         env_overrides["CLAUDE_CONFIG_DIR"] = str(config_dir)
+        # So the agent can persist a credential it acquires at runtime (e.g. a
+        # redeemed PAT) via `python -m cortiva.core.credentials store NAME VALUE`.
+        env_overrides["CORTIVA_AGENT_DIR"] = str(agent.directory)
 
         # Commit attribution: when the agent's session makes git commits it must
         # commit AS the agent — its real name + workforce email — and NEVER add a
@@ -3220,6 +3223,7 @@ class Fabric:
         config_dir = cwd / ".claude"
         config_dir.mkdir(parents=True, exist_ok=True)
         creds["CLAUDE_CONFIG_DIR"] = str(config_dir)
+        creds["CORTIVA_AGENT_DIR"] = str(agent.directory)
 
         # Commit as the agent (real name + workforce email), never a co-author.
         git_name, git_email = self._agent_git_identity(agent)

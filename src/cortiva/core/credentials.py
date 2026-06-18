@@ -275,3 +275,33 @@ def store_local_credential(agent_dir: Path, name: str, value: str) -> None:
         path.chmod(0o600)
     except OSError:
         pass
+
+
+def _main(argv: list[str]) -> int:
+    """Agent-facing CLI: ``python -m cortiva.core.credentials store NAME VALUE``.
+
+    Lets an agent persist a credential it acquired at runtime, from its own
+    session, with no new tool-dispatch machinery — it resolves the agent's own
+    directory from ``CORTIVA_AGENT_DIR`` (set in the session env by the fabric).
+    e.g. after redeeming a HARIS PAT, the agent pipes the response's apiKey to:
+
+        python -m cortiva.core.credentials store HARIS_API_KEY "$KEY"
+    """
+    import sys
+
+    if len(argv) != 3 or argv[0] != "store":
+        print("usage: python -m cortiva.core.credentials store NAME VALUE", file=sys.stderr)
+        return 2
+    agent_dir = os.environ.get("CORTIVA_AGENT_DIR")
+    if not agent_dir:
+        print("CORTIVA_AGENT_DIR not set — not inside an agent session", file=sys.stderr)
+        return 1
+    store_local_credential(Path(agent_dir), argv[1], argv[2])
+    print(f"stored {argv[1]} for this agent")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(_main(sys.argv[1:]))

@@ -197,3 +197,22 @@ class TestSelfAcquiredCredentials:
         # Simulate an HQ credentials.sync rewriting ONLY credentials.json.
         (tmp_path / "credentials.json").write_text(json.dumps({"GH_TOKEN": "ghp_y"}))
         assert load_agent_credentials(tmp_path)["HARIS_API_KEY"] == "k-self"
+
+    def test_cli_store_uses_agent_dir_env(self, tmp_path, monkeypatch) -> None:
+        from cortiva.core.credentials import _main, load_agent_credentials
+
+        monkeypatch.setenv("CORTIVA_AGENT_DIR", str(tmp_path))
+        rc = _main(["store", "HARIS_API_KEY", "k-cli"])
+        assert rc == 0
+        assert load_agent_credentials(tmp_path) == {"HARIS_API_KEY": "k-cli"}
+
+    def test_cli_fails_without_agent_dir(self, tmp_path, monkeypatch) -> None:
+        from cortiva.core.credentials import _main
+
+        monkeypatch.delenv("CORTIVA_AGENT_DIR", raising=False)
+        assert _main(["store", "A", "1"]) == 1
+
+    def test_cli_usage_error(self) -> None:
+        from cortiva.core.credentials import _main
+
+        assert _main(["bogus"]) == 2
