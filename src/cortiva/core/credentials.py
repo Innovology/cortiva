@@ -210,31 +210,68 @@ class CredentialProvider:
 # ---------------------------------------------------------------------------
 
 CREDENTIALS_FILENAME = "credentials.json"
+# Credentials an agent acquired ITSELF at runtime (e.g. a PAT it redeemed from
+# an external service). Kept in a SEPARATE file so the management layer's
+# ``credentials.json`` sync never clobbers them, and so a self-acquired secret
+# never has to round-trip through HQ. Merged under the HQ-managed file, which
+# wins on conflict (central rotation stays authoritative).
+LOCAL_CREDENTIALS_FILENAME = "credentials.local.json"
+
+
+def _read_cred_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Unreadable %s: %s", path, exc)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("%s is not a JSON object — ignoring", path)
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
 
 
 def load_agent_credentials(agent_dir: Path) -> dict[str, str]:
-    """Load per-agent credentials from ``<agent_dir>/credentials.json``.
+    """Load per-agent credentials injected into the agent's terminal env.
 
-    Written by the management layer (e.g. Cortiva HQ's node client) when
-    an agent is granted an integration — a flat ``{ENV_VAR: value}``
-    mapping injected into the agent's terminal subprocess environment.
+    Two sources, merged:
 
-    The file lives outside ``identity/`` and ``today/`` so snapshot and
-    clone pipelines (which exclude ``credentials`` paths by design)
-    never pick it up.
+    - ``credentials.json`` — written by the management layer (Cortiva HQ's node
+      client) when an agent is granted an integration.
+    - ``credentials.local.json`` — written by the agent itself for a secret it
+      acquired at runtime (see :func:`store_local_credential`). HQ-managed keys
+      win on conflict, so central delivery/rotation always overrides a stale
+      self-acquired value.
 
-    Returns an empty dict when the file is missing or unreadable —
-    credential absence must never break task execution.
+    Both files live outside ``identity/`` and ``today/`` so snapshot and clone
+    pipelines (which exclude ``credentials`` paths by design) never pick them
+    up. Returns an empty dict when nothing is present — credential absence must
+    never break task execution.
     """
-    cred_file = Path(agent_dir) / CREDENTIALS_FILENAME
-    if not cred_file.exists():
-        return {}
+    agent_dir = Path(agent_dir)
+    local = _read_cred_file(agent_dir / LOCAL_CREDENTIALS_FILENAME)
+    managed = _read_cred_file(agent_dir / CREDENTIALS_FILENAME)
+    return {**local, **managed}
+
+
+def store_local_credential(agent_dir: Path, name: str, value: str) -> None:
+    """Persist a credential the agent acquired itself, surviving HQ syncs.
+
+    Writes/updates ``<agent_dir>/credentials.local.json`` (a flat
+    ``{ENV_VAR: value}`` map) atomically. Generic by design — not specific to
+    any one service — so any agent that redeems a key (a HARIS PAT, an API
+    token, …) can keep it across sessions without it passing through HQ.
+    """
+    agent_dir = Path(agent_dir)
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    path = agent_dir / LOCAL_CREDENTIALS_FILENAME
+    current = _read_cred_file(path)
+    current[str(name)] = str(value)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    tmp.replace(path)
     try:
-        data = json.loads(cred_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Unreadable %s: %s", cred_file, exc)
-        return {}
-    if not isinstance(data, dict):
-        logger.warning("%s is not a JSON object — ignoring", cred_file)
-        return {}
-    return {str(k): str(v) for k, v in data.items()}
+        path.chmod(0o600)
+    except OSError:
+        pass

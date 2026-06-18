@@ -134,3 +134,66 @@ class TestLoadAgentCredentials:
 
         (tmp_path / "credentials.json").write_text('["a", "b"]')
         assert load_agent_credentials(tmp_path) == {}
+
+
+class TestSelfAcquiredCredentials:
+    """credentials.local.json — secrets an agent acquired itself at runtime
+    (e.g. a redeemed PAT). Merged under the HQ-managed file, never clobbered
+    by an HQ sync."""
+
+    def test_store_then_load_merges_with_managed(self, tmp_path) -> None:
+        import json
+
+        from cortiva.core.credentials import (
+            load_agent_credentials,
+            store_local_credential,
+        )
+
+        # HQ-managed cred.
+        (tmp_path / "credentials.json").write_text(json.dumps({"GH_TOKEN": "ghp_x"}))
+        # Agent self-acquires a PAT.
+        store_local_credential(tmp_path, "HARIS_API_KEY", "k-self")
+
+        assert load_agent_credentials(tmp_path) == {
+            "GH_TOKEN": "ghp_x",
+            "HARIS_API_KEY": "k-self",
+        }
+
+    def test_managed_wins_on_conflict(self, tmp_path) -> None:
+        import json
+
+        from cortiva.core.credentials import (
+            load_agent_credentials,
+            store_local_credential,
+        )
+
+        store_local_credential(tmp_path, "HARIS_API_KEY", "old-self")
+        (tmp_path / "credentials.json").write_text(
+            json.dumps({"HARIS_API_KEY": "central"}),
+        )
+        # Central delivery/rotation overrides a stale self-acquired value.
+        assert load_agent_credentials(tmp_path)["HARIS_API_KEY"] == "central"
+
+    def test_store_is_idempotent_upsert(self, tmp_path) -> None:
+        from cortiva.core.credentials import (
+            load_agent_credentials,
+            store_local_credential,
+        )
+
+        store_local_credential(tmp_path, "A", "1")
+        store_local_credential(tmp_path, "B", "2")
+        store_local_credential(tmp_path, "A", "3")  # update in place
+        assert load_agent_credentials(tmp_path) == {"A": "3", "B": "2"}
+
+    def test_hq_sync_does_not_clobber_self_acquired(self, tmp_path) -> None:
+        import json
+
+        from cortiva.core.credentials import (
+            load_agent_credentials,
+            store_local_credential,
+        )
+
+        store_local_credential(tmp_path, "HARIS_API_KEY", "k-self")
+        # Simulate an HQ credentials.sync rewriting ONLY credentials.json.
+        (tmp_path / "credentials.json").write_text(json.dumps({"GH_TOKEN": "ghp_y"}))
+        assert load_agent_credentials(tmp_path)["HARIS_API_KEY"] == "k-self"
