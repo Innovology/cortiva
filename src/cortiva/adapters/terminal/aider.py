@@ -6,7 +6,6 @@ import asyncio
 import shutil
 import time
 from pathlib import Path
-from typing import Any
 
 from cortiva.adapters.protocols import AgentResponse, ToolCapabilities
 
@@ -44,7 +43,8 @@ class AiderAdapter:
         """Invoke Aider CLI with a prompt."""
         cmd: list[str] = [
             "aider",
-            "--message", prompt,
+            "--message",
+            prompt,
             "--yes",
         ]
         if self._model:
@@ -61,9 +61,7 @@ class AiderAdapter:
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self._timeout
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
         except FileNotFoundError:
             return AgentResponse(
                 content="aider CLI not found",

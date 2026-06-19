@@ -1,7 +1,10 @@
 """Domain-work grounding: an agent surveys its real tools and must escalate a
 data gap instead of inventing the result (the anti-hallucination belief rule)."""
+
 from __future__ import annotations
+
 from types import SimpleNamespace
+
 from cortiva.core.fabric import Fabric
 
 

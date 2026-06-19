@@ -16,13 +16,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
 # Day name → weekday number (Monday=0)
 _DAY_MAP = {
-    "mon": 0, "tue": 1, "wed": 2, "thu": 3,
-    "fri": 4, "sat": 5, "sun": 6,
+    "mon": 0,
+    "tue": 1,
+    "wed": 2,
+    "thu": 3,
+    "fri": 4,
+    "sat": 5,
+    "sun": 6,
 }
 
 # Precomputed day range shortcuts
@@ -73,9 +77,10 @@ def _parse_times(time_spec: str) -> list[tuple[int, int]]:
 @dataclass
 class ScheduleEntry:
     """A single scheduled event."""
-    action: str              # "wake" | "replan" | "sleep"
-    times: list[tuple[int, int]]   # [(hour, minute), ...]
-    days: set[int]           # weekday numbers (0=Mon)
+
+    action: str  # "wake" | "replan" | "sleep"
+    times: list[tuple[int, int]]  # [(hour, minute), ...]
+    days: set[int]  # weekday numbers (0=Mon)
 
     def is_due(self, now: datetime, tolerance_minutes: int = 5) -> bool:
         """Check if this entry is due at *now* (within tolerance window)."""
@@ -92,6 +97,7 @@ class ScheduleEntry:
 @dataclass
 class AgentSchedule:
     """Complete schedule for one agent."""
+
     agent_id: str
     entries: list[ScheduleEntry] = field(default_factory=list)
     # Track last trigger time per action to avoid re-triggering within same window
@@ -99,14 +105,14 @@ class AgentSchedule:
 
     def due_actions(self, now: datetime, tolerance_minutes: int = 5) -> list[str]:
         """Return list of actions that are due right now."""
-        window_key = now.strftime("%Y-%m-%d-%H-%M")
+        _window_key = now.strftime("%Y-%m-%d-%H-%M")
         actions = []
         for entry in self.entries:
             if entry.is_due(now, tolerance_minutes):
                 # Check if already triggered in this window
-                last = self.last_triggered.get(entry.action)
+                _last = self.last_triggered.get(entry.action)
                 # Use a coarser key (hour+minute block) to prevent re-trigger
-                trigger_key = f"{now.strftime('%Y-%m-%d')}-{entry.action}"
+                _trigger_key = f"{now.strftime('%Y-%m-%d')}-{entry.action}"
                 for h, m in entry.times:
                     target_min = h * 60 + m
                     current_min = now.hour * 60 + now.minute
@@ -208,10 +214,10 @@ class Scheduler:
         schedule = self._schedules.get(agent_id)
         if not schedule:
             # No schedule — set alarm for extra_hours from now
-            sleep_time = datetime.now(timezone.utc) + timedelta(hours=extra_hours)
+            sleep_time = datetime.now(UTC) + timedelta(hours=extra_hours)
         else:
             # Find the configured sleep time and push it back
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             sleep_time = now + timedelta(hours=extra_hours)
             for entry in schedule.entries:
                 if entry.action == "sleep" and entry.times:
@@ -225,26 +231,35 @@ class Scheduler:
     def request_early_sleep(self, agent_id: str) -> AgentAlarm:
         """Request immediate sleep (agent has nothing left to do)."""
         return self.add_alarm(
-            agent_id, "sleep",
-            datetime.now(timezone.utc),
+            agent_id,
+            "sleep",
+            datetime.now(UTC),
             "early sleep: no remaining work",
         )
 
     def set_wake_alarm(
-        self, agent_id: str, hour: int, minute: int = 0, reason: str = "",
+        self,
+        agent_id: str,
+        hour: int,
+        minute: int = 0,
+        reason: str = "",
     ) -> AgentAlarm:
         """Set a one-shot wake alarm for a specific time tomorrow."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         wake_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if wake_time <= now:
             wake_time += timedelta(days=1)
         return self.add_alarm(agent_id, "wake", wake_time, reason)
 
     def set_reminder(
-        self, agent_id: str, hour: int, minute: int, content: str,
+        self,
+        agent_id: str,
+        hour: int,
+        minute: int,
+        content: str,
     ) -> AgentAlarm:
         """Set a one-shot reminder at a specific time today."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         remind_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if remind_time <= now:
             remind_time += timedelta(days=1)
@@ -252,10 +267,7 @@ class Scheduler:
 
     def pending_alarms(self, agent_id: str) -> list[AgentAlarm]:
         """Get unfired alarms for an agent."""
-        return [
-            a for a in self._alarms
-            if a.agent_id == agent_id and not a.fired
-        ]
+        return [a for a in self._alarms if a.agent_id == agent_id and not a.fired]
 
     def apply_schedule_request(self, agent_id: str, request: dict) -> str | None:
         """Process a schedule request from a reflection suffix.
@@ -308,7 +320,7 @@ class Scheduler:
 
         Returns a dict like ``{"bookkeep-01": ["wake"], "dev-01": ["replan"]}``.
         """
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         result: dict[str, list[str]] = {}
 
         # Check recurring schedules

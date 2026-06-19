@@ -46,7 +46,8 @@ class CodexAdapter:
         cmd: list[str] = [
             "codex",
             "--quiet",
-            "--approval-mode", self._approval_mode,
+            "--approval-mode",
+            self._approval_mode,
         ]
         if self._model:
             cmd.extend(["--model", self._model])
@@ -61,9 +62,7 @@ class CodexAdapter:
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self._timeout
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
         except FileNotFoundError:
             return AgentResponse(
                 content="codex CLI not found",
@@ -94,10 +93,7 @@ class CodexAdapter:
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
                 content = parsed.get("result", parsed.get("output", raw))
-                metadata = {
-                    k: v for k, v in parsed.items()
-                    if k not in ("result", "output")
-                }
+                metadata = {k: v for k, v in parsed.items() if k not in ("result", "output")}
         except (json.JSONDecodeError, TypeError):
             pass
 

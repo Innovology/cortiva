@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -15,7 +15,6 @@ from cortiva.core.scheduler import (
     _parse_times,
     parse_schedule,
 )
-
 
 # ---------------------------------------------------------------------------
 # _parse_days
@@ -83,28 +82,28 @@ class TestScheduleEntry:
     def test_is_due_exact_time(self) -> None:
         entry = ScheduleEntry(action="wake", times=[(9, 0)], days={0, 1, 2, 3, 4})
         # Monday 09:00
-        now = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)  # Monday
+        now = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)  # Monday
         assert entry.is_due(now)
 
     def test_is_due_within_tolerance(self) -> None:
         entry = ScheduleEntry(action="wake", times=[(9, 0)], days={0, 1, 2, 3, 4})
-        now = datetime(2026, 3, 2, 9, 3, tzinfo=timezone.utc)  # 3 min after
+        now = datetime(2026, 3, 2, 9, 3, tzinfo=UTC)  # 3 min after
         assert entry.is_due(now, tolerance_minutes=5)
 
     def test_not_due_outside_tolerance(self) -> None:
         entry = ScheduleEntry(action="wake", times=[(9, 0)], days={0, 1, 2, 3, 4})
-        now = datetime(2026, 3, 2, 9, 6, tzinfo=timezone.utc)  # 6 min after
+        now = datetime(2026, 3, 2, 9, 6, tzinfo=UTC)  # 6 min after
         assert not entry.is_due(now, tolerance_minutes=5)
 
     def test_not_due_wrong_day(self) -> None:
         entry = ScheduleEntry(action="wake", times=[(9, 0)], days={0, 1, 2, 3, 4})
         # Saturday
-        now = datetime(2026, 3, 7, 9, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 7, 9, 0, tzinfo=UTC)
         assert not entry.is_due(now)
 
     def test_not_due_before_time(self) -> None:
         entry = ScheduleEntry(action="wake", times=[(9, 0)], days={0, 1, 2, 3, 4})
-        now = datetime(2026, 3, 2, 8, 59, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 2, 8, 59, tzinfo=UTC)
         assert not entry.is_due(now)
 
 
@@ -122,7 +121,7 @@ class TestAgentSchedule:
                 ScheduleEntry(action="sleep", times=[(17, 0)], days={0, 1, 2, 3, 4}),
             ],
         )
-        now = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
         actions = schedule.due_actions(now)
         assert "wake" in actions
         assert "sleep" not in actions
@@ -134,7 +133,7 @@ class TestAgentSchedule:
                 ScheduleEntry(action="wake", times=[(9, 0)], days={0, 1, 2, 3, 4}),
             ],
         )
-        now = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
         actions1 = schedule.due_actions(now)
         actions2 = schedule.due_actions(now)
         assert actions1 == ["wake"]
@@ -147,8 +146,8 @@ class TestAgentSchedule:
                 ScheduleEntry(action="wake", times=[(9, 0)], days={0, 1, 2, 3, 4}),
             ],
         )
-        mon = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)
-        tue = datetime(2026, 3, 3, 9, 0, tzinfo=timezone.utc)
+        mon = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
+        tue = datetime(2026, 3, 3, 9, 0, tzinfo=UTC)
         schedule.due_actions(mon)
         actions = schedule.due_actions(tue)
         assert "wake" in actions
@@ -160,8 +159,8 @@ class TestAgentSchedule:
                 ScheduleEntry(action="replan", times=[(12, 0), (15, 0)], days={0, 1, 2, 3, 4}),
             ],
         )
-        noon = datetime(2026, 3, 2, 12, 0, tzinfo=timezone.utc)
-        afternoon = datetime(2026, 3, 2, 15, 0, tzinfo=timezone.utc)
+        noon = datetime(2026, 3, 2, 12, 0, tzinfo=UTC)
+        afternoon = datetime(2026, 3, 2, 15, 0, tzinfo=UTC)
         a1 = schedule.due_actions(noon)
         a2 = schedule.due_actions(afternoon)
         assert "replan" in a1
@@ -218,7 +217,7 @@ class TestScheduler:
     def test_register_and_tick(self) -> None:
         scheduler = Scheduler()
         scheduler.register("agent-01", {"wake": "09:00 mon-fri"})
-        now = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)  # Monday
+        now = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)  # Monday
         result = scheduler.tick(now)
         assert "agent-01" in result
         assert "wake" in result["agent-01"]
@@ -226,7 +225,7 @@ class TestScheduler:
     def test_tick_no_due(self) -> None:
         scheduler = Scheduler()
         scheduler.register("agent-01", {"wake": "09:00 mon-fri"})
-        now = datetime(2026, 3, 2, 20, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 2, 20, 0, tzinfo=UTC)
         result = scheduler.tick(now)
         assert result == {}
 
@@ -240,7 +239,7 @@ class TestScheduler:
         scheduler = Scheduler()
         scheduler.register("a", {"wake": "09:00"})
         scheduler.register("b", {"wake": "10:00"})
-        now = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
         result = scheduler.tick(now)
         assert "a" in result
         assert "b" not in result
@@ -282,9 +281,12 @@ class TestFabricScheduleIntegration:
         class StubConsciousness:
             async def think(self, **kw):
                 from cortiva.adapters.protocols import ConsciousResponse
+
                 return ConsciousResponse(content="- [ ] Do stuff", model="stub")
+
             async def reflect(self, **kw):
                 from cortiva.adapters.protocols import ConsciousResponse
+
                 return ConsciousResponse(content="Reflected.", model="stub")
 
         return Fabric(
@@ -295,9 +297,11 @@ class TestFabricScheduleIntegration:
 
     def test_load_schedules(self, tmp_path) -> None:
         fabric = self._make_fabric(tmp_path)
-        fabric.load_schedules({
-            "agent-01": {"wake": "09:00 mon-fri", "sleep": "17:00"},
-        })
+        fabric.load_schedules(
+            {
+                "agent-01": {"wake": "09:00 mon-fri", "sleep": "17:00"},
+            }
+        )
         sched = fabric.scheduler.get_schedule("agent-01")
         assert sched is not None
         assert len(sched.entries) == 2
@@ -308,7 +312,7 @@ class TestFabricScheduleIntegration:
         agent = fabric.register_agent("agent-01")
         fabric.load_schedules({"agent-01": {"wake": "09:00 mon-fri"}})
 
-        now = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
         fabric.scheduler.tick(now)  # Consume the first trigger
 
         # Re-register to reset dedup
@@ -406,11 +410,19 @@ class TestConfigScheduleIntegration:
         def _mock_import(registry, name, kind):
             if kind == "memory":
                 from cortiva.adapters.memory.inmemory import InMemoryAdapter
+
                 return InMemoryAdapter
+
             class MockCls:
-                def __init__(self, **kw): pass
-                async def think(self, **kw): pass
-                async def reflect(self, **kw): pass
+                def __init__(self, **kw):
+                    pass
+
+                async def think(self, **kw):
+                    pass
+
+                async def reflect(self, **kw):
+                    pass
+
             return MockCls
 
         with _patch("cortiva.core.config._import_adapter", side_effect=_mock_import):
@@ -435,9 +447,13 @@ class TestConfigScheduleIntegration:
         def _mock_import(registry, name, kind):
             if kind == "memory":
                 from cortiva.adapters.memory.inmemory import InMemoryAdapter
+
                 return InMemoryAdapter
+
             class MockCls:
-                def __init__(self, **kw): pass
+                def __init__(self, **kw):
+                    pass
+
             return MockCls
 
         with _patch("cortiva.core.config._import_adapter", side_effect=_mock_import):
@@ -455,8 +471,9 @@ class TestAgentSelfScheduling:
     def test_add_alarm(self) -> None:
         scheduler = Scheduler()
         alarm = scheduler.add_alarm(
-            "dev-cortiva", "wake",
-            datetime(2026, 4, 7, 6, 0, tzinfo=timezone.utc),
+            "dev-cortiva",
+            "wake",
+            datetime(2026, 4, 7, 6, 0, tzinfo=UTC),
             "deploy day",
         )
         assert alarm.agent_id == "dev-cortiva"
@@ -466,20 +483,21 @@ class TestAgentSelfScheduling:
     def test_alarm_fires_on_tick(self) -> None:
         scheduler = Scheduler()
         scheduler.add_alarm(
-            "dev-cortiva", "wake",
-            datetime(2026, 4, 7, 6, 0, tzinfo=timezone.utc),
+            "dev-cortiva",
+            "wake",
+            datetime(2026, 4, 7, 6, 0, tzinfo=UTC),
         )
         # Before alarm time — nothing fires
-        result = scheduler.tick(datetime(2026, 4, 7, 5, 59, tzinfo=timezone.utc))
+        result = scheduler.tick(datetime(2026, 4, 7, 5, 59, tzinfo=UTC))
         assert "dev-cortiva" not in result
 
         # At alarm time — fires
-        result = scheduler.tick(datetime(2026, 4, 7, 6, 0, tzinfo=timezone.utc))
+        result = scheduler.tick(datetime(2026, 4, 7, 6, 0, tzinfo=UTC))
         assert "dev-cortiva" in result
         assert "wake" in result["dev-cortiva"]
 
         # After firing — doesn't fire again
-        result = scheduler.tick(datetime(2026, 4, 7, 6, 1, tzinfo=timezone.utc))
+        result = scheduler.tick(datetime(2026, 4, 7, 6, 1, tzinfo=UTC))
         assert "dev-cortiva" not in result
 
     def test_request_overtime(self) -> None:
@@ -511,15 +529,19 @@ class TestAgentSelfScheduling:
     def test_pending_alarms(self) -> None:
         scheduler = Scheduler()
         scheduler.add_alarm(
-            "dev", "wake", datetime(2026, 4, 7, 6, 0, tzinfo=timezone.utc),
+            "dev",
+            "wake",
+            datetime(2026, 4, 7, 6, 0, tzinfo=UTC),
         )
         scheduler.add_alarm(
-            "dev", "remind", datetime(2026, 4, 7, 14, 0, tzinfo=timezone.utc),
+            "dev",
+            "remind",
+            datetime(2026, 4, 7, 14, 0, tzinfo=UTC),
         )
         assert len(scheduler.pending_alarms("dev")) == 2
 
         # Fire one
-        scheduler.tick(datetime(2026, 4, 7, 6, 0, tzinfo=timezone.utc))
+        scheduler.tick(datetime(2026, 4, 7, 6, 0, tzinfo=UTC))
         assert len(scheduler.pending_alarms("dev")) == 1
 
     def test_apply_schedule_request_overtime(self) -> None:
@@ -537,19 +559,25 @@ class TestAgentSelfScheduling:
 
     def test_apply_schedule_request_wake_alarm(self) -> None:
         scheduler = Scheduler()
-        result = scheduler.apply_schedule_request("dev", {
-            "wake_alarm": "06:00",
-            "reason": "deploy",
-        })
+        result = scheduler.apply_schedule_request(
+            "dev",
+            {
+                "wake_alarm": "06:00",
+                "reason": "deploy",
+            },
+        )
         assert result is not None
         assert "06:00" in result
 
     def test_apply_schedule_request_reminder(self) -> None:
         scheduler = Scheduler()
-        result = scheduler.apply_schedule_request("dev", {
-            "reminder": "14:00",
-            "content": "check CI pipeline",
-        })
+        result = scheduler.apply_schedule_request(
+            "dev",
+            {
+                "reminder": "14:00",
+                "content": "check CI pipeline",
+            },
+        )
         assert result is not None
         assert "14:00" in result
 
@@ -563,12 +591,13 @@ class TestAgentSelfScheduling:
         scheduler = Scheduler()
         scheduler.register("dev", {"replan": "12:00"})
         scheduler.add_alarm(
-            "dev", "remind",
-            datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc),
+            "dev",
+            "remind",
+            datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
             "check deploy",
         )
 
-        now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 4, 7, 12, 0, tzinfo=UTC)
         result = scheduler.tick(now)
         assert "dev" in result
         assert "replan" in result["dev"]

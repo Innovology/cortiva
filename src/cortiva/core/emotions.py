@@ -162,33 +162,30 @@ def derive_emotions(
     speed_bonus = max(0.0, 1.0 - signals.completion_speed)  # faster = higher
     error_penalty = min(1.0, signals.error_count * 0.3)
     match_bonus = 0.3 if signals.outcome_matched_prediction else -0.2
-    satisfaction = _clamp(
-        (speed_bonus + match_bonus - error_penalty) * m.satisfaction_weight
-    )
+    satisfaction = _clamp((speed_bonus + match_bonus - error_penalty) * m.satisfaction_weight)
 
     # --- Frustration ---
     # Errors + escalation + prediction mismatch → frustration
     escalation_factor = 0.4 if signals.was_escalated else 0.0
     mismatch_factor = 0.3 if not signals.outcome_matched_prediction else 0.0
     frustration = _clamp(
-        (signals.error_count * 0.25 + escalation_factor + mismatch_factor)
-        * m.frustration_weight
+        (signals.error_count * 0.25 + escalation_factor + mismatch_factor) * m.frustration_weight
     )
 
     # --- Curiosity ---
     # Novel tasks + prediction errors → curiosity
     novelty = max(0.0, 1.0 - signals.familiarity_at_execution)
     prediction_surprise = 0.3 if not signals.outcome_matched_prediction else 0.0
-    curiosity = _clamp(
-        (novelty * 0.7 + prediction_surprise) * m.curiosity_weight
-    )
+    curiosity = _clamp((novelty * 0.7 + prediction_surprise) * m.curiosity_weight)
 
     # --- Confidence ---
     # Familiar tasks + success → confidence; errors erode it
     confidence = _clamp(
-        (signals.familiarity_at_execution * 0.6
-         + (0.3 if signals.outcome_matched_prediction else -0.3)
-         - signals.error_count * 0.2)
+        (
+            signals.familiarity_at_execution * 0.6
+            + (0.3 if signals.outcome_matched_prediction else -0.3)
+            - signals.error_count * 0.2
+        )
         * m.confidence_weight
     )
 
@@ -229,6 +226,7 @@ def blend_emotions(
     alpha: float = _BLEND_ALPHA,
 ) -> EmotionDimensions:
     """Exponentially blend a new task's emotions into the rolling state."""
+
     def mix(a: float, b: float) -> float:
         return _clamp(a * (1.0 - alpha) + b * alpha)
 

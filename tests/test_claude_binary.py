@@ -17,8 +17,7 @@ from pathlib import Path
 import cortiva.core.claude_binary as cb
 
 
-def _setup(monkeypatch, tmp_path, *, source="/opt/homebrew/bin/claude",
-           sig="100:1", healthy=True):
+def _setup(monkeypatch, tmp_path, *, source="/opt/homebrew/bin/claude", sig="100:1", healthy=True):
     """Point the manager at a temp managed dir and fake out the filesystem +
     probe so no real binary or subprocess is involved."""
     managed = tmp_path / "claude-bin"

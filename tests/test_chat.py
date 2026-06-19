@@ -116,13 +116,18 @@ class TestGetAgentLogs:
         (agent_dir / "journal").mkdir()
 
         import json
-        (agent_dir / "today" / "task_queue.json").write_text(json.dumps({
-            "tasks": [
-                {"id": "t1", "description": "Fix bug", "status": "done"},
-                {"id": "t2", "description": "Write tests", "status": "pending"},
-            ],
-            "summary": {"done": 1, "pending": 1},
-        }))
+
+        (agent_dir / "today" / "task_queue.json").write_text(
+            json.dumps(
+                {
+                    "tasks": [
+                        {"id": "t1", "description": "Fix bug", "status": "done"},
+                        {"id": "t2", "description": "Write tests", "status": "pending"},
+                    ],
+                    "summary": {"done": 1, "pending": 1},
+                }
+            )
+        )
 
         agent = Agent(id="test-agent", directory=agent_dir)
         mock_memory = AsyncMock()

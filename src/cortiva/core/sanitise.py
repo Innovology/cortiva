@@ -8,7 +8,6 @@ patterns. Supports preview mode and configurable rules.
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -125,9 +124,7 @@ class SnapshotSanitiser:
     def __init__(self, rules: SanitisationRules) -> None:
         self.rules = rules
         self._compiled: list[tuple[SanitisationRule, re.Pattern[str]]] = [
-            (rule, rule.compile())
-            for rule in rules.rules
-            if rule.enabled
+            (rule, rule.compile()) for rule in rules.rules if rule.enabled
         ]
 
     def _apply_rules(self, text: str) -> str:
@@ -147,13 +144,15 @@ class SnapshotSanitiser:
         for line_num, line in enumerate(content.split("\n"), 1):
             for rule, pattern in self._compiled:
                 for match in pattern.finditer(line):
-                    matches.append(RedactionMatch(
-                        file=rel_path,
-                        line_number=line_num,
-                        rule_name=rule.name,
-                        original=match.group(),
-                        replacement=rule.replacement,
-                    ))
+                    matches.append(
+                        RedactionMatch(
+                            file=rel_path,
+                            line_number=line_num,
+                            rule_name=rule.name,
+                            original=match.group(),
+                            replacement=rule.replacement,
+                        )
+                    )
         return matches
 
     def preview(self, snapshot_path: Path) -> list[RedactionMatch]:
@@ -173,13 +172,15 @@ class SnapshotSanitiser:
 
             # If stripping journal, mark all journal files
             if self.rules.strip_journal and rel.startswith("journal/"):
-                matches.append(RedactionMatch(
-                    file=rel,
-                    line_number=0,
-                    rule_name="strip_journal",
-                    original="[entire file]",
-                    replacement="[REMOVED]",
-                ))
+                matches.append(
+                    RedactionMatch(
+                        file=rel,
+                        line_number=0,
+                        rule_name="strip_journal",
+                        original="[entire file]",
+                        replacement="[REMOVED]",
+                    )
+                )
                 continue
 
             # Skip binary/non-text files
@@ -233,7 +234,11 @@ class SnapshotSanitiser:
 
             # Export as tar.gz
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            archive = output_path if str(output_path).endswith(".tar.gz") else output_path.with_suffix(".tar.gz")
+            archive = (
+                output_path
+                if str(output_path).endswith(".tar.gz")
+                else output_path.with_suffix(".tar.gz")
+            )
             with tarfile.open(archive, "w:gz") as tar:
                 tar.add(work_dir, arcname=snapshot_path.name)
 

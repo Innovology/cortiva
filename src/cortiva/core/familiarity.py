@@ -10,11 +10,10 @@ from __future__ import annotations
 
 from cortiva.adapters.protocols import FamiliaritySignal, MemoryAdapter, MemoryRecord
 
-
 # Thresholds for classifying familiarity strength
-_ROUTINE_MIN = 5      # >=5 similar memories → routine
-_FAMILIAR_MIN = 2     # 2-4 → familiar
-_VAGUE_MIN = 1        # 1 → vague recognition
+_ROUTINE_MIN = 5  # >=5 similar memories → routine
+_FAMILIAR_MIN = 2  # 2-4 → familiar
+_VAGUE_MIN = 1  # 1 → vague recognition
 # 0 → novel
 
 

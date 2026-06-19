@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,13 +12,12 @@ from cortiva.core.discovery import (
     NodeCapabilities,
     ResourceSnapshot,
     TerminalAgentInfo,
+    _check_endpoint,
     _discover_ollama_models,
     _discover_resources,
     _discover_terminal_agents,
-    _check_endpoint,
     _run_cmd,
 )
-
 
 # ---------------------------------------------------------------------------
 # Data class serialisation
@@ -29,8 +27,11 @@ from cortiva.core.discovery import (
 class TestDataClasses:
     def test_terminal_agent_info_to_dict(self) -> None:
         info = TerminalAgentInfo(
-            name="claude-code", binary="/usr/bin/claude",
-            version="1.0.0", available=True, auth_ok=True,
+            name="claude-code",
+            binary="/usr/bin/claude",
+            version="1.0.0",
+            available=True,
+            auth_ok=True,
         )
         d = info.to_dict()
         assert d["name"] == "claude-code"
@@ -39,8 +40,10 @@ class TestDataClasses:
 
     def test_local_model_info_to_dict(self) -> None:
         info = LocalModelInfo(
-            name="qwen3.5:35b", size_bytes=20_000_000_000,
-            family="qwen", parameter_size="35B",
+            name="qwen3.5:35b",
+            size_bytes=20_000_000_000,
+            family="qwen",
+            parameter_size="35B",
         )
         d = info.to_dict()
         assert d["name"] == "qwen3.5:35b"
@@ -48,8 +51,11 @@ class TestDataClasses:
 
     def test_endpoint_info_to_dict(self) -> None:
         info = EndpointInfo(
-            name="vllm-local", url="http://localhost:8000",
-            provider="vllm", models=["llama-3"], healthy=True,
+            name="vllm-local",
+            url="http://localhost:8000",
+            provider="vllm",
+            models=["llama-3"],
+            healthy=True,
         )
         d = info.to_dict()
         assert d["healthy"] is True
@@ -57,9 +63,13 @@ class TestDataClasses:
 
     def test_resource_snapshot_to_dict(self) -> None:
         snap = ResourceSnapshot(
-            cpu_cores=8, ram_total_gb=32.0, ram_available_gb=16.5,
-            disk_total_gb=500.0, disk_free_gb=200.0,
-            platform="Darwin", python_version="3.13.0",
+            cpu_cores=8,
+            ram_total_gb=32.0,
+            ram_available_gb=16.5,
+            disk_total_gb=500.0,
+            disk_free_gb=200.0,
+            platform="Darwin",
+            python_version="3.13.0",
         )
         d = snap.to_dict()
         assert d["cpu_cores"] == 8
@@ -190,7 +200,9 @@ class TestOllamaDiscovery:
 
     @pytest.mark.asyncio
     async def test_ollama_not_running(self) -> None:
-        with patch("cortiva.core.discovery._fetch_ollama_tags", side_effect=Exception("Connection refused")):
+        with patch(
+            "cortiva.core.discovery._fetch_ollama_tags", side_effect=Exception("Connection refused")
+        ):
             models = await _discover_ollama_models()
 
         assert models == []
@@ -205,12 +217,14 @@ class TestEndpointCheck:
     @pytest.mark.asyncio
     async def test_healthy_endpoint(self) -> None:
         with patch("cortiva.core.discovery._ping_endpoint", return_value=True):
-            info = await _check_endpoint({
-                "name": "vllm-local",
-                "url": "http://localhost:8000",
-                "provider": "vllm",
-                "models": ["llama-3"],
-            })
+            info = await _check_endpoint(
+                {
+                    "name": "vllm-local",
+                    "url": "http://localhost:8000",
+                    "provider": "vllm",
+                    "models": ["llama-3"],
+                }
+            )
 
         assert info.name == "vllm-local"
         assert info.healthy is True
@@ -219,10 +233,12 @@ class TestEndpointCheck:
     @pytest.mark.asyncio
     async def test_unreachable_endpoint(self) -> None:
         with patch("cortiva.core.discovery._ping_endpoint", return_value=False):
-            info = await _check_endpoint({
-                "name": "remote",
-                "url": "http://unreachable:9999",
-            })
+            info = await _check_endpoint(
+                {
+                    "name": "remote",
+                    "url": "http://unreachable:9999",
+                }
+            )
 
         assert info.healthy is False
 
@@ -259,12 +275,18 @@ class TestResourceDiscovery:
 class TestNodeCapabilitiesDiscover:
     @pytest.mark.asyncio
     async def test_full_discovery(self) -> None:
-        with patch("cortiva.core.discovery._discover_terminal_agents", return_value=[
-            TerminalAgentInfo(name="claude-code", binary="/usr/bin/claude", available=True),
-        ]):
-            with patch("cortiva.core.discovery._discover_ollama_models", return_value=[
-                LocalModelInfo(name="qwen3.5:35b"),
-            ]):
+        with patch(
+            "cortiva.core.discovery._discover_terminal_agents",
+            return_value=[
+                TerminalAgentInfo(name="claude-code", binary="/usr/bin/claude", available=True),
+            ],
+        ):
+            with patch(
+                "cortiva.core.discovery._discover_ollama_models",
+                return_value=[
+                    LocalModelInfo(name="qwen3.5:35b"),
+                ],
+            ):
                 caps = await NodeCapabilities.discover("test-node")
 
         assert caps.node_id == "test-node"
@@ -301,9 +323,12 @@ class TestFabricDiscoveryIntegration:
         class StubConsciousness:
             async def think(self, **kw):
                 from cortiva.adapters.protocols import ConsciousResponse
+
                 return ConsciousResponse(content="ok", model="stub")
+
             async def reflect(self, **kw):
                 from cortiva.adapters.protocols import ConsciousResponse
+
                 return ConsciousResponse(content="ok", model="stub")
 
         return Fabric(
@@ -399,9 +424,13 @@ class TestConfigDiscoveryIntegration:
         def _mock_import(registry, name, kind):
             if kind == "memory":
                 from cortiva.adapters.memory.inmemory import InMemoryAdapter
+
                 return InMemoryAdapter
+
             class MockCls:
-                def __init__(self, **kw): pass
+                def __init__(self, **kw):
+                    pass
+
             return MockCls
 
         with _patch("cortiva.core.config._import_adapter", side_effect=_mock_import):
@@ -426,9 +455,13 @@ class TestConfigDiscoveryIntegration:
         def _mock_import(registry, name, kind):
             if kind == "memory":
                 from cortiva.adapters.memory.inmemory import InMemoryAdapter
+
                 return InMemoryAdapter
+
             class MockCls:
-                def __init__(self, **kw): pass
+                def __init__(self, **kw):
+                    pass
+
             return MockCls
 
         with _patch("cortiva.core.config._import_adapter", side_effect=_mock_import):
@@ -448,13 +481,27 @@ class TestDiscoverCLI:
 
         args = MagicMock()
 
-        with patch("cortiva.core.discovery._discover_terminal_agents", return_value=[
-            TerminalAgentInfo(name="claude-code", binary="/usr/bin/claude", available=True, auth_ok=True, version="1.0"),
-            TerminalAgentInfo(name="codex", binary="", available=False),
-        ]):
-            with patch("cortiva.core.discovery._discover_ollama_models", return_value=[
-                LocalModelInfo(name="qwen3.5:35b", parameter_size="35B", size_bytes=20_000_000_000),
-            ]):
+        with patch(
+            "cortiva.core.discovery._discover_terminal_agents",
+            return_value=[
+                TerminalAgentInfo(
+                    name="claude-code",
+                    binary="/usr/bin/claude",
+                    available=True,
+                    auth_ok=True,
+                    version="1.0",
+                ),
+                TerminalAgentInfo(name="codex", binary="", available=False),
+            ],
+        ):
+            with patch(
+                "cortiva.core.discovery._discover_ollama_models",
+                return_value=[
+                    LocalModelInfo(
+                        name="qwen3.5:35b", parameter_size="35B", size_bytes=20_000_000_000
+                    ),
+                ],
+            ):
                 cmd_discover(args)
 
         captured = capsys.readouterr()

@@ -46,7 +46,7 @@ def test_same_day_orphan_open_session_is_capped(tmp_path):
 
 
 def test_previous_day_file_archived_and_today_fresh(tmp_path):
-    yday = (datetime.now(UTC) - timedelta(days=1))
+    yday = datetime.now(UTC) - timedelta(days=1)
     yday_str = yday.strftime("%Y-%m-%d")
     _write(tmp_path, yday_str, [_entry(yday.replace(hour=9), yday.replace(hour=17))])
     ts = Timesheet(tmp_path, scheduled_hours=8.0)
@@ -73,6 +73,10 @@ def test_multiple_stale_opens_cannot_block(tmp_path):
     # Several ancient open sessions — must not sum into a blocking total today.
     base = datetime.now(UTC) - timedelta(days=2)
     today = datetime.now(UTC).strftime("%Y-%m-%d")
-    _write(tmp_path, today, [_entry(base), _entry(base + timedelta(hours=1)), _entry(base + timedelta(hours=2))])
+    _write(
+        tmp_path,
+        today,
+        [_entry(base), _entry(base + timedelta(hours=1)), _entry(base + timedelta(hours=2))],
+    )
     ts = Timesheet(tmp_path, scheduled_hours=7.5)
     assert ts.today().total_hours < 12.0

@@ -75,9 +75,7 @@ class CortivaRoutedConsciousnessAdapter:
         self.max_tokens = max_tokens
         self.timeout_s = timeout_s
         self._hq_base_url = (
-            hq_base_url
-            or os.environ.get("CORTIVA_HQ_BASE_URL")
-            or "https://api.cortiva.dev"
+            hq_base_url or os.environ.get("CORTIVA_HQ_BASE_URL") or "https://api.cortiva.dev"
         ).rstrip("/")
         self._node_token = node_token or os.environ.get("CORTIVA_NODE_TOKEN", "")
         if not self._node_token:
@@ -139,18 +137,27 @@ class CortivaRoutedConsciousnessAdapter:
             try:
                 data = await self._post_inference_direct(body)
                 return self._build_response(
-                    agent_id, priority, data, via="cortiva-direct",
+                    agent_id,
+                    priority,
+                    data,
+                    via="cortiva-direct",
                 )
             except Exception as exc:
                 logger.warning(
-                    "Direct path failed (%s); falling back to relay.", exc,
+                    "Direct path failed (%s); falling back to relay.",
+                    exc,
                 )
 
         data = await self._post_inference(body)
         return self._build_response(agent_id, priority, data, via="cortiva-routed")
 
     def _build_response(
-        self, agent_id: str, priority: Priority, data: dict, *, via: str,
+        self,
+        agent_id: str,
+        priority: Priority,
+        data: dict,
+        *,
+        via: str,
     ) -> ConsciousResponse:
         return ConsciousResponse(
             content=data.get("text", ""),
@@ -200,8 +207,7 @@ class CortivaRoutedConsciousnessAdapter:
             resp = await client.post(url, json=body, headers=headers)
             if resp.status_code != 200:
                 raise RuntimeError(
-                    f"Inference call to HQ failed ({resp.status_code}): "
-                    f"{resp.text[:300]}",
+                    f"Inference call to HQ failed ({resp.status_code}): {resp.text[:300]}",
                 )
             return resp.json()
 
@@ -227,8 +233,7 @@ class CortivaRoutedConsciousnessAdapter:
             resp = await client.post(route_url, json=route_body, headers=headers)
             if resp.status_code != 200:
                 raise RuntimeError(
-                    f"Routing decision failed ({resp.status_code}): "
-                    f"{resp.text[:300]}",
+                    f"Routing decision failed ({resp.status_code}): {resp.text[:300]}",
                 )
             decision = resp.json()
 
@@ -261,13 +266,14 @@ class CortivaRoutedConsciousnessAdapter:
         verify = self._build_verify_arg()
 
         async with httpx.AsyncClient(
-            timeout=self.timeout_s, cert=cert_arg, verify=verify,
+            timeout=self.timeout_s,
+            cert=cert_arg,
+            verify=verify,
         ) as client:
             resp = await client.post(target, json=infer_body, headers=infer_headers)
             if resp.status_code != 200:
                 raise RuntimeError(
-                    f"Direct inference failed ({resp.status_code}): "
-                    f"{resp.text[:300]}",
+                    f"Direct inference failed ({resp.status_code}): {resp.text[:300]}",
                 )
             data = resp.json()
 
@@ -291,6 +297,7 @@ class CortivaRoutedConsciousnessAdapter:
         # PEM bodies to a tempdir at first use.
         import os
         import tempfile
+
         cert_dir = tempfile.gettempdir()
         cert_path = os.path.join(cert_dir, "cortiva_client_cert.pem")
         key_path = os.path.join(cert_dir, "cortiva_client_key.pem")
@@ -310,6 +317,7 @@ class CortivaRoutedConsciousnessAdapter:
             return True
         import os
         import tempfile
+
         ca_path = os.path.join(tempfile.gettempdir(), "cortiva_ca_cert.pem")
         if not os.path.exists(ca_path):
             with open(ca_path, "w") as f:

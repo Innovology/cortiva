@@ -8,20 +8,23 @@ from cortiva.core import expectations as ex
 
 
 def _e(now, hours, **kw):
-    return ex.Expectation(id=kw.get("id", "x"), sender=kw.get("sender", "marcus@x"),
-                          what=kw.get("what", "the audit"),
-                          due_at=(now + timedelta(hours=hours)).isoformat(),
-                          created_at=(now - timedelta(days=1)).isoformat())
+    return ex.Expectation(
+        id=kw.get("id", "x"),
+        sender=kw.get("sender", "marcus@x"),
+        what=kw.get("what", "the audit"),
+        due_at=(now + timedelta(hours=hours)).isoformat(),
+        created_at=(now - timedelta(days=1)).isoformat(),
+    )
 
 
 def test_dormant_until_due_then_chase() -> None:
     now = datetime(2026, 6, 14, 9, 0, tzinfo=UTC)
-    far = _e(now, 48)        # due in 2 days
-    soon = _e(now, 3)        # due in 3h (within lead window)
-    overdue = _e(now, -5)    # 5h overdue
-    assert not ex.should_chase(far, now)     # not yet — don't nag early
-    assert ex.should_chase(soon, now)        # imminent → chase
-    assert ex.should_chase(overdue, now)     # overdue → chase
+    far = _e(now, 48)  # due in 2 days
+    soon = _e(now, 3)  # due in 3h (within lead window)
+    overdue = _e(now, -5)  # 5h overdue
+    assert not ex.should_chase(far, now)  # not yet — don't nag early
+    assert ex.should_chase(soon, now)  # imminent → chase
+    assert ex.should_chase(overdue, now)  # overdue → chase
     assert ex.is_overdue(overdue, now)
 
 
@@ -35,8 +38,13 @@ def test_chase_pressure_is_mild_and_grows_with_overdue() -> None:
 
 
 def test_no_date_never_chases() -> None:
-    e = ex.Expectation(id="x", sender="a@x", what="someday thing", due_at="",
-                       created_at="2026-06-13T09:00:00+00:00")
+    e = ex.Expectation(
+        id="x",
+        sender="a@x",
+        what="someday thing",
+        due_at="",
+        created_at="2026-06-13T09:00:00+00:00",
+    )
     assert not ex.should_chase(e)
     assert not ex.is_overdue(e)
     assert ex.chase_pressure([e]) == 0.0
@@ -99,14 +107,26 @@ def test_update_received_no_id_and_missing(tmp_path) -> None:
 
 def test_mark_received_helper(tmp_path) -> None:
     e = ex.register(tmp_path, sender="a@x", what="thing", due="2026-06-20")
-    assert ex.mark_received(tmp_path, e.id[:6]) is not None   # prefix id
+    assert ex.mark_received(tmp_path, e.id[:6]) is not None  # prefix id
     assert ex.load(tmp_path)[0].status == "received"
 
 
 def test_summarise(tmp_path) -> None:
     now = datetime(2026, 6, 14, 9, 0, tzinfo=UTC)
-    ex.register(tmp_path, sender="marcus@x", what="late one", due=(now - timedelta(hours=3)).isoformat(), now=now)
-    ex.register(tmp_path, sender="yuki@x", what="future one", due=(now + timedelta(days=5)).isoformat(), now=now)
+    ex.register(
+        tmp_path,
+        sender="marcus@x",
+        what="late one",
+        due=(now - timedelta(hours=3)).isoformat(),
+        now=now,
+    )
+    ex.register(
+        tmp_path,
+        sender="yuki@x",
+        what="future one",
+        due=(now + timedelta(days=5)).isoformat(),
+        now=now,
+    )
     s = ex.summarise(ex.load(tmp_path), now)
     assert s["open"] == 2 and s["to_chase"] == 1 and s["overdue"] == 1
     assert s["top_from"] == "marcus@x"

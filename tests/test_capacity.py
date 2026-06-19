@@ -12,8 +12,10 @@ class TestTaskTiming:
 
     def test_execution_time(self) -> None:
         t = TaskTiming(
-            agent_id="a", task_id="t1",
-            started_at=100.0, finished_at=130.0,
+            agent_id="a",
+            task_id="t1",
+            started_at=100.0,
+            finished_at=130.0,
         )
         assert t.execution_time == 30.0
 
@@ -23,8 +25,11 @@ class TestTaskTiming:
 
     def test_to_dict(self) -> None:
         t = TaskTiming(
-            agent_id="a", task_id="t1",
-            queued_at=100.0, started_at=105.0, finished_at=120.0,
+            agent_id="a",
+            task_id="t1",
+            queued_at=100.0,
+            started_at=105.0,
+            finished_at=120.0,
             consciousness_wait=8.0,
         )
         d = t.to_dict()
@@ -40,14 +45,16 @@ class TestHeartbeatTiming:
 
     def test_idle_time(self) -> None:
         h = HeartbeatTiming(
-            started_at=100.0, finished_at=110.0,
+            started_at=100.0,
+            finished_at=110.0,
             agent_timings={"a1": 4.0, "a2": 3.0},
         )
         assert h.idle_time == 3.0
 
     def test_to_dict(self) -> None:
         h = HeartbeatTiming(
-            started_at=100.0, finished_at=110.0,
+            started_at=100.0,
+            finished_at=110.0,
             agent_timings={"a1": 5.0},
         )
         d = h.to_dict()

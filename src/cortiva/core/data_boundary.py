@@ -47,9 +47,14 @@ class TelemetryConfig:
     platform_sink: str = ""
     """Where platform health data goes (Cortiva HQ endpoint)."""
 
-    platform_fields: list[str] = field(default_factory=lambda: [
-        "agent_count", "uptime", "version", "heartbeat_interval",
-    ])
+    platform_fields: list[str] = field(
+        default_factory=lambda: [
+            "agent_count",
+            "uptime",
+            "version",
+            "heartbeat_interval",
+        ]
+    )
     """Only these fields are sent to the platform sink.  No agent data."""
 
 
@@ -110,9 +115,10 @@ class DataBoundaryEnforcer:
         for denied in self._config.denied_llm_endpoints:
             if endpoint.startswith(denied):
                 logger.warning(
-                    "LLM endpoint blocked by data boundary: %s "
-                    "(denied: %s, region: %s)",
-                    endpoint, denied, self._config.region,
+                    "LLM endpoint blocked by data boundary: %s (denied: %s, region: %s)",
+                    endpoint,
+                    denied,
+                    self._config.region,
                 )
                 return False
 
@@ -123,7 +129,8 @@ class DataBoundaryEnforcer:
                     return True
             logger.warning(
                 "LLM endpoint not in allow list: %s (region: %s)",
-                endpoint, self._config.region,
+                endpoint,
+                self._config.region,
             )
             return False
 

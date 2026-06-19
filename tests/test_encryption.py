@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cortiva.core.encryption import EncryptionConfig, EncryptionVault, _MAGIC
+from cortiva.core.encryption import _MAGIC, EncryptionConfig, EncryptionVault
 
 
 class TestEncryptionVault:
@@ -68,6 +68,7 @@ class TestEncryptionVault:
     def test_decrypt_invalid_header(self) -> None:
         vault = EncryptionVault(key=b"e" * 32)
         import pytest
+
         with pytest.raises(ValueError, match="missing magic header"):
             vault.decrypt(b"not encrypted data")
 
@@ -79,12 +80,14 @@ class TestEncryptionConfig:
         assert config.provider == "local"
 
     def test_from_dict_azure(self) -> None:
-        config = EncryptionConfig.from_dict({
-            "enabled": True,
-            "provider": "azure-keyvault",
-            "key_vault_url": "https://vault.azure.net",
-            "key_name": "my-key",
-        })
+        config = EncryptionConfig.from_dict(
+            {
+                "enabled": True,
+                "provider": "azure-keyvault",
+                "key_vault_url": "https://vault.azure.net",
+                "key_name": "my-key",
+            }
+        )
         assert config.enabled is True
         assert config.provider == "azure-keyvault"
         assert config.key_vault_url == "https://vault.azure.net"

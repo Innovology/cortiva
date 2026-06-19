@@ -93,9 +93,7 @@ class ApprovalQueue:
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                self._requests = [
-                    ApprovalRequest.from_dict(r) for r in data.get("requests", [])
-                ]
+                self._requests = [ApprovalRequest.from_dict(r) for r in data.get("requests", [])]
             except (json.JSONDecodeError, KeyError):
                 self._requests = []
 
@@ -124,21 +122,26 @@ class ApprovalQueue:
         self._persist()
         logger.info(
             "Approval request %s: %s wants to '%s' (approver: %s)",
-            request.id, agent_id, task_description[:60], approver_id,
+            request.id,
+            agent_id,
+            task_description[:60],
+            approver_id,
         )
         return request
 
     def pending_for(self, approver_id: str) -> list[ApprovalRequest]:
         """Get all pending requests for this approver."""
         return [
-            r for r in self._requests
+            r
+            for r in self._requests
             if r.approver_id == approver_id and r.status == ApprovalStatus.PENDING
         ]
 
     def pending_by_agent(self, agent_id: str) -> list[ApprovalRequest]:
         """Get all pending requests submitted by this agent."""
         return [
-            r for r in self._requests
+            r
+            for r in self._requests
             if r.agent_id == agent_id and r.status == ApprovalStatus.PENDING
         ]
 
@@ -149,7 +152,9 @@ class ApprovalQueue:
         return None
 
     def approve(
-        self, request_id: str, resolved_by: str,
+        self,
+        request_id: str,
+        resolved_by: str,
     ) -> ApprovalRequest | None:
         """Approve a request."""
         request = self.get(request_id)
@@ -163,7 +168,10 @@ class ApprovalQueue:
         return request
 
     def reject(
-        self, request_id: str, resolved_by: str, reason: str = "",
+        self,
+        request_id: str,
+        resolved_by: str,
+        reason: str = "",
     ) -> ApprovalRequest | None:
         """Reject a request."""
         request = self.get(request_id)
@@ -183,7 +191,8 @@ class ApprovalQueue:
         These should be re-injected into the agent's task queue.
         """
         return [
-            r for r in self._requests
+            r
+            for r in self._requests
             if r.agent_id == agent_id and r.status == ApprovalStatus.APPROVED
         ]
 

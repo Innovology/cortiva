@@ -109,7 +109,8 @@ class CredentialProvider:
             else:
                 logger.warning(
                     "Could not resolve credential %s for agent %s",
-                    secret_ref, agent_id,
+                    secret_ref,
+                    agent_id,
                 )
         return result
 

@@ -15,10 +15,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # WorkEntry — lightweight record of one day's work
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class WorkEntry:
@@ -35,6 +35,7 @@ class WorkEntry:
 # ---------------------------------------------------------------------------
 # Enums & value objects
 # ---------------------------------------------------------------------------
+
 
 class ReviewPeriod(Enum):
     WEEKLY = "weekly"
@@ -135,6 +136,7 @@ class PerformanceReview:
 # Pure computation
 # ---------------------------------------------------------------------------
 
+
 def compute_metrics(entries: list[WorkEntry]) -> PerformanceMetrics:
     """Compute aggregate metrics from a list of work entries.
 
@@ -145,9 +147,7 @@ def compute_metrics(entries: list[WorkEntry]) -> PerformanceMetrics:
 
     total_hours = sum(e.hours_worked for e in entries)
     scheduled_hours = sum(e.scheduled_hours for e in entries)
-    overtime_hours = sum(
-        max(0.0, e.hours_worked - e.scheduled_hours) for e in entries
-    )
+    overtime_hours = sum(max(0.0, e.hours_worked - e.scheduled_hours) for e in entries)
     tasks_completed = sum(e.tasks_completed for e in entries)
     tasks_escalated = sum(e.tasks_escalated for e in entries)
     consciousness_calls = sum(e.consciousness_calls for e in entries)
@@ -155,9 +155,7 @@ def compute_metrics(entries: list[WorkEntry]) -> PerformanceMetrics:
 
     total_tasks = tasks_completed + tasks_escalated
     escalation_ratio = tasks_escalated / total_tasks if total_tasks > 0 else 0.0
-    budget_efficiency = (
-        consciousness_calls / tasks_completed if tasks_completed > 0 else 0.0
-    )
+    budget_efficiency = consciousness_calls / tasks_completed if tasks_completed > 0 else 0.0
     avg_hours_per_day = total_hours / days_active if days_active > 0 else 0.0
 
     return PerformanceMetrics(
@@ -177,6 +175,7 @@ def compute_metrics(entries: list[WorkEntry]) -> PerformanceMetrics:
 # ---------------------------------------------------------------------------
 # Persistence helpers
 # ---------------------------------------------------------------------------
+
 
 def _journal_dir(agent_dir: Path) -> Path:
     return agent_dir / "journal"
@@ -220,6 +219,7 @@ def _load_work_entries(agent_dir: Path, start: date, end: date) -> list[WorkEntr
 # ReviewManager
 # ---------------------------------------------------------------------------
 
+
 def _period_range(period: ReviewPeriod, ref_date: date | None = None) -> tuple[date, date]:
     """Compute (start, end) for the most recent completed period."""
     today = ref_date or date.today()
@@ -228,9 +228,7 @@ def _period_range(period: ReviewPeriod, ref_date: date | None = None) -> tuple[d
     return start, end
 
 
-def _previous_period_range(
-    period: ReviewPeriod, ref_date: date | None = None
-) -> tuple[date, date]:
+def _previous_period_range(period: ReviewPeriod, ref_date: date | None = None) -> tuple[date, date]:
     """Compute (start, end) for the period before the current one."""
     today = ref_date or date.today()
     end = today - timedelta(days=period.days)
@@ -310,9 +308,7 @@ class ReviewManager:
         return reviews
 
 
-def _compute_trend(
-    current_entries: list[WorkEntry], prev_entries: list[WorkEntry]
-) -> str:
+def _compute_trend(current_entries: list[WorkEntry], prev_entries: list[WorkEntry]) -> str:
     """Compute trend from two sets of work entries."""
     prev_metrics = compute_metrics(prev_entries)
     if prev_metrics.days_active == 0:
@@ -321,9 +317,7 @@ def _compute_trend(
     return _determine_trend(current_metrics, prev_metrics)
 
 
-def _determine_trend(
-    current: PerformanceMetrics, previous: PerformanceMetrics
-) -> str:
+def _determine_trend(current: PerformanceMetrics, previous: PerformanceMetrics) -> str:
     """Compare two metric sets and return a trend label.
 
     Scoring: +1 for each improved signal, -1 for each declined signal.

@@ -16,7 +16,6 @@ from cortiva.core.reviews import (
     compute_metrics,
 )
 
-
 # ---------------------------------------------------------------------------
 # ReviewPeriod
 # ---------------------------------------------------------------------------
@@ -242,9 +241,7 @@ class TestReviewManager:
         agent_dir = tmp_path / "agent-1"
         agent_dir.mkdir()
         mgr = ReviewManager()
-        review = mgr.generate_review(
-            agent_dir, ReviewPeriod.WEEKLY, ref_date=date(2026, 3, 29)
-        )
+        review = mgr.generate_review(agent_dir, ReviewPeriod.WEEKLY, ref_date=date(2026, 3, 29))
         assert review.agent_id == "agent-1"
         assert review.metrics.days_active == 0
         assert review.trend == "stable"
@@ -264,9 +261,7 @@ class TestReviewManager:
         ]
         agent_dir = self._setup_agent(tmp_path, entries)
         mgr = ReviewManager()
-        review = mgr.generate_review(
-            agent_dir, ReviewPeriod.WEEKLY, ref_date=ref
-        )
+        review = mgr.generate_review(agent_dir, ReviewPeriod.WEEKLY, ref_date=ref)
         assert review.metrics.days_active == 7
         assert review.metrics.tasks_completed == 28
         assert review.metrics.total_hours == 56.0
@@ -330,9 +325,7 @@ class TestReviewManager:
         ]
         agent_dir = self._setup_agent(tmp_path, entries)
         mgr = ReviewManager()
-        trend = mgr.compare_to_previous(
-            agent_dir, ReviewPeriod.WEEKLY, ref_date=ref
-        )
+        trend = mgr.compare_to_previous(agent_dir, ReviewPeriod.WEEKLY, ref_date=ref)
         assert trend == "stable"  # no previous data -> stable
 
     def test_compare_to_previous_improving(self, tmp_path: Path) -> None:
@@ -340,27 +333,29 @@ class TestReviewManager:
         entries = []
         # Previous period: fewer tasks, higher escalation
         for i in range(7, 14):
-            entries.append({
-                "date": (ref - timedelta(days=i)).isoformat(),
-                "hours_worked": 6.0,
-                "tasks_completed": 2,
-                "tasks_escalated": 2,
-                "consciousness_calls": 5,
-            })
+            entries.append(
+                {
+                    "date": (ref - timedelta(days=i)).isoformat(),
+                    "hours_worked": 6.0,
+                    "tasks_completed": 2,
+                    "tasks_escalated": 2,
+                    "consciousness_calls": 5,
+                }
+            )
         # Current period: more tasks, lower escalation
         for i in range(7):
-            entries.append({
-                "date": (ref - timedelta(days=i)).isoformat(),
-                "hours_worked": 8.0,
-                "tasks_completed": 5,
-                "tasks_escalated": 0,
-                "consciousness_calls": 2,
-            })
+            entries.append(
+                {
+                    "date": (ref - timedelta(days=i)).isoformat(),
+                    "hours_worked": 8.0,
+                    "tasks_completed": 5,
+                    "tasks_escalated": 0,
+                    "consciousness_calls": 2,
+                }
+            )
         agent_dir = self._setup_agent(tmp_path, entries)
         mgr = ReviewManager()
-        trend = mgr.compare_to_previous(
-            agent_dir, ReviewPeriod.WEEKLY, ref_date=ref
-        )
+        trend = mgr.compare_to_previous(agent_dir, ReviewPeriod.WEEKLY, ref_date=ref)
         assert trend == "improving"
 
     def test_compare_to_previous_declining(self, tmp_path: Path) -> None:
@@ -368,27 +363,29 @@ class TestReviewManager:
         entries = []
         # Previous period: good performance
         for i in range(7, 14):
-            entries.append({
-                "date": (ref - timedelta(days=i)).isoformat(),
-                "hours_worked": 8.0,
-                "tasks_completed": 5,
-                "tasks_escalated": 0,
-                "consciousness_calls": 2,
-            })
+            entries.append(
+                {
+                    "date": (ref - timedelta(days=i)).isoformat(),
+                    "hours_worked": 8.0,
+                    "tasks_completed": 5,
+                    "tasks_escalated": 0,
+                    "consciousness_calls": 2,
+                }
+            )
         # Current period: worse performance
         for i in range(7):
-            entries.append({
-                "date": (ref - timedelta(days=i)).isoformat(),
-                "hours_worked": 4.0,
-                "tasks_completed": 1,
-                "tasks_escalated": 3,
-                "consciousness_calls": 5,
-            })
+            entries.append(
+                {
+                    "date": (ref - timedelta(days=i)).isoformat(),
+                    "hours_worked": 4.0,
+                    "tasks_completed": 1,
+                    "tasks_escalated": 3,
+                    "consciousness_calls": 5,
+                }
+            )
         agent_dir = self._setup_agent(tmp_path, entries)
         mgr = ReviewManager()
-        trend = mgr.compare_to_previous(
-            agent_dir, ReviewPeriod.WEEKLY, ref_date=ref
-        )
+        trend = mgr.compare_to_previous(agent_dir, ReviewPeriod.WEEKLY, ref_date=ref)
         assert trend == "declining"
 
     def test_generate_review_uses_trend(self, tmp_path: Path) -> None:
@@ -397,27 +394,29 @@ class TestReviewManager:
         entries = []
         # Previous period
         for i in range(7, 14):
-            entries.append({
-                "date": (ref - timedelta(days=i)).isoformat(),
-                "hours_worked": 6.0,
-                "tasks_completed": 2,
-                "tasks_escalated": 2,
-                "consciousness_calls": 5,
-            })
+            entries.append(
+                {
+                    "date": (ref - timedelta(days=i)).isoformat(),
+                    "hours_worked": 6.0,
+                    "tasks_completed": 2,
+                    "tasks_escalated": 2,
+                    "consciousness_calls": 5,
+                }
+            )
         # Current period — better
         for i in range(7):
-            entries.append({
-                "date": (ref - timedelta(days=i)).isoformat(),
-                "hours_worked": 8.0,
-                "tasks_completed": 5,
-                "tasks_escalated": 0,
-                "consciousness_calls": 2,
-            })
+            entries.append(
+                {
+                    "date": (ref - timedelta(days=i)).isoformat(),
+                    "hours_worked": 8.0,
+                    "tasks_completed": 5,
+                    "tasks_escalated": 0,
+                    "consciousness_calls": 2,
+                }
+            )
         agent_dir = self._setup_agent(tmp_path, entries)
         mgr = ReviewManager()
-        review = mgr.generate_review(
-            agent_dir, ReviewPeriod.WEEKLY, ref_date=ref
-        )
+        review = mgr.generate_review(agent_dir, ReviewPeriod.WEEKLY, ref_date=ref)
         assert review.trend == "improving"
 
     def test_work_log_dict_format(self, tmp_path: Path) -> None:
@@ -435,12 +434,8 @@ class TestReviewManager:
                 }
             ]
         }
-        (journal / "work-log.json").write_text(
-            json.dumps(log_data), encoding="utf-8"
-        )
+        (journal / "work-log.json").write_text(json.dumps(log_data), encoding="utf-8")
         mgr = ReviewManager()
-        review = mgr.generate_review(
-            agent_dir, ReviewPeriod.WEEKLY, ref_date=ref
-        )
+        review = mgr.generate_review(agent_dir, ReviewPeriod.WEEKLY, ref_date=ref)
         assert review.metrics.tasks_completed == 3
         assert review.metrics.total_hours == 7.5

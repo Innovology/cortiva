@@ -28,6 +28,7 @@ class ModelUnavailableError(RuntimeError):
     breaker is open — a run of timeouts / connection failures tripped it, so
     agents back off instead of all piling long waits onto a wedged server."""
 
+
 REFLECTION_SUFFIX_INSTRUCTIONS = """\
 
 After completing the task, you may optionally append a structured reflection \
@@ -206,8 +207,7 @@ class OpenAICompatibleAdapter:
                     from openai import OpenAI
                 except ImportError:
                     raise ImportError(
-                        "openai is not installed. "
-                        "Install it with: pip install openai"
+                        "openai is not installed. Install it with: pip install openai"
                     )
                 kwargs: dict[str, Any] = {"api_key": agent_key}
                 if self._base_url:
@@ -219,10 +219,7 @@ class OpenAICompatibleAdapter:
             try:
                 from openai import OpenAI
             except ImportError:
-                raise ImportError(
-                    "openai is not installed. "
-                    "Install it with: pip install openai"
-                )
+                raise ImportError("openai is not installed. Install it with: pip install openai")
             kwargs2: dict[str, Any] = {"api_key": self._default_key}
             if self._base_url:
                 kwargs2["base_url"] = self._base_url
@@ -315,20 +312,21 @@ class OpenAICompatibleAdapter:
             # server, and must not trip it. Name-based check avoids a hard
             # dependency on openai's exception classes.
             _n = type(exc).__name__
-            if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or any(
+            if isinstance(exc, asyncio.TimeoutError | TimeoutError) or any(
                 k in _n for k in ("Timeout", "APIConnection", "Connection")
             ):
                 self._breaker_fails += 1
-                if (
-                    self._breaker_fails >= self._breaker_threshold
-                    and not (self._breaker_open_until and time.monotonic() < self._breaker_open_until)
+                if self._breaker_fails >= self._breaker_threshold and not (
+                    self._breaker_open_until and time.monotonic() < self._breaker_open_until
                 ):
                     self._breaker_open_until = time.monotonic() + self._breaker_cooldown_s
                     logger.error(
                         "Local model circuit breaker OPEN after %d consecutive "
                         "inference failures (%s) — backing off %.0fs; the node "
                         "model-watchdog should restart the server.",
-                        self._breaker_fails, _n, self._breaker_cooldown_s,
+                        self._breaker_fails,
+                        _n,
+                        self._breaker_cooldown_s,
                     )
             raise
         # Success → the model is answering; clear any failure state.

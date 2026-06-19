@@ -5,16 +5,14 @@ Run with: pytest tests/integration/ -m integration
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
 from cortiva.adapters.memory.inmemory import InMemoryAdapter
 from cortiva.adapters.protocols import ConsciousResponse, Priority
-from cortiva.core.agent import Agent, WORKSPACE_DIRS
+from cortiva.core.agent import WORKSPACE_DIRS, Agent
 from cortiva.core.fabric import Fabric
 
 
@@ -41,12 +39,14 @@ class MockConsciousness:
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,  # tolerate evolving kwargs (e.g. tools=)
     ) -> ConsciousResponse:
-        self.calls.append({
-            "method": "think",
-            "agent_id": agent_id,
-            "prompt_preview": prompt[:200],
-            "metadata": metadata,
-        })
+        self.calls.append(
+            {
+                "method": "think",
+                "agent_id": agent_id,
+                "prompt_preview": prompt[:200],
+                "metadata": metadata,
+            }
+        )
 
         call_type = (metadata or {}).get("call_type", "")
 
@@ -87,10 +87,12 @@ class MockConsciousness:
         context: str,
         day_summary: str,
     ) -> ConsciousResponse:
-        self.calls.append({
-            "method": "reflect",
-            "agent_id": agent_id,
-        })
+        self.calls.append(
+            {
+                "method": "reflect",
+                "agent_id": agent_id,
+            }
+        )
         return ConsciousResponse(
             content=(
                 f"I am {agent_id}. Today I processed records and learned "
@@ -115,6 +117,7 @@ class MockChannel:
 
     async def send(self, sender: str, recipient: str, content: str, **kwargs: Any) -> Any:
         from cortiva.adapters.protocols import Message
+
         msg = Message(
             id=f"msg-{len(self.messages)}",
             sender=sender,
@@ -162,17 +165,13 @@ def create_test_agent(agents_dir: Path, agent_id: str = "test-agent-01") -> Agen
         (agent_dir / subdir).mkdir()
 
     (agent_dir / "identity" / "identity.md").write_text(
-        f"# {agent_id}\n\n"
-        "I am an integration test agent. I process records and generate reports.\n"
+        f"# {agent_id}\n\nI am an integration test agent. I process records and generate reports.\n"
     )
     (agent_dir / "identity" / "soul.md").write_text(
-        f"# {agent_id} — Persona\n\n"
-        "Methodical, detail-oriented, reliable.\n"
+        f"# {agent_id} — Persona\n\nMethodical, detail-oriented, reliable.\n"
     )
     (agent_dir / "identity" / "skills.md").write_text(
-        f"# {agent_id} — Skills\n\n"
-        "- Data processing\n"
-        "- Report generation\n"
+        f"# {agent_id} — Skills\n\n- Data processing\n- Report generation\n"
     )
     (agent_dir / "identity" / "responsibilities.md").write_text(
         f"# {agent_id} — Responsibilities\n\n"

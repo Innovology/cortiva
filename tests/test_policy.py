@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from cortiva.core.policy import (
-    AgentPolicy,
     Decision,
     ExecutionPolicy,
     FilesystemPolicy,
@@ -11,7 +10,6 @@ from cortiva.core.policy import (
     ToolPolicy,
     parse_agent_policy,
 )
-
 
 # ---------------------------------------------------------------------------
 # ToolPolicy
@@ -175,10 +173,13 @@ class TestAgentPolicy:
         assert policy.check_action("anything").allowed
 
     def test_to_dict(self) -> None:
-        policy = parse_agent_policy("agent-1", {
-            "tools": {"allowed": ["Read"]},
-            "execution": {"deny": ["rm*"]},
-        })
+        policy = parse_agent_policy(
+            "agent-1",
+            {
+                "tools": {"allowed": ["Read"]},
+                "execution": {"deny": ["rm*"]},
+            },
+        )
         d = policy.to_dict()
         assert d["agent_id"] == "agent-1"
         assert d["tools"]["allowed"] == ["Read"]
@@ -193,26 +194,30 @@ class TestAgentPolicy:
 class TestPolicyManager:
     def test_defaults(self) -> None:
         mgr = PolicyManager()
-        mgr.load({
-            "defaults": {
-                "tools": {"denied": ["Bash"]},
-                "execution": {"deny": ["drop*"]},
-            },
-        })
+        mgr.load(
+            {
+                "defaults": {
+                    "tools": {"denied": ["Bash"]},
+                    "execution": {"deny": ["drop*"]},
+                },
+            }
+        )
         # Any agent should inherit defaults
         assert mgr.check_tool("unknown-agent", "Bash").denied
         assert mgr.check_action("unknown-agent", "drop database").denied
 
     def test_per_agent_override(self) -> None:
         mgr = PolicyManager()
-        mgr.load({
-            "defaults": {
-                "tools": {"denied": ["Bash"]},
-            },
-            "dev-cortiva": {
-                "tools": {"allowed": ["Read", "Write", "Edit", "Bash"]},
-            },
-        })
+        mgr.load(
+            {
+                "defaults": {
+                    "tools": {"denied": ["Bash"]},
+                },
+                "dev-cortiva": {
+                    "tools": {"allowed": ["Read", "Write", "Edit", "Bash"]},
+                },
+            }
+        )
         # dev-cortiva overrides tools.allowed, but Bash is still denied
         # because denied is inherited from defaults
         assert mgr.check_tool("dev-cortiva", "Read").allowed
@@ -221,14 +226,16 @@ class TestPolicyManager:
 
     def test_per_agent_override_clears_denied(self) -> None:
         mgr = PolicyManager()
-        mgr.load({
-            "defaults": {
-                "tools": {"denied": ["Bash"]},
-            },
-            "dev-cortiva": {
-                "tools": {"denied": []},  # explicitly clear denied
-            },
-        })
+        mgr.load(
+            {
+                "defaults": {
+                    "tools": {"denied": ["Bash"]},
+                },
+                "dev-cortiva": {
+                    "tools": {"denied": []},  # explicitly clear denied
+                },
+            }
+        )
         assert mgr.check_tool("dev-cortiva", "Bash").allowed
 
     def test_get_unknown_returns_defaults(self) -> None:
@@ -246,14 +253,16 @@ class TestPolicyManager:
 
     def test_check_path(self) -> None:
         mgr = PolicyManager()
-        mgr.load({
-            "defaults": {
-                "filesystem": {
-                    "workspace_only": True,
-                    "denied_paths": ["/etc*"],
+        mgr.load(
+            {
+                "defaults": {
+                    "filesystem": {
+                        "workspace_only": True,
+                        "denied_paths": ["/etc*"],
+                    },
                 },
-            },
-        })
+            }
+        )
         ws = "/agents/agent-1/workspace"
         assert mgr.check_path("agent-1", f"{ws}/file.py", workspace=ws).allowed
         assert mgr.check_path("agent-1", "/etc/passwd", workspace=ws).denied

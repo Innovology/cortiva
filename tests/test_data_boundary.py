@@ -59,12 +59,14 @@ class TestDataBoundaryEnforcer:
         assert "secret_key" not in filtered
 
     def test_telemetry_sinks(self) -> None:
-        config = DataBoundaryConfig.from_dict({
-            "telemetry": {
-                "customer_sink": "azure-monitor",
-                "platform_sink": "https://telemetry.cortivahq.com",
-            },
-        })
+        config = DataBoundaryConfig.from_dict(
+            {
+                "telemetry": {
+                    "customer_sink": "azure-monitor",
+                    "platform_sink": "https://telemetry.cortivahq.com",
+                },
+            }
+        )
         enforcer = DataBoundaryEnforcer(config)
         assert enforcer.customer_telemetry_sink() == "azure-monitor"
         assert enforcer.platform_telemetry_sink() == "https://telemetry.cortivahq.com"
@@ -83,16 +85,18 @@ class TestDataBoundaryConfig:
         assert config.allowed_llm_endpoints == []
 
     def test_from_dict_full(self) -> None:
-        config = DataBoundaryConfig.from_dict({
-            "region": "UK South",
-            "allowed_llm_endpoints": ["https://uk.openai.azure.com"],
-            "denied_llm_endpoints": ["https://api.openai.com"],
-            "telemetry": {
-                "customer_sink": "azure-monitor",
-                "platform_sink": "https://cortivahq.com/telemetry",
-                "platform_fields": ["agent_count", "version"],
-            },
-        })
+        config = DataBoundaryConfig.from_dict(
+            {
+                "region": "UK South",
+                "allowed_llm_endpoints": ["https://uk.openai.azure.com"],
+                "denied_llm_endpoints": ["https://api.openai.com"],
+                "telemetry": {
+                    "customer_sink": "azure-monitor",
+                    "platform_sink": "https://cortivahq.com/telemetry",
+                    "platform_fields": ["agent_count", "version"],
+                },
+            }
+        )
         assert config.region == "UK South"
         assert len(config.allowed_llm_endpoints) == 1
         assert config.telemetry.platform_fields == ["agent_count", "version"]

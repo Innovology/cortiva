@@ -1,6 +1,7 @@
 """Admission gate: cap concurrent local-model inferences so a wake-everyone
 burst can't OOM/livelock the model. The gate lives in the consciousness
 adapter (one per node, shared by all agents)."""
+
 from __future__ import annotations
 
 import asyncio

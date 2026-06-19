@@ -54,8 +54,7 @@ class DiscordChannelAdapter:
                 import discord
             except ImportError:
                 raise ImportError(
-                    "discord.py is not installed. "
-                    "Install it with: pip install 'discord.py>=2.0'"
+                    "discord.py is not installed. Install it with: pip install 'discord.py>=2.0'"
                 )
             if not self._token:
                 raise ValueError(
@@ -118,16 +117,14 @@ class DiscordChannelAdapter:
             import discord
         except ImportError:
             raise ImportError(
-                "discord.py is not installed. "
-                "Install it with: pip install 'discord.py>=2.0'"
+                "discord.py is not installed. Install it with: pip install 'discord.py>=2.0'"
             )
         client = self._get_client()
 
         target_id = int(channel) if channel else self._default_channel
         if target_id is None:
             raise ValueError(
-                "No target channel specified. "
-                "Pass channel= or set default_channel on the adapter."
+                "No target channel specified. Pass channel= or set default_channel on the adapter."
             )
 
         ch = client.get_channel(target_id)

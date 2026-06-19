@@ -14,11 +14,10 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 import time
 import urllib.request
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 API_BASE = "https://registry.modelcontextprotocol.io/v0.1/servers"
 PAGE_SIZE = 100
@@ -26,35 +25,217 @@ OUTPUT = Path(__file__).parent.parent / "src" / "cortiva" / "skills" / "registry
 
 # Category inference from name/description keywords
 CATEGORY_RULES: list[tuple[str, list[str]]] = [
-    ("project-management", ["jira", "linear", "asana", "trello", "monday", "clickup", "notion", "todoist", "basecamp", "shortcut", "height", "kanban", "sprint", "backlog", "task management", "issue track"]),
-    ("version-control", ["gitlab", "bitbucket", "git repo", "git commit", "pull request", "merge request", "version control", "code review"]),
-    ("databases", ["postgres", "mysql", "sqlite", "mongodb", "redis", "dynamodb", "supabase", "firebase", "prisma", "neon", "planetscale", "elasticsearch", "pinecone", "weaviate", "qdrant", "chroma", "database", "sql", "nosql", "vector db"]),
-    ("cloud-infrastructure", ["aws", "gcp", "azure", "cloudflare", "vercel", "netlify", "terraform", "kubernetes", "docker", "digitalocean", "fly.io", "railway", "render", "heroku", "cloud deploy", "infrastructure"]),
-    ("monitoring", ["datadog", "grafana", "sentry", "pagerduty", "prometheus", "new relic", "opsgenie", "honeycomb", "monitoring", "observability", "alerting", "apm", "logging"]),
-    ("communication", ["slack", "discord", "teams", "telegram", "twilio", "messaging", "chat", "notification"]),
+    (
+        "project-management",
+        [
+            "jira",
+            "linear",
+            "asana",
+            "trello",
+            "monday",
+            "clickup",
+            "notion",
+            "todoist",
+            "basecamp",
+            "shortcut",
+            "height",
+            "kanban",
+            "sprint",
+            "backlog",
+            "task management",
+            "issue track",
+        ],
+    ),
+    (
+        "version-control",
+        [
+            "gitlab",
+            "bitbucket",
+            "git repo",
+            "git commit",
+            "pull request",
+            "merge request",
+            "version control",
+            "code review",
+        ],
+    ),
+    (
+        "databases",
+        [
+            "postgres",
+            "mysql",
+            "sqlite",
+            "mongodb",
+            "redis",
+            "dynamodb",
+            "supabase",
+            "firebase",
+            "prisma",
+            "neon",
+            "planetscale",
+            "elasticsearch",
+            "pinecone",
+            "weaviate",
+            "qdrant",
+            "chroma",
+            "database",
+            "sql",
+            "nosql",
+            "vector db",
+        ],
+    ),
+    (
+        "cloud-infrastructure",
+        [
+            "aws",
+            "gcp",
+            "azure",
+            "cloudflare",
+            "vercel",
+            "netlify",
+            "terraform",
+            "kubernetes",
+            "docker",
+            "digitalocean",
+            "fly.io",
+            "railway",
+            "render",
+            "heroku",
+            "cloud deploy",
+            "infrastructure",
+        ],
+    ),
+    (
+        "monitoring",
+        [
+            "datadog",
+            "grafana",
+            "sentry",
+            "pagerduty",
+            "prometheus",
+            "new relic",
+            "opsgenie",
+            "honeycomb",
+            "monitoring",
+            "observability",
+            "alerting",
+            "apm",
+            "logging",
+        ],
+    ),
+    (
+        "communication",
+        ["slack", "discord", "teams", "telegram", "twilio", "messaging", "chat", "notification"],
+    ),
     ("email", ["email", "sendgrid", "mailgun", "gmail", "outlook", "smtp", "imap"]),
-    ("browser-automation", ["browser", "puppeteer", "playwright", "selenium", "chrome", "headless", "scraping", "crawl"]),
-    ("search", ["brave search", "google search", "exa search", "tavily", "serper", "web search", "search engine", "search api"]),
-    ("code-quality", ["lint", "eslint", "prettier", "sonar", "code quality", "static analysis", "formatting"]),
+    (
+        "browser-automation",
+        [
+            "browser",
+            "puppeteer",
+            "playwright",
+            "selenium",
+            "chrome",
+            "headless",
+            "scraping",
+            "crawl",
+        ],
+    ),
+    (
+        "search",
+        [
+            "brave search",
+            "google search",
+            "exa search",
+            "tavily",
+            "serper",
+            "web search",
+            "search engine",
+            "search api",
+        ],
+    ),
+    (
+        "code-quality",
+        ["lint", "eslint", "prettier", "sonar", "code quality", "static analysis", "formatting"],
+    ),
     ("testing", ["test", "jest", "pytest", "cypress", "playwright test", "k6", "load test", "e2e"]),
     ("security", ["vault", "snyk", "trivy", "semgrep", "security scan", "vulnerability", "secret"]),
     ("analytics", ["analytics", "mixpanel", "amplitude", "posthog", "segment", "google analytics"]),
-    ("crm", ["salesforce", "hubspot", "pipedrive", "intercom", "zendesk", "freshdesk", "crm", "customer"]),
-    ("finance", ["stripe", "plaid", "quickbooks", "xero", "payment", "invoice", "billing", "banking"]),
-    ("documentation", ["confluence", "google docs", "google sheets", "airtable", "coda", "wiki", "documentation"]),
-    ("storage", ["s3", "google drive", "dropbox", "box", "onedrive", "cloud storage", "file storage"]),
-    ("ai-ml", ["openai", "anthropic", "hugging", "replicate", "stability", "langchain", "embedding", "llm", "machine learning", "neural"]),
+    (
+        "crm",
+        [
+            "salesforce",
+            "hubspot",
+            "pipedrive",
+            "intercom",
+            "zendesk",
+            "freshdesk",
+            "crm",
+            "customer",
+        ],
+    ),
+    (
+        "finance",
+        ["stripe", "plaid", "quickbooks", "xero", "payment", "invoice", "billing", "banking"],
+    ),
+    (
+        "documentation",
+        ["confluence", "google docs", "google sheets", "airtable", "coda", "wiki", "documentation"],
+    ),
+    (
+        "storage",
+        ["s3", "google drive", "dropbox", "box", "onedrive", "cloud storage", "file storage"],
+    ),
+    (
+        "ai-ml",
+        [
+            "openai",
+            "anthropic",
+            "hugging",
+            "replicate",
+            "stability",
+            "langchain",
+            "embedding",
+            "llm",
+            "machine learning",
+            "neural",
+        ],
+    ),
     ("design", ["figma", "canva", "sketch", "design", "ui design"]),
-    ("devops", ["ci/cd", "github actions", "circleci", "jenkins", "argocd", "ansible", "pipeline", "deploy"]),
-    ("marketing", ["mailchimp", "google ads", "facebook ads", "marketing", "campaign", "advertising"]),
+    (
+        "devops",
+        [
+            "ci/cd",
+            "github actions",
+            "circleci",
+            "jenkins",
+            "argocd",
+            "ansible",
+            "pipeline",
+            "deploy",
+        ],
+    ),
+    (
+        "marketing",
+        ["mailchimp", "google ads", "facebook ads", "marketing", "campaign", "advertising"],
+    ),
     ("media", ["youtube", "spotify", "cloudinary", "video", "audio", "image process", "media"]),
     ("ecommerce", ["shopify", "woocommerce", "ecommerce", "product", "order", "cart"]),
     ("calendar", ["calendar", "scheduling", "appointment", "booking"]),
     ("productivity", ["productivity", "time", "weather", "maps", "translation", "calculator"]),
-    ("data-processing", ["dbt", "snowflake", "bigquery", "databricks", "data pipeline", "etl", "data transform"]),
-    ("blockchain", ["blockchain", "crypto", "web3", "ethereum", "solana", "nft", "defi", "trading"]),
+    (
+        "data-processing",
+        ["dbt", "snowflake", "bigquery", "databricks", "data pipeline", "etl", "data transform"],
+    ),
+    (
+        "blockchain",
+        ["blockchain", "crypto", "web3", "ethereum", "solana", "nft", "defi", "trading"],
+    ),
     ("iot", ["iot", "mqtt", "home assistant", "sensor", "device", "smart home"]),
-    ("api-integration", ["api", "rest", "graphql", "webhook", "zapier", "make", "integration", "automation"]),
+    (
+        "api-integration",
+        ["api", "rest", "graphql", "webhook", "zapier", "make", "integration", "automation"],
+    ),
 ]
 
 
@@ -224,7 +405,7 @@ def write_registry(skills: list[dict[str, Any]]) -> None:
     lines = [
         "# Cortiva Skill Registry",
         "#",
-        f"# Auto-generated from registry.modelcontextprotocol.io",
+        "# Auto-generated from registry.modelcontextprotocol.io",
         f"# Total: {len(skills)} skills across {len(by_category)} categories",
         "#",
         "# Install with: cortiva skill install <name> --agent <agent-id>",

@@ -86,16 +86,18 @@ class TestCredentialConfig:
         assert config.agents == {}
 
     def test_from_dict_full(self) -> None:
-        config = CredentialConfig.from_dict({
-            "provider": "azure-keyvault",
-            "key_vault_url": "https://vault.azure.net",
-            "agents": {
-                "dev-cortiva": {
-                    "GITHUB_TOKEN": "secret/github",
-                    "AZURE_DEVOPS_PAT": "secret/devops",
+        config = CredentialConfig.from_dict(
+            {
+                "provider": "azure-keyvault",
+                "key_vault_url": "https://vault.azure.net",
+                "agents": {
+                    "dev-cortiva": {
+                        "GITHUB_TOKEN": "secret/github",
+                        "AZURE_DEVOPS_PAT": "secret/devops",
+                    },
                 },
-            },
-        })
+            }
+        )
         assert config.provider == "azure-keyvault"
         assert "dev-cortiva" in config.agents
         assert config.agents["dev-cortiva"]["GITHUB_TOKEN"] == "secret/github"
