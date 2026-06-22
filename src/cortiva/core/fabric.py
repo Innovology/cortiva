@@ -4428,6 +4428,9 @@ class Fabric:
                     except (ValueError, OSError):
                         continue
             _ex.resolve_from_inbox(agent.directory, senders_seen=seen)
+            # A reply from someone clears the outbound throttle for their thread
+            # so a real back-and-forth isn't capped like an unanswered nag.
+            self._clear_awaiting_for_senders(agent, set(seen.keys()))
         except Exception:
             logger.debug("expectation inbox-resolve failed for %s", agent.id, exc_info=True)
 
@@ -4632,6 +4635,30 @@ class Fabric:
             return json.loads(path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             return {}
+
+    def _resolve_manager(self, agent_id: str) -> tuple[str, str]:
+        """Return ``(manager_id, manager_email)`` for an agent.
+
+        Uses HQ's pushed full org directory (the cross-node org chart, the same
+        one mirrored into HARIS) so a manager on another node still resolves;
+        falls back to the local org model + same-node cards. ``manager_id`` may
+        name a human (e.g. ``"human-founder"``), in which case email is "" and
+        the caller routes to the founder contact.
+        """
+        directory = self._email_meta().get("directory") or []
+        by_id = {str(d.get("id")): d for d in directory if d.get("id")}
+        mgr_id = str((by_id.get(agent_id) or {}).get("reports_to") or "").strip()
+        if not mgr_id and self.org is not None:
+            mgr_id = self.org.manager_of(agent_id) or ""
+        if not mgr_id:
+            return "", ""
+        if mgr_id.startswith("human"):
+            return mgr_id, ""
+        email = str((by_id.get(mgr_id) or {}).get("email") or "").strip()
+        if not email:
+            cards = {c["id"]: c for c in self._load_directory_cards()}
+            email = str((cards.get(mgr_id) or {}).get("email") or "").strip()
+        return mgr_id, email
 
     # Capability vocabulary for procedure reconciliation (#282). A procedure
     # contradicts reality when a currently-GOOD capability is both NAMED and
@@ -5116,6 +5143,56 @@ class Fabric:
             lines.append("- " + "\n".join(bits))
         return "\n".join(lines)
 
+    # Outbound throttle — an unanswered ask must not become a 40-message storm.
+    # Cap re-sends per (recipient, thread) and space them out; the count resets
+    # when the recipient writes back (see _clear_awaiting_for_senders).
+    _OUTBOX_MAX_SENDS = 3
+    _OUTBOX_DEBOUNCE_S = 6 * 3600
+
+    @staticmethod
+    def _thread_key(to: Any, subject: str) -> str:
+        """Stable key for a conversation: first recipient + normalised subject."""
+        addr = to[0] if isinstance(to, list) and to else to
+        addr = str(addr or "").strip().lower()
+        s = (subject or "").lower().strip()
+        while True:
+            s2 = re.sub(r"^(re|fwd|fw)\s*:\s*", "", s).strip()
+            if s2 == s:
+                break
+            s = s2
+        return f"{addr}|{s[:80]}"
+
+    def _load_outbox_ledger(self, agent: Agent) -> dict:
+        import json
+
+        p = agent.directory / "outbox" / ".threads.json"
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return {}
+
+    def _save_outbox_ledger(self, agent: Agent, led: dict) -> None:
+        import json
+
+        p = agent.directory / "outbox" / ".threads.json"
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(led), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _clear_awaiting_for_senders(self, agent: Agent, senders: set[str]) -> None:
+        """A reply arrived from these addresses → reset their thread throttle so
+        a genuine back-and-forth can continue."""
+        if not senders:
+            return
+        led = self._load_outbox_ledger(agent)
+        kept = {k: e for k, e in led.items() if str(e.get("to", "")).lower() not in senders}
+        if len(kept) != len(led):
+            self._save_outbox_ledger(agent, kept)
+
     def _queue_outbound_email(self, agent: Agent, spec: dict) -> None:
         """Queue an outbound email to the agent's outbox for the node to send."""
         import json
@@ -5127,6 +5204,44 @@ class Fabric:
         if not to or not body:
             logger.info("Agent %s email had no recipient/body — ignored.", agent.id)
             return
+
+        # Throttle re-sends on the same thread while awaiting a reply.
+        now = datetime.now(UTC)
+        key = self._thread_key(to, spec.get("subject", ""))
+        led = self._load_outbox_ledger(agent)
+        entry = led.get(key)
+        if entry:
+            count = int(entry.get("count", 0))
+            try:
+                last = datetime.fromisoformat(str(entry.get("last")))
+            except ValueError:
+                last = None
+            if count >= self._OUTBOX_MAX_SENDS:
+                logger.info(
+                    "Suppressed re-send for %s to %s (%d already sent, awaiting reply): %s",
+                    agent.id, to, count, spec.get("subject"),
+                )
+                self._emit("email.suppressed", agent_id=agent.id, to=to, reason="max_sends")
+                return
+            if last and (now - last).total_seconds() < self._OUTBOX_DEBOUNCE_S:
+                logger.info(
+                    "Suppressed re-send for %s to %s (debounce, awaiting reply): %s",
+                    agent.id, to, spec.get("subject"),
+                )
+                self._emit("email.suppressed", agent_id=agent.id, to=to, reason="debounce")
+                return
+            entry["count"] = count + 1
+            entry["last"] = now.isoformat()
+        else:
+            entry = {
+                "to": str(to[0] if isinstance(to, list) and to else to),
+                "subject": spec.get("subject", ""),
+                "count": 1,
+                "last": now.isoformat(),
+            }
+        led[key] = entry
+        self._save_outbox_ledger(agent, led)
+
         outbox = agent.directory / "outbox" / "email"
         try:
             outbox.mkdir(parents=True, exist_ok=True)
@@ -5373,15 +5488,8 @@ class Fabric:
                 founder = a
                 break
 
-        mgr_email = ""
-        mgr_id = self.org.manager_of(agent.id)
-        if mgr_id:
-            cards = {c["id"]: c for c in self._load_directory_cards()}
-            card = cards.get(mgr_id) or {}
-            mgr_email = str(card.get("email") or "").strip()
-
-        haystack = f"{task_desc} {escalation}".lower()
-        operator_level = any(kw in haystack for kw in self._OPERATOR_KEYWORDS)
+        # Resolve the agent's manager from the full org chart (cross-node).
+        mgr_id, mgr_email = self._resolve_manager(agent.id)
 
         subject = f"[Blocked] {task_desc[:80]}"
         # Factual brief — the node's voice pass rewrites this into the agent's
@@ -5393,25 +5501,34 @@ class Fabric:
             f"— {agent.id}"
         )
 
-        if operator_level and founder:
-            spec: dict[str, Any] = {"to": founder, "subject": subject, "body": body}
-            if mgr_email:
-                spec["cc"] = mgr_email  # keep the manager in the loop
-            self._queue_outbound_email(agent, spec)
+        # Escalate UP THE CHAIN. An IC's blocker goes to its MANAGER, who either
+        # resolves it or escalates further up themselves. The founder is only
+        # ever reached as the CEO's manager (reports_to: human-founder) — we
+        # never skip levels to the founder, whatever the blocker's wording.
+        if mgr_id.startswith("human"):
+            # This agent reports to the founder (i.e. the CEO).
+            if founder:
+                self._queue_outbound_email(
+                    agent, {"to": founder, "subject": subject, "body": body},
+                )
+            else:
+                logger.warning(
+                    "Escalation for %s reports to the founder but no founder "
+                    "contact is configured", agent.id,
+                )
         elif mgr_email:
             self._queue_outbound_email(
                 agent,
                 {"to": mgr_email, "subject": subject, "body": body},
             )
-        elif founder:
-            self._queue_outbound_email(
-                agent,
-                {"to": founder, "subject": subject, "body": body},
-            )
         else:
+            # No manager resolvable — do NOT dump on the founder. With the org
+            # directory pushed from HQ this is rare (missing roster); log it so
+            # the gap is visible rather than silently re-routing up.
             logger.warning(
-                "Escalation for %s could not be routed — no manager/founder email",
-                agent.id,
+                "Escalation for %s could not be routed to a manager (mgr_id=%r); "
+                "not escalating to the founder — check the org directory push.",
+                agent.id, mgr_id,
             )
 
     # ------------------------------------------------------------------
