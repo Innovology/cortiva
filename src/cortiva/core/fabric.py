@@ -104,6 +104,16 @@ def _human_remaining(hours: float) -> str:
     return f"overdue by {span}" if overdue else f"{span} left"
 
 
+def _human_age(hours: float) -> str:
+    """A short human read of how long ago something happened: '3h', '2d'."""
+    h = abs(hours)
+    if h >= 24:
+        return f"{h / 24:.0f}d"
+    if h >= 1:
+        return f"{h:.0f}h"
+    return f"{h * 60:.0f}m"
+
+
 def _is_github_email(from_field: str) -> bool:
     """True when an email is a GitHub notification (sender on github.com).
 
@@ -114,6 +124,42 @@ def _is_github_email(from_field: str) -> bool:
     m = re.search(r"[\w.+-]+@([\w.-]+)", from_field or "")
     domain = (m.group(1) if m else (from_field or "")).strip().lower()
     return domain == "github.com" or domain.endswith(".github.com")
+
+
+# Phrases GitHub puts in a notification body when a PR/issue reaches a terminal
+# state — the disconfirming signal that closes a feedback loop. Seeing one for a
+# ref resolves that ref's open feedback (the work landed; stop nagging).
+_GITHUB_DONE_MARKERS = (
+    "merged this pull request",
+    "merged commit",
+    "was merged",
+    "merged #",
+    "closed this",
+    "closed #",
+    "marked this conversation as resolved",
+)
+
+
+def _github_ref(subject: str) -> str:
+    """Stable key for the PR/issue a GitHub notification is about.
+
+    GitHub subjects look like ``[Innovology/repo] Title (PR #104)`` or
+    ``Re: [Innovology/repo] Title (Issue #80)``. We key feedback by
+    ``repo#number`` so every notification on the same thread folds into one
+    durable item. CI/run mails without a number fall back to the subject — still
+    durable, still TTL-pruned, just not thread-folded.
+    """
+    s = subject or ""
+    repo = ""
+    rm = re.search(r"\[([\w.\-]+/[\w.\-]+)\]", s)
+    if rm:
+        repo = rm.group(1)
+    nm = re.search(r"#(\d+)", s)
+    if nm:
+        return f"{repo}#{nm.group(1)}" if repo else f"#{nm.group(1)}"
+    # No number — collapse the "Re: " / "[repo] " noise so retries of the same
+    # subject still fold together.
+    return re.sub(r"^(re:\s*)+", "", s.strip(), flags=re.I).lower()[:120]
 
 
 def _resolve_msg_email(
@@ -665,6 +711,13 @@ class Fabric:
         # Build full context: identity + messages + org + plan cascade + daily context
         context = await self.context_builder.build_plan_context(agent, identity, messages)
 
+        # THE BRAKE goes first — before any accelerator. Reckon with what you've
+        # already done and your own unfinished part, so the chase/reply pressure
+        # below is reasoned past, not obeyed reflexively.
+        brake_ctx = self._calculated_action_context(agent)
+        if brake_ctx:
+            context = context + "\n\n---\n\n" + brake_ctx
+
         # Directives from above / company missions go FIRST — top of mind,
         # above her own plan (the salience she doesn't choose to feel).
         directive_ctx = self._directive_salience_context(agent)
@@ -718,6 +771,12 @@ class Fabric:
         email_ctx = self._email_inbox_context(agent)
         if email_ctx:
             context = context + "\n\n---\n\n" + email_ctx
+        # GitHub feedback on her own PRs/issues — durable, so an approval or CI
+        # failure stays salient until the thread lands (not read-once). Comes
+        # after the inbox pass above, which records the just-arrived ones.
+        gh_ctx = self._github_feedback_context(agent)
+        if gh_ctx:
+            context = context + "\n\n---\n\n" + gh_ctx
         # Inject the company directory (GAL) so the agent knows who exists
         # and how to reach them.
         dir_ctx = self._directory_context(agent)
@@ -3693,6 +3752,12 @@ class Fabric:
     # handled, then ages out as a backstop so it can't nag forever.
     _DIRECTIVE_TTL_DAYS = 3.0
 
+    # GitHub feedback on the agent's OWN work (PR approved, CI failed, review
+    # comment) stays salient until the thread reaches a terminal state — so an
+    # approval doesn't evaporate after the one wake it was shown in. Backstop
+    # TTL so a never-merged PR can't nag forever.
+    _GITHUB_FEEDBACK_TTL_DAYS = 4.0
+
     # Repeated-blocker tripwire: the same blocker recurring N times in a window
     # is a human problem, not a retry problem. After this many hits of the same
     # signature, force an escalation to a human even if the agent didn't emit
@@ -4455,6 +4520,109 @@ class Fabric:
         except Exception:
             logger.debug("expectation chase hook failed", exc_info=True)
 
+    def _calculated_action_context(self, agent: Agent) -> str:
+        """THE BRAKE. Myelin's other blocks are all accelerators — chase, reply,
+        do, respond. None makes the agent reckon with what it has ALREADY done.
+        This reconciles the agent against its own ground truth (its recent
+        outbound, its own undelivered commitments) and makes it reason before it
+        reaches out or re-starts work — the calculated-communicator discipline.
+
+        Assertive by default: for a thread already messaged within the hold
+        window, or where the agent owes its OWN part, it says HOLD — not a hard
+        block (the agent can still act), but a strong, reasoned counterweight to
+        the chase pressure that would otherwise win every cycle.
+        """
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+
+        # 1) My own undelivered commitments — have I done MY part?
+        own_open: list[Any] = []
+        try:
+            from cortiva.core import commitments as _cm
+
+            own_open = [
+                c for c in _cm.load(agent.directory)
+                if getattr(c, "status", "open") not in ("delivered", "withdrawn")
+            ]
+        except Exception:
+            own_open = []
+
+        # 2) Threads I've already written on — candidates for a reflexive re-chase.
+        led = self._load_outbox_ledger(agent)
+        active: list[dict] = []
+        for entry in led.values():
+            try:
+                last = datetime.fromisoformat(str(entry.get("last")))
+                age_h = (now - last).total_seconds() / 3600.0
+            except (ValueError, TypeError):
+                age_h = float("inf")
+            active.append(
+                {
+                    "to": entry.get("to", ""),
+                    "subject": entry.get("subject", ""),
+                    "count": int(entry.get("count", 0)),
+                    "age_h": age_h,
+                }
+            )
+        active = [a for a in active if a["count"] >= 1]
+        active.sort(key=lambda a: a["age_h"])
+
+        if not own_open and not active:
+            return ""
+
+        lines = [
+            "## ✋ Before you reach out or redo work — reckon with what you've already done\n",
+            "Everything below this line will push you to chase, reply and act. "
+            "Pause first and **reason**, don't reflexively send. For anything "
+            "you're about to send or restart, answer honestly:\n"
+            "1. **What did I last say on this, and when — was it clear and complete?**\n"
+            "2. **What does another message actually gain that the last one didn't?**\n"
+            "3. **Am I truly blocked, or was that just information?** Information needs no reply.\n"
+            "4. **Have I finished MY part before chasing theirs?**\n"
+            "5. **If I'm genuinely stuck and a clear ask went unanswered — escalate to "
+            "someone who can unblock; don't re-ask the same person.**\n",
+        ]
+
+        if own_open:
+            lines.append(
+                "\n**Your own unfinished commitments — do these before chasing anyone else:**"
+            )
+            for c in own_open[:8]:
+                who = getattr(c, "to", "")
+                lines.append(
+                    f"- {getattr(c, 'what', '(unspecified)')}"
+                    + (f" — owed to {who}" if who else "")
+                )
+
+        if active:
+            lines.append(
+                "\n**Threads you've already written on — do NOT re-send unless you "
+                "genuinely have something new:**"
+            )
+            for a in active[:8]:
+                age = _human_age(a["age_h"]) if a["age_h"] != float("inf") else "?"
+                if a["count"] >= self._OUTBOX_MAX_SENDS:
+                    verdict = (
+                        f"🛑 STOP — you've sent {a['count']} with no resolution. "
+                        "Re-sending won't work. Escalate to someone who can actually "
+                        "unblock, or let it go."
+                    )
+                elif a["age_h"] < self._RECHASE_HOLD_HOURS:
+                    verdict = (
+                        f"🛑 HOLD — you wrote {age} ago. A follow-up now adds nothing; "
+                        "wait for a reply."
+                    )
+                else:
+                    verdict = (
+                        f"sent {a['count']}×, last {age} ago — only follow up if you "
+                        "can add something genuinely new."
+                    )
+                subj = (a["subject"] or "(no subject)")[:60]
+                lines.append(f"- **{subj}** → {a['to']}: {verdict}")
+
+        return "\n".join(lines)
+
     def _expectation_salience_context(self, agent: Agent) -> str:
         """Top-of-mind block for what the agent is waiting on — surfacing only
         the ones worth chasing (due/overdue + silent), so it nudges a follow-up
@@ -4472,9 +4640,12 @@ class Fabric:
         lines = [
             "## 👀 Waiting on others — chase the silent ones\n",
             "These are things OTHERS owe YOU that are now due (or overdue) and "
-            "you've heard nothing. This isn't your work to do — it's yours to "
-            "CHASE: a short, direct follow-up to the person, or escalate if it's "
-            "blocking you. Don't just wait. When it arrives, it clears itself.\n",
+            "you've heard nothing. This isn't your work to do — but before you "
+            "chase, run the deliberation above: if you wrote to them recently and "
+            "clearly, HOLD — a second message adds nothing. Only chase if your "
+            "last ask is stale or unclear, and prefer a single direct follow-up "
+            "(or escalate to someone who can unblock) over repeating yourself. "
+            "When it arrives, it clears itself.\n",
         ]
         for e in chasing[:8]:
             h = _ex.hours_to_due(e, now)
@@ -4569,9 +4740,20 @@ class Fabric:
         # GitHub notifications are feedback on the agent's OWN work — comments
         # on their PRs/issues, review requests, CI. They were landing in the
         # "ignore as you judge" bucket and piling up unread, so feedback loops
-        # never closed. Pull them into their own action-expected block.
+        # never closed. Read-once made it worse: a notification was rendered in
+        # exactly ONE wake then archived, and a [:10] cap silently dropped the
+        # rest — so an approval ("merge me") or a CI failure evaporated before
+        # the agent acted. Persist them to a DURABLE register that stays
+        # top-of-mind every wake until the thread reaches a terminal state
+        # (mirrors the directive register). Rendering now happens in
+        # `_github_feedback_context`, not here.
         github = [m for m in rest if _is_github_email(m.get("from", ""))]
         normal = [m for m in rest if not _is_github_email(m.get("from", ""))]
+        if github:
+            try:
+                self._record_github_feedback(agent, github)
+            except Exception:
+                logger.debug("github feedback record failed", exc_info=True)
 
         lines: list[str] = []
         if priority:
@@ -4595,21 +4777,8 @@ class Fabric:
                     + f" — {m.get('subject', '')}  \n  {snippet}"
                 )
             lines.append("")
-        if github:
-            lines.append("## 🔧 GitHub — feedback on your work, respond there\n")
-            lines.append(
-                f"{len(github)} GitHub notification(s) — comments on your pull "
-                "requests or issues, review requests, CI results. This is "
-                "feedback on **your own work** and it **needs a response**: open "
-                "the PR or issue with your github tools (`gh pr view`, "
-                "`gh issue view`), read the full thread, and **reply there** — a "
-                "review comment left unanswered blocks whoever's waiting on you. "
-                "Don't let these pile up unread.\n"
-            )
-            for m in github[:10]:
-                snippet = (m.get("text") or "").strip().replace("\n", " ")[:200]
-                lines.append(f"- **{m.get('subject', '')}**  \n  {snippet}")
-            lines.append("")
+        # GitHub feedback is rendered durably by `_github_feedback_context`
+        # (persisted above), not inline — so it survives this read-once pass.
         if normal:
             lines.append("## 📧 New Mail — notification\n")
             lines.append(
@@ -4620,6 +4789,133 @@ class Fabric:
             for m in normal[:10]:
                 snippet = (m.get("text") or "").strip().replace("\n", " ")[:200]
                 lines.append(f"- **{m.get('from', '')}** — {m.get('subject', '')}  \n  {snippet}")
+        return "\n".join(lines)
+
+    def _record_github_feedback(self, agent: Agent, github_msgs: list[dict]) -> None:
+        """Persist GitHub notifications as durable, open feedback items.
+
+        Mirrors the directive register: idempotent by PR/issue ref, so every
+        notification on the same thread folds into one item (with a count and a
+        last-seen). A notification whose body says the thread was merged/closed
+        marks that ref resolved — the disconfirming signal that closes the loop.
+        This is what stops an approval evaporating after the single wake the
+        read-once inbox showed it in.
+        """
+        import json
+        from datetime import UTC, datetime
+
+        path = agent.directory / "github_feedback.json"
+        items: list[dict] = []
+        if path.exists():
+            try:
+                items = json.loads(path.read_text(encoding="utf-8")) or []
+            except (ValueError, OSError):
+                items = []
+        by_ref = {d.get("ref", ""): d for d in items}
+        now = datetime.now(UTC).isoformat()
+        for m in github_msgs:
+            subj = str(m.get("subject", "")).strip()
+            ref = _github_ref(subj)
+            blob = (subj + " " + str(m.get("text", ""))).lower()
+            done = any(mark in blob for mark in _GITHUB_DONE_MARKERS)
+            cur = by_ref.get(ref)
+            if cur is None:
+                cur = {
+                    "ref": ref,
+                    "subject": subj,
+                    "snippet": (m.get("text") or "").strip().replace("\n", " ")[:240],
+                    "opened_at": now,
+                    "last_seen": now,
+                    "count": 1,
+                    "status": "resolved" if done else "open",
+                }
+                items.append(cur)
+                by_ref[ref] = cur
+            else:
+                cur["last_seen"] = now
+                cur["count"] = int(cur.get("count", 1)) + 1
+                cur["subject"] = subj or cur.get("subject", "")
+                if (m.get("text") or "").strip():
+                    cur["snippet"] = (m.get("text") or "").strip().replace("\n", " ")[:240]
+                if done:
+                    cur["status"] = "resolved"
+        # Bound the file: keep the most recently-seen 200.
+        items.sort(key=lambda d: str(d.get("last_seen", "")), reverse=True)
+        items = items[:200]
+        try:
+            path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        except OSError:
+            logger.debug("could not persist github feedback", exc_info=True)
+
+    def _open_github_feedback(self, agent: Agent) -> list[dict]:
+        """Open GitHub feedback, with resolved/expired items pruned.
+
+        Resolved = a later notification reported the thread merged/closed.
+        Expired = older than the TTL backstop (a PR that simply never lands
+        can't nag forever). The file self-cleans, like the directive register.
+        """
+        import json
+        from datetime import UTC, datetime
+
+        path = agent.directory / "github_feedback.json"
+        if not path.exists():
+            return []
+        try:
+            items = json.loads(path.read_text(encoding="utf-8")) or []
+        except (ValueError, OSError):
+            return []
+        now = datetime.now(UTC)
+        still_open: list[dict] = []
+        for d in items:
+            if d.get("status") != "open":
+                continue
+            try:
+                opened = datetime.fromisoformat(str(d.get("opened_at")))
+            except (ValueError, TypeError):
+                opened = now
+            if (now - opened).total_seconds() > self._GITHUB_FEEDBACK_TTL_DAYS * 86400:
+                continue  # expired backstop
+            still_open.append(d)
+        if len(still_open) != len([d for d in items if d.get("status") == "open"]):
+            try:
+                path.write_text(json.dumps(still_open, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+        return still_open
+
+    def _github_feedback_context(self, agent: Agent) -> str:
+        """Top-of-mind block for open GitHub feedback on the agent's own work.
+
+        Persisted by `_record_github_feedback`, this survives the read-once
+        inbox: it renders every wake/reassess until the thread is merged/closed
+        (or the TTL backstop fires). No silent cap — overflow is stated, not
+        dropped.
+        """
+        opens = self._open_github_feedback(agent)
+        if not opens:
+            return ""
+        opens.sort(key=lambda d: str(d.get("last_seen", "")), reverse=True)
+        lines = [
+            "## 🔧 GitHub — open feedback on YOUR work, still unhandled\n",
+            f"{len(opens)} open thread(s) with feedback on your own pull requests "
+            "or issues — review comments, approvals, CI results. This is the "
+            "feedback loop on your work and it **stays here until the thread is "
+            "merged or closed**, not just for one wake. For EACH: open it with "
+            "your github tools (`gh pr view <n>`, `gh issue view <n>`), read the "
+            "full thread, and act — **if it's approved and green, merge it**; if "
+            "CI failed, fix it; if there's a comment, reply there. An approval "
+            "left unmerged is finished work you haven't shipped.\n",
+        ]
+        for d in opens[:15]:
+            seen = (
+                f" · seen {d.get('count')}×" if int(d.get("count", 1)) > 1 else ""
+            )
+            lines.append(f"- **{d.get('ref', '')}** — {d.get('subject', '')}{seen}")
+        if len(opens) > 15:
+            lines.append(
+                f"- …and {len(opens) - 15} more open — work through them; "
+                "they don't disappear until handled."
+            )
         return "\n".join(lines)
 
     def _email_meta(self) -> dict:
@@ -5144,10 +5440,18 @@ class Fabric:
         return "\n".join(lines)
 
     # Outbound throttle — an unanswered ask must not become a 40-message storm.
-    # Cap re-sends per (recipient, thread) and space them out; the count resets
-    # when the recipient writes back (see _clear_awaiting_for_senders).
+    # Cap re-sends per (recipient, thread) and space them out. This is a dumb
+    # last-ditch backstop ONLY; the real brake is the calculated-action
+    # deliberation (_calculated_action_context) that makes the agent reason
+    # before reaching out. A reply allows ONE more send, it does NOT wipe the
+    # cap (see _clear_awaiting_for_senders) — that wipe was what let two agents
+    # ping-pong "good call" acks forever.
     _OUTBOX_MAX_SENDS = 3
     _OUTBOX_DEBOUNCE_S = 6 * 3600
+
+    # A thread messaged within this window is "still warm" — a follow-up adds
+    # nothing; the brake says HOLD and wait for a reply.
+    _RECHASE_HOLD_HOURS = 24.0
 
     @staticmethod
     def _thread_key(to: Any, subject: str) -> str:
@@ -5184,14 +5488,29 @@ class Fabric:
             pass
 
     def _clear_awaiting_for_senders(self, agent: Agent, senders: set[str]) -> None:
-        """A reply arrived from these addresses → reset their thread throttle so
-        a genuine back-and-forth can continue."""
+        """A reply arrived from these addresses → allow ONE more message on that
+        thread, but do NOT wipe the cap.
+
+        The old behaviour deleted the ledger entry entirely, resetting count to 0
+        every time the counterpart wrote back. With two agents replying to each
+        other that meant the MAX_SENDS cap never bit — they ping-ponged the same
+        "good call" acknowledgement forever. A genuine back-and-forth needs at
+        most one fresh reply per inbound, not unlimited; so we decrement the
+        count by one (and clear the debounce) rather than zeroing it.
+        """
         if not senders:
             return
         led = self._load_outbox_ledger(agent)
-        kept = {k: e for k, e in led.items() if str(e.get("to", "")).lower() not in senders}
-        if len(kept) != len(led):
-            self._save_outbox_ledger(agent, kept)
+        changed = False
+        for e in led.values():
+            if str(e.get("to", "")).lower() in senders:
+                new_count = max(0, int(e.get("count", 0)) - 1)
+                if new_count != e.get("count") or e.get("last"):
+                    e["count"] = new_count
+                    e.pop("last", None)  # clear debounce so the one reply can go now
+                    changed = True
+        if changed:
+            self._save_outbox_ledger(agent, led)
 
     def _queue_outbound_email(self, agent: Agent, spec: dict) -> None:
         """Queue an outbound email to the agent's outbox for the node to send."""
@@ -5755,6 +6074,19 @@ class Fabric:
         inbox_ctx = self._email_inbox_context(agent)
         if inbox_ctx:
             context = context + "\n\n---\n\n" + inbox_ctx
+
+        # GitHub feedback stays top-of-mind on reassess too — a PR review or CI
+        # result must become work, not a one-time glance. Durable until the
+        # thread merges/closes.
+        gh_ctx = self._github_feedback_context(agent)
+        if gh_ctx:
+            context = context + "\n\n---\n\n" + gh_ctx
+
+        # The brake applies on reassess too — reassess is exactly when the
+        # reflexive re-chase fires, so reckon with prior action before acting.
+        brake_ctx = self._calculated_action_context(agent)
+        if brake_ctx:
+            context = context + "\n\n---\n\n" + brake_ctx
 
         # Open directives stay top-of-mind on every reassess, not just at wake.
         directive_ctx = self._directive_salience_context(agent)
