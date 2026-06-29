@@ -55,7 +55,9 @@ def test_no_history_no_brake():
 def test_warm_thread_says_hold():
     agent = _agent()
     recent = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
-    _write_ledger(agent, {"k": {"to": "maren@x", "subject": "SRE brief", "count": 1, "last": recent}})
+    _write_ledger(
+        agent, {"k": {"to": "maren@x", "subject": "SRE brief", "count": 1, "last": recent}}
+    )
     out = _brake(_fab(), agent)
     assert "HOLD" in out
     assert "SRE brief" in out
@@ -66,7 +68,9 @@ def test_warm_thread_says_hold():
 def test_capped_thread_says_stop_and_escalate():
     agent = _agent()
     old = (datetime.now(UTC) - timedelta(hours=50)).isoformat()
-    _write_ledger(agent, {"k": {"to": "maren@x", "subject": "URGENT data", "count": 3, "last": old}})
+    _write_ledger(
+        agent, {"k": {"to": "maren@x", "subject": "URGENT data", "count": 3, "last": old}}
+    )
     out = _brake(_fab(), agent)
     assert "STOP" in out
     assert "escalate" in out.lower()
@@ -99,7 +103,15 @@ def test_reply_decrements_not_wipes():
     """A reply must NOT reset the cap to zero — it allows one more, no more."""
     agent = _agent()
     _write_ledger(
-        agent, {"maua@x|brief": {"to": "maren@x", "subject": "brief", "count": 3, "last": "2026-01-01T00:00:00+00:00"}}
+        agent,
+        {
+            "maua@x|brief": {
+                "to": "maren@x",
+                "subject": "brief",
+                "count": 3,
+                "last": "2026-01-01T00:00:00+00:00",
+            }
+        },
     )
     fab = SimpleNamespace(
         _load_outbox_ledger=lambda a: Fabric._load_outbox_ledger(SimpleNamespace(), a),
