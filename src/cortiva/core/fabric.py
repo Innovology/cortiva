@@ -37,10 +37,16 @@ from cortiva.core.credentials import load_agent_credentials
 from cortiva.core.delegation import DelegationManager
 from cortiva.core.discovery import NodeCapabilities
 from cortiva.core.emotions import (
+    DRAG_MAX,
     EMOTIONS_FILENAME,
+    EmotionDimensions,
+    FeedbackSignal,
     blend_emotions,
+    classify_feedback,
     derive_emotions,
+    emotions_from_feedback,
     parse_persona_modifiers,
+    reality_drag_dimensions,
     signals_from_task,
 )
 from cortiva.core.events import EventBus
@@ -325,6 +331,9 @@ class Fabric:
         # Per-agent accumulated familiarity signals for today
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
         self._emotional_states: dict[str, Any] = {}
+        # Classified inbound feedback awaiting affective application (drained in
+        # the async wake/reassess flow, where the neuro hook can be awaited).
+        self._pending_feedback: dict[str, list[tuple[FeedbackSignal, str]]] = {}
         # Event listeners for portal/WebSocket integration
         self._event_listeners: list[Any] = []
         # Structured event bus (new — used alongside legacy listeners)
@@ -718,6 +727,13 @@ class Fabric:
         if brake_ctx:
             context = context + "\n\n---\n\n" + brake_ctx
 
+        # Reality check — pull felt confidence toward outcomes (mutates
+        # emotions.json) and surface why, so a busy day isn't mistaken for a
+        # good one while real work sits unresolved.
+        drag_ctx = self._apply_reality_drag(agent)
+        if drag_ctx:
+            context = context + "\n\n---\n\n" + drag_ctx
+
         # Directives from above / company missions go FIRST — top of mind,
         # above her own plan (the salience she doesn't choose to feel).
         directive_ctx = self._directive_salience_context(agent)
@@ -777,6 +793,9 @@ class Fabric:
         gh_ctx = self._github_feedback_context(agent)
         if gh_ctx:
             context = context + "\n\n---\n\n" + gh_ctx
+        # Apply the affective hit from any feedback the inbox pass just
+        # classified — criticism stings, praise steadies (Phase 2 drain).
+        await self._drain_feedback(agent)
         # Inject the company directory (GAL) so the agent knows who exists
         # and how to reach them.
         dir_ctx = self._directory_context(agent)
@@ -1381,6 +1400,220 @@ class Fabric:
                 agent.id,
                 exc_info=True,
             )
+
+    def _blend_into_emotions(self, agent: Agent, new: EmotionDimensions) -> None:
+        """Blend a non-task EmotionDimensions into the rolling emotions.json.
+
+        The task path (_record_task_emotions) used to be the only writer; the
+        exteroceptive paths (feedback, reality drag) write here too, so the
+        world's response moves the same needle the agent's own execution does.
+        """
+        try:
+            current = self._emotional_states.get(agent.id)
+            if current is None:
+                current = EmotionDimensions.from_dict(self._read_emotion(agent))
+            state = blend_emotions(current, new)
+            self._emotional_states[agent.id] = state
+            agent.write_today(EMOTIONS_FILENAME, json.dumps(state.to_dict(), indent=2))
+        except Exception:
+            logger.debug("emotion blend failed for %s", agent.id, exc_info=True)
+
+    async def _record_feedback_emotions(
+        self, agent: Agent, signal: FeedbackSignal, entity_id: str = ""
+    ) -> None:
+        """Apply one classified inbound feedback signal to the agent's affect.
+
+        Feeds BOTH the felt emotions (emotions.json, via the persona-scaled
+        mapping) and neurochemistry (via the cognition feedback hook — the same
+        ``dispatch_hook`` path the directive arousal uses). This is the entry
+        point the valence-extraction pass calls; it is the missing path by which
+        a founder's criticism actually lands. Never raises."""
+        try:
+            modifiers = parse_persona_modifiers(agent.read_identity("soul"))
+            self._blend_into_emotions(agent, emotions_from_feedback(signal, modifiers))
+            await self.plugin_manager.dispatch_hook(
+                agent.id,
+                "feedback",
+                {
+                    "valence": signal.valence,
+                    "authority_weight": signal.authority_weight,
+                    "severity": signal.severity,
+                    "entity_id": entity_id,
+                },
+            )
+        except Exception:
+            logger.debug("feedback emotion failed for %s", agent.id, exc_info=True)
+
+    def _ingest_feedback(
+        self,
+        agent: Agent,
+        priority: list[dict],
+        normal: list[dict],
+        authority: dict[str, str],
+    ) -> None:
+        """Classify newly-seen inbound mail for valence and queue the affective
+        hit (Phase 2 — the extractor that makes feedback FIRE).
+
+        Pass-1 deterministic classification (model-free, inline-safe). Neutral
+        mail is ignored; criticism/praise become a ``FeedbackSignal`` stashed for
+        the async drain and recorded to ``today/feedback.json`` (so the reality
+        drag also counts unaddressed criticism, and it's auditable). Dedup by
+        email_id; never raises."""
+        import json as _json
+        from datetime import UTC, datetime
+
+        msgs = list(priority) + list(normal)
+        if not msgs:
+            return
+
+        def _addr(s: str) -> str:
+            mm = re.search(r"[\w.+-]+@[\w.-]+", s or "")
+            return mm.group(0).lower() if mm else (s or "").strip().lower()
+
+        self_handle = str(agent.id).lower()
+        path = agent.directory / "today" / "feedback.json"
+        existing: list[dict] = []
+        if path.exists():
+            try:
+                existing = _json.loads(path.read_text(encoding="utf-8")) or []
+            except (ValueError, OSError):
+                existing = []
+        seen = {e.get("email_id") for e in existing}
+        now = datetime.now(UTC).isoformat()
+        added = False
+        for m in msgs:
+            frm = m.get("from", "")
+            addr = _addr(frm)
+            if not addr or self_handle in addr:
+                continue  # ignore self-mail — no internal affect loops
+            eid = str(m.get("email_id") or m.get("message_id") or m.get("subject", ""))[:200]
+            if not eid or eid in seen:
+                continue
+            seen.add(eid)
+            valence, severity, conf = classify_feedback(
+                m.get("subject", ""), m.get("text") or m.get("body") or ""
+            )
+            if abs(valence) < 0.2 and severity < 0.4:
+                continue  # neutral — no affect, but recorded as seen above
+            aw = self._rank_weight_for(authority.get(addr, "")) if addr in authority else 0.3
+            sig = FeedbackSignal(
+                valence=valence,
+                severity=severity,
+                authority_weight=aw,
+                classifier_confidence=conf,
+            )
+            self._pending_feedback.setdefault(agent.id, []).append((sig, addr))
+            existing.append(
+                {
+                    "email_id": eid,
+                    "from": frm,
+                    "subject": str(m.get("subject", ""))[:120],
+                    "valence": valence,
+                    "severity": severity,
+                    "authority_weight": aw,
+                    "addressed": False,
+                    "ts": now,
+                }
+            )
+            added = True
+        if added:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
+            except OSError:
+                logger.debug("could not persist feedback.json for %s", agent.id, exc_info=True)
+
+    async def _drain_feedback(self, agent: Agent) -> None:
+        """Apply any feedback queued by _ingest_feedback this cycle (async so the
+        neuro hook can be awaited). Idempotent — the queue is popped."""
+        for sig, entity in self._pending_feedback.pop(agent.id, []):
+            await self._record_feedback_emotions(agent, sig, entity_id=entity)
+
+    def _apply_reality_drag(self, agent: Agent) -> str:
+        """Pull felt confidence toward reality, and surface why (Components C+E).
+
+        Confidence must not sit at the ceiling on a busy day alone. This reads
+        the agent's OWN open negative state — unmerged/criticised PRs, overdue
+        commitments, unaddressed authority criticism — converts it to a bounded
+        drag, blends it into emotions.json (so the dragged confidence is what
+        surfaces), and returns an explainable block naming the cause. Returns
+        "" when nothing is outstanding (no drag, no nag). Never raises."""
+        import json as _json
+        from datetime import UTC, datetime
+
+        try:
+            drag = 0.0
+            reasons: list[str] = []
+
+            gh = self._open_github_feedback(agent)
+            if gh:
+                drag += min(0.3, 0.06 * len(gh))
+                reasons.append(
+                    f"{len(gh)} PR/issue thread(s) on your own work still unresolved"
+                )
+
+            # Overdue, undelivered commitments the agent OWES.
+            overdue = 0
+            try:
+                from cortiva.core import commitments as _cm
+
+                now = datetime.now(UTC)
+                for c in _cm.load(agent.directory):
+                    if getattr(c, "status", "open") in ("delivered", "withdrawn"):
+                        continue
+                    due = str(getattr(c, "due_at", "") or "")
+                    try:
+                        if due and datetime.fromisoformat(due) < now:
+                            overdue += 1
+                    except ValueError:
+                        pass
+            except Exception:
+                overdue = 0
+            if overdue:
+                drag += min(0.3, 0.08 * overdue)
+                reasons.append(f"{overdue} commitment(s) you owe are past due and undelivered")
+
+            # Unaddressed negative feedback (today/feedback.json, authority-weighted).
+            try:
+                raw = agent.read_today("feedback.json")
+                items = _json.loads(raw) if raw else []
+                crit = [
+                    f for f in (items or [])
+                    if float(f.get("valence", 0)) < -0.2 and not f.get("addressed")
+                ]
+                if crit:
+                    sev = sum(
+                        max(0.0, -float(f.get("valence", 0)))
+                        * float(f.get("authority_weight", 0.5))
+                        for f in crit
+                    )
+                    drag += min(0.4, 0.15 * sev)
+                    reasons.append(
+                        f"{len(crit)} piece(s) of critical feedback not yet addressed"
+                    )
+            except (ValueError, TypeError, OSError):
+                pass
+
+            drag = min(drag, DRAG_MAX)
+            if drag <= 0.0 or not reasons:
+                return ""
+
+            self._blend_into_emotions(agent, reality_drag_dimensions(drag))
+
+            lines = [
+                "## 🪞 Reality check — your confidence answers to outcomes, not effort\n",
+                "Your felt confidence has been pulled toward reality. This is NOT your "
+                "task tally — it's work the world hasn't confirmed is good yet:\n",
+            ]
+            lines += [f"- {r}" for r in reasons]
+            lines.append(
+                "\nA busy day is not a good day until these land. Close them, or state "
+                "plainly what you're stuck on — don't report success over open work."
+            )
+            return "\n".join(lines)
+        except Exception:
+            logger.debug("reality drag failed for %s", agent.id, exc_info=True)
+            return ""
 
     async def _execute_task_inner(
         self,
@@ -4754,6 +4987,12 @@ class Fabric:
                 self._record_github_feedback(agent, github)
             except Exception:
                 logger.debug("github feedback record failed", exc_info=True)
+        # Classify human/agent mail for valence so criticism actually lands as
+        # affect (Phase 2). Queues the hit; the async flow drains it.
+        try:
+            self._ingest_feedback(agent, priority, normal, authority)
+        except Exception:
+            logger.debug("feedback ingest failed", exc_info=True)
 
         lines: list[str] = []
         if priority:
@@ -6081,12 +6320,20 @@ class Fabric:
         gh_ctx = self._github_feedback_context(agent)
         if gh_ctx:
             context = context + "\n\n---\n\n" + gh_ctx
+        # Drain any feedback classified by the inbox pass on this reassess.
+        await self._drain_feedback(agent)
 
         # The brake applies on reassess too — reassess is exactly when the
         # reflexive re-chase fires, so reckon with prior action before acting.
         brake_ctx = self._calculated_action_context(agent)
         if brake_ctx:
             context = context + "\n\n---\n\n" + brake_ctx
+
+        # Reality check on reassess too — confidence keeps answering to the
+        # current open state as the day runs, not just at wake.
+        drag_ctx = self._apply_reality_drag(agent)
+        if drag_ctx:
+            context = context + "\n\n---\n\n" + drag_ctx
 
         # Open directives stay top-of-mind on every reassess, not just at wake.
         directive_ctx = self._directive_salience_context(agent)

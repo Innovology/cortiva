@@ -262,6 +262,161 @@ def parse_persona_modifiers(soul_text: str) -> PersonaModifiers:
     return PersonaModifiers.from_dict(block)
 
 
+# ---------------------------------------------------------------------------
+# Exteroception — affect from the world's response to the agent's work
+# ---------------------------------------------------------------------------
+#
+# The task path above is INTEROCEPTIVE: how the agent's own execution felt.
+# It has no idea whether the work was any good — only whether it threw. These
+# two paths are the missing EXTEROCEPTIVE half: how the world received the work
+# (feedback) and what the agent's unresolved external state implies about it
+# (the reality drag). Without them confidence measures activity, not quality,
+# and criticism can never land. Both feed the SAME emotions.json via
+# ``blend_emotions``, so a founder's rebuke moves the same needle a task does.
+
+
+@dataclass
+class FeedbackSignal:
+    """A piece of inbound feedback on the agent's work, already classified.
+
+    Produced by the valence-extraction pass (deterministic + optional LLM) and
+    fed to :func:`emotions_from_feedback`. All scalars are bounded; the mapping
+    is authority-weighted and negativity-biased so a founder's criticism bites
+    and a stranger's flattery cannot inflate.
+    """
+
+    valence: float = 0.0
+    """Signed sentiment toward the agent's work, [-1, +1] (negative = critical)."""
+
+    severity: float = 0.5
+    """How strong / consequential the feedback is, [0, 1]."""
+
+    authority_weight: float = 0.5
+    """How much the sender's view counts (founder ~1.0 … unknown ~0.25)."""
+
+    classifier_confidence: float = 1.0
+    """How sure the classifier is, [0, 1] — damps spurious affect from guesses."""
+
+
+# Praise only lifts confidence when it comes from real authority (and, at the
+# call site, corroborated by delivered work). Below this authority a positive
+# message is acknowledged but cannot pump self-regard — flattery is inert.
+_PRAISE_CONFIDENCE_AUTHORITY = 0.7
+
+# No single feedback event may move a dimension more than this pre-blend, so one
+# message is felt but cannot peg the state. blend_emotions then softens further.
+_FEEDBACK_EVENT_CAP = 0.5
+
+
+def emotions_from_feedback(
+    signal: FeedbackSignal,
+    modifiers: PersonaModifiers | None = None,
+) -> EmotionDimensions:
+    """Map a classified feedback signal to emotion dimensions to be blended in.
+
+    Negativity-biased (criticism stings harder than praise soothes),
+    authority-/severity-/confidence-weighted, persona-scaled, and capped so no
+    single message dominates. Pure arithmetic — the *feeling* is computed; what
+    to *do* about it stays with the agent.
+    """
+    m = modifiers or _DEFAULT_MODIFIERS
+    w = (
+        _clamp01(signal.authority_weight)
+        * _clamp01(signal.severity)
+        * _clamp01(signal.classifier_confidence)
+    )
+    neg = max(0.0, -signal.valence) * w
+    pos = max(0.0, signal.valence) * w
+    # Praise→confidence is gated on authority; criticism→confidence is not.
+    praise_conf = pos * 0.3 if signal.authority_weight >= _PRAISE_CONFIDENCE_AUTHORITY else 0.0
+
+    def cap(v: float) -> float:
+        return max(-_FEEDBACK_EVENT_CAP, min(_FEEDBACK_EVENT_CAP, v))
+
+    return EmotionDimensions(
+        satisfaction=_clamp(cap((pos * 0.6 - neg * 0.8) * m.satisfaction_weight)),
+        frustration=_clamp(cap((neg * 0.9) * m.frustration_weight)),  # criticism stings
+        curiosity=_clamp(cap((neg * 0.2) * m.curiosity_weight)),  # "what went wrong?"
+        confidence=_clamp(cap((praise_conf - neg * 0.7) * m.confidence_weight)),
+        caution=_clamp(cap((neg * 0.6) * m.caution_weight)),
+    )
+
+
+# A confidence drag can lower felt confidence by at most this much — enough to
+# humble an agent sitting on a pile of unresolved work, never enough to floor it
+# into paralysis. < 1.0 by design.
+DRAG_MAX = 0.6
+
+
+def reality_drag_dimensions(drag: float) -> EmotionDimensions:
+    """Turn a [0, DRAG_MAX] reality-drag scalar into emotion dimensions to blend.
+
+    The drag is computed by the caller from the agent's OWN open negative state
+    (unmerged PRs, overdue commitments, unaddressed criticism). Blending the
+    result each wake pulls confidence/satisfaction toward reality and lifts
+    caution, and it RELEASES automatically as the underlying items resolve and
+    the drag falls. Confidence is pulled toward ``-drag`` (below neutral), not to
+    a fixed floor, so the magnitude tracks how much is actually outstanding.
+    """
+    d = max(0.0, min(DRAG_MAX, drag))
+    return EmotionDimensions(
+        satisfaction=-d * 0.5,
+        frustration=0.0,
+        curiosity=0.0,
+        confidence=-d,
+        caution=d * 0.4,
+    )
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+# Phrases that mark inbound mail as critical of / pleased with the agent's work.
+# The always-on Pass-1 classifier — cheap, model-free, runs inline. An LLM pass
+# (Phase 4) may later refine tone/target; this catches the obvious cases (a
+# founder's "head-in-hands… it doesn't look that way from here" lights up here).
+_NEG_CUES = (
+    "head-in-hands", "head in hands", "disappointed", "not good enough",
+    "doesn't look", "does not look", "useless", "unacceptable", "isn't working",
+    "is not working", "still not", "still open", "still waiting", "over a week",
+    "over a month", "i asked", "i told you", "as i said", "as i mentioned",
+    "concern", "frustrat", "let down", "no excuse", "fell short", "falling short",
+    "not what i", "this isn't", "doesn't work", "not acceptable", "redo", "rework",
+    "fix this", "sort this", "why is", "why are", "why hasn't", "why haven't",
+    "why do we only", "halt", "behind schedule", "dropped the ball",
+)
+_POS_CUES = (
+    "great work", "well done", "thank you", "thanks", "excellent", "exactly right",
+    "brilliant", "good job", "good work", "appreciate", "nailed it", "love it",
+    "perfect", "great job", "nicely done", "spot on", "fantastic", "impressed",
+)
+
+
+def classify_feedback(subject: str, body: str) -> tuple[float, float, float]:
+    """Deterministic valence of inbound feedback on the agent's own work.
+
+    Returns ``(valence[-1,1], severity[0,1], classifier_confidence[0,1])``. Pure
+    and model-free — the always-on Pass 1 of the valence extractor. Zero cues →
+    neutral with low confidence (the caller ignores it). A question pile-on
+    reads as pressure. Negative and positive cues both counted; the sign is
+    their balance, the magnitude their volume.
+    """
+    text = f"{subject}\n{body}".lower()
+    if not text.strip():
+        return 0.0, 0.0, 0.0
+    neg = sum(1 for c in _NEG_CUES if c in text)
+    pos = sum(1 for c in _POS_CUES if c in text)
+    neg_score = neg + (1 if text.count("?") >= 3 else 0)
+    total = neg_score + pos
+    if total == 0:
+        return 0.0, 0.0, 0.2  # neutral, and we're not very sure either way
+    valence = max(-1.0, min(1.0, (pos - neg_score) / max(2.0, float(total))))
+    severity = min(1.0, 0.3 + 0.18 * total)
+    confidence = min(1.0, 0.4 + 0.2 * total)
+    return round(valence, 3), round(severity, 3), round(confidence, 3)
+
+
 def signals_from_task(task: Any, familiarity: Any) -> TaskSignals:
     """Build TaskSignals from a completed/failed Task + familiarity.
 
