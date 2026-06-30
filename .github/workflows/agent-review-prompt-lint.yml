@@ -1,0 +1,25 @@
+name: Agent Review Prompt Lint
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  arp-check:
+    name: Verify Agent Review Prompt
+    runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
+    permissions:
+      pull-requests: read
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Agent Review Prompt check
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          chmod +x .github/scripts/check-agent-review-prompt.sh
+          .github/scripts/check-agent-review-prompt.sh
