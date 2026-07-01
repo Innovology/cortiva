@@ -4774,9 +4774,11 @@ class Fabric:
                     except (ValueError, OSError):
                         continue
             _ex.resolve_from_inbox(agent.directory, senders_seen=seen)
-            # A reply from someone clears the outbound throttle for their thread
-            # so a real back-and-forth isn't capped like an unanswered nag.
-            self._clear_awaiting_for_senders(agent, set(seen.keys()))
+            # A GENUINELY NEW reply (inbound newer than our last send) clears the
+            # outbound throttle for that thread so a real back-and-forth isn't
+            # capped — but stale read/ history must not keep clearing it (that
+            # let the same ack fire repeatedly). Pass mtimes, not just senders.
+            self._clear_awaiting_for_senders(agent, seen)
         except Exception:
             logger.debug("expectation inbox-resolve failed for %s", agent.id, exc_info=True)
 
@@ -5774,28 +5776,46 @@ class Fabric:
         except OSError:
             pass
 
-    def _clear_awaiting_for_senders(self, agent: Agent, senders: set[str]) -> None:
-        """A reply arrived from these addresses → allow ONE more message on that
-        thread, but do NOT wipe the cap.
+    def _clear_awaiting_for_senders(self, agent: Agent, seen: dict[str, float]) -> None:
+        """A GENUINELY NEW reply frees one slot on that thread so a real
+        back-and-forth continues — but old mail must NOT keep clearing it.
 
-        The old behaviour deleted the ledger entry entirely, resetting count to 0
-        every time the counterpart wrote back. With two agents replying to each
-        other that meant the MAX_SENDS cap never bit — they ping-ponged the same
-        "good call" acknowledgement forever. A genuine back-and-forth needs at
-        most one fresh reply per inbound, not unlimited; so we decrement the
-        count by one (and clear the debounce) rather than zeroing it.
+        ``seen`` maps sender-address -> latest inbound file mtime (epoch). The
+        caller builds it from inbox/ AND inbox/read/, so it includes EVERYONE who
+        has ever written — and read/ never empties. The previous version cleared
+        the throttle for all of them every reassess (and popped the debounce),
+        which let the same acknowledgement fire 4× in a minute: each ~11s
+        reassess wiped the debounce because the counterpart's month-old mail was
+        still sitting in read/. Fix: only clear a thread when the sender's latest
+        inbound is NEWER than our last send on it — i.e. an actual reply since we
+        wrote, not stale history. Then decrement the count and lift the debounce
+        for a prompt response; otherwise leave the entry (and its debounce) alone.
         """
-        if not senders:
+        from datetime import datetime
+
+        if not seen:
             return
         led = self._load_outbox_ledger(agent)
         changed = False
         for e in led.values():
-            if str(e.get("to", "")).lower() in senders:
-                new_count = max(0, int(e.get("count", 0)) - 1)
-                if new_count != e.get("count") or e.get("last"):
-                    e["count"] = new_count
-                    e.pop("last", None)  # clear debounce so the one reply can go now
-                    changed = True
+            to = str(e.get("to", "")).lower()
+            reply_mtime = seen.get(to)
+            if reply_mtime is None:
+                continue
+            try:
+                last_ts = (
+                    datetime.fromisoformat(str(e.get("last"))).timestamp()
+                    if e.get("last")
+                    else 0.0
+                )
+            except (ValueError, TypeError):
+                last_ts = 0.0
+            if reply_mtime <= last_ts:
+                continue  # no NEW reply since we last wrote — keep the debounce
+            new_count = max(0, int(e.get("count", 0)) - 1)
+            e["count"] = new_count
+            e.pop("last", None)  # a real reply → allow a prompt response
+            changed = True
         if changed:
             self._save_outbox_ledger(agent, led)
 

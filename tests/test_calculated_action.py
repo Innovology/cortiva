@@ -92,21 +92,44 @@ def test_own_commitments_surface_as_finish_first(monkeypatch):
     assert "approve PR #44" in out
 
 
-# --- bounded reset (the ping-pong fix) -------------------------------------
+# --- bounded reset + genuine-reply gating (the ping-pong / storm fix) ------
+
+import time as _time
 
 
-def test_reply_decrements_not_wipes():
-    """A reply must NOT reset the cap to zero — it allows one more, no more."""
-    agent = _agent()
-    _write_ledger(
-        agent, {"maua@x|brief": {"to": "maren@x", "subject": "brief", "count": 3, "last": "2026-01-01T00:00:00+00:00"}}
-    )
-    fab = SimpleNamespace(
+def _clear_shim():
+    return SimpleNamespace(
         _load_outbox_ledger=lambda a: Fabric._load_outbox_ledger(SimpleNamespace(), a),
         _save_outbox_ledger=lambda a, led: Fabric._save_outbox_ledger(SimpleNamespace(), a, led),
     )
-    Fabric._clear_awaiting_for_senders(fab, agent, {"maren@x"})
-    led = json.loads((agent.directory / "outbox" / ".threads.json").read_text())
-    entry = led["maua@x|brief"]
+
+
+def test_fresh_reply_decrements_and_lifts_debounce_but_not_wipe():
+    """A reply NEWER than our last send frees one slot — decrement, not zero."""
+    agent = _agent()
+    _write_ledger(
+        agent, {"k": {"to": "maren@x", "subject": "brief", "count": 3, "last": "2026-01-01T00:00:00+00:00"}}
+    )
+    # reply mtime well after the 2026-01-01 last-send → genuine reply
+    Fabric._clear_awaiting_for_senders(_clear_shim(), agent, {"maren@x": _time.time()})
+    entry = json.loads((agent.directory / "outbox" / ".threads.json").read_text())["k"]
     assert entry["count"] == 2  # 3 -> 2, NOT deleted, NOT 0
-    assert "last" not in entry  # debounce cleared so the one reply can go
+    assert "last" not in entry  # a real reply lifts the debounce for a response
+
+
+def test_stale_mail_does_NOT_clear_the_throttle():
+    """The storm fix: old mail sitting in read/ must not keep clearing the
+    debounce every reassess (that let the same ack fire 4x in a minute)."""
+    agent = _agent()
+    just_sent = _iso_now()  # we sent moments ago
+    _write_ledger(agent, {"k": {"to": "marcus@x", "subject": "deck", "count": 1, "last": just_sent}})
+    # counterpart's newest mail is OLD (epoch ~ 2020) — no reply since we wrote
+    Fabric._clear_awaiting_for_senders(_clear_shim(), agent, {"marcus@x": 1_577_836_800.0})
+    entry = json.loads((agent.directory / "outbox" / ".threads.json").read_text())["k"]
+    assert entry["count"] == 1  # untouched
+    assert entry["last"] == just_sent  # debounce PRESERVED → next rapid send is blocked
+
+
+def _iso_now():
+    from datetime import UTC, datetime
+    return datetime.now(UTC).isoformat()
