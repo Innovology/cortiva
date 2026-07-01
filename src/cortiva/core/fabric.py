@@ -284,6 +284,11 @@ class Fabric:
             "head-of-ar",
             "coo",
         }
+        # Agents permitted to issue/lift STANDING ORDERS — durable org-wide
+        # prohibitions that HQ owns and every node enforces. The CEO turns a
+        # founder decision into one; the COO can too. Others emitting
+        # `issue_standing_order` are ignored (and the tool isn't offered).
+        self.standing_order_authorised: set[str] = {"ceo", "coo"}
         self.resource_guard = ResourceGuard(self.agents_dir)
         if self.terminal is not None:
             # The cycle guard must outlast a terminal run, or long
@@ -730,6 +735,12 @@ class Fabric:
         drag_ctx = self._apply_reality_drag(agent)
         if drag_ctx:
             context = context + "\n\n---\n\n" + drag_ctx
+
+        # Standing orders outrank everything below — durable prohibitions
+        # that never self-resolve; a plan must be drawn INSIDE them.
+        orders_ctx = self._standing_orders_context(agent)
+        if orders_ctx:
+            context = context + "\n\n---\n\n" + orders_ctx
 
         # Directives from above / company missions go FIRST — top of mind,
         # above her own plan (the salience she doesn't choose to feel).
@@ -1814,6 +1825,12 @@ class Fabric:
         if ground_ctx:
             context = context + "\n\n---\n\n" + ground_ctx
 
+        # Standing orders at execution time — the moment of acting is
+        # exactly when a halted scope must be in the room.
+        orders_ctx = self._standing_orders_context(agent)
+        if orders_ctx:
+            context = context + "\n\n---\n\n" + orders_ctx
+
         # Commitments at execution time too — the act of delivering (or
         # choosing coffee, or escalating) happens here, so the deadline a
         # promise carries must be in the room at the moment of acting.
@@ -1851,6 +1868,7 @@ class Fabric:
             scheduling_authorised=self.scheduling_authorised,
             culture_authorised=self.culture_authorised,
             performance_authorised=self.performance_authorised,
+            standing_order_authorised=self.standing_order_authorised,
         )
 
         response = await self.consciousness.think(
@@ -3272,6 +3290,13 @@ class Fabric:
         if suffix.refocus_agent and isinstance(suffix.refocus_agent, dict):
             self._handle_refocus_agent(agent, suffix.refocus_agent)
 
+        # Issue / lift a standing order — durable top-down prohibition,
+        # relayed to HQ (the source of truth). Authority-gated in the handlers.
+        if suffix.issue_standing_order and isinstance(suffix.issue_standing_order, dict):
+            self._handle_issue_standing_order(agent, suffix.issue_standing_order)
+        if suffix.lift_standing_order and isinstance(suffix.lift_standing_order, dict):
+            self._handle_lift_standing_order(agent, suffix.lift_standing_order)
+
         # Drink a coffee — deliberate overtime; holds wind-down off ~45 min.
         if suffix.drink_coffee is not None:
             await self._handle_drink_coffee(agent)
@@ -4343,6 +4368,31 @@ class Fabric:
         what = str(payload.get("what") or "").strip()
         if not (to and what):
             return
+        # Chokepoint: a promise inside a halted scope must not enter the
+        # ledger at all — once registered it would accrue pressure and
+        # escalate, which is exactly how the org ended up chasing halted
+        # work for weeks. Refused loudly; the salience block tells the
+        # agent why and what to do instead (park + cite the order).
+        try:
+            from cortiva.core import standing_orders as _so
+
+            order = _so.matching_order(_so.load(self.agents_dir), f"{what} {to}")
+            if order is not None:
+                logger.warning(
+                    "Refused commitment of %s — standing order %s covers it: %s",
+                    agent.id,
+                    str(order.get("order_id", ""))[:8],
+                    what[:80],
+                )
+                self._emit(
+                    "commitment.refused_standing_order",
+                    agent_id=agent.id,
+                    what=what[:120],
+                    order_id=order.get("order_id", ""),
+                )
+                return
+        except Exception:
+            logger.debug("standing-order check failed on register", exc_info=True)
         try:
             c = _cm.register(
                 agent.directory,
@@ -4623,6 +4673,110 @@ class Fabric:
         after = json.dumps([c.to_dict() for c in items], sort_keys=True)
         if after != before:
             _cm.save(agent.directory, items)
+
+    def _standing_orders_context(self, agent: Agent) -> str:
+        """The org's standing orders, rendered as the top salience block.
+
+        Durable prohibitions issued from the top (founder/CEO) that never
+        self-resolve — the counterweight to a commitments ledger that only
+        forgets on delivery. See cortiva.core.standing_orders."""
+        try:
+            from cortiva.core import standing_orders as _so
+
+            return _so.context_block(_so.load(self.agents_dir))
+        except Exception:
+            logger.debug("standing-orders context failed for %s", agent.id, exc_info=True)
+            return ""
+
+    def _apply_standing_orders_to_ledger(self, agent: Agent) -> None:
+        """Park open commitments a standing order covers; revive held ones
+        whose order was lifted. Runs every commitment-heartbeat pass, BEFORE
+        escalation — a freshly-halted commitment must never escalate first."""
+        try:
+            from cortiva.core import standing_orders as _so
+
+            orders = _so.load(self.agents_dir)
+            parked, revived = _so.apply_to_ledger(agent.directory, orders)
+            if parked:
+                logger.info(
+                    "Parked %d commitment(s) of %s under standing order(s)",
+                    parked,
+                    agent.id,
+                )
+                self._emit("commitment.held", agent_id=agent.id, count=parked)
+            if revived:
+                logger.info(
+                    "Revived %d held commitment(s) of %s (order lifted)",
+                    revived,
+                    agent.id,
+                )
+                self._emit("commitment.revived", agent_id=agent.id, count=revived)
+        except Exception:
+            logger.debug("standing-orders ledger sweep failed for %s", agent.id, exc_info=True)
+
+    def _handle_issue_standing_order(self, agent: Agent, payload: dict) -> None:
+        """Spool a leadership agent's standing order for relay to HQ.
+
+        HQ persists it and pushes the active set back to every org node —
+        that round-trip is the confirmation. Authority-gated here AND by
+        tool offering; a non-authorised call is ignored loudly."""
+        if agent.id not in self.standing_order_authorised:
+            logger.info(
+                "Agent %s lacks standing-order authority — issue ignored.",
+                agent.id,
+            )
+            return
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return
+        try:
+            from cortiva.core import standing_orders as _so
+
+            _so.spool(
+                agent.directory,
+                action="issue",
+                text=text,
+                scope_type=str(payload.get("scope_type") or "org"),
+                scope_value=str(payload.get("scope_value") or ""),
+                agent_name=agent.id,
+                agent_role=getattr(agent, "role", "") or "",
+            )
+            logger.info(
+                "Agent %s issued standing order (scope %s:%s): %s",
+                agent.id,
+                payload.get("scope_type"),
+                payload.get("scope_value"),
+                text[:80],
+            )
+            self._emit("standing_order.issued", agent_id=agent.id, text=text[:120])
+        except Exception:
+            logger.exception("issue_standing_order failed for %s", agent.id)
+
+    def _handle_lift_standing_order(self, agent: Agent, payload: dict) -> None:
+        """Spool a lift request for relay to HQ. Authority-gated."""
+        if agent.id not in self.standing_order_authorised:
+            logger.info(
+                "Agent %s lacks standing-order authority — lift ignored.",
+                agent.id,
+            )
+            return
+        order_id = str(payload.get("order_id") or "").strip()
+        if not order_id:
+            return
+        try:
+            from cortiva.core import standing_orders as _so
+
+            _so.spool(
+                agent.directory,
+                action="lift",
+                order_id=order_id,
+                agent_name=agent.id,
+                agent_role=getattr(agent, "role", "") or "",
+            )
+            logger.info("Agent %s requested lift of standing order %s", agent.id, order_id)
+            self._emit("standing_order.lift_requested", agent_id=agent.id, order_id=order_id)
+        except Exception:
+            logger.exception("lift_standing_order failed for %s", agent.id)
 
     def _commitment_salience_context(self, agent: Agent) -> str:
         """Top-of-mind block for the agent's own open commitments, sorted by
@@ -5351,6 +5505,7 @@ class Fabric:
                 scheduling_authorised=getattr(self, "scheduling_authorised", set()),
                 culture_authorised=getattr(self, "culture_authorised", set()),
                 performance_authorised=getattr(self, "performance_authorised", set()),
+                standing_order_authorised=getattr(self, "standing_order_authorised", set()),
             )
             names = [t.get("function", {}).get("name", "") for t in tools]
             names = [n for n in names if n]
@@ -6405,6 +6560,12 @@ class Fabric:
         if drag_ctx:
             context = context + "\n\n---\n\n" + drag_ctx
 
+        # Standing orders stay top-of-mind on every reassess — the durable
+        # prohibitions a reprioritisation must never route around.
+        orders_ctx = self._standing_orders_context(agent)
+        if orders_ctx:
+            context = context + "\n\n---\n\n" + orders_ctx
+
         # Open directives stay top-of-mind on every reassess, not just at wake.
         directive_ctx = self._directive_salience_context(agent)
         if directive_ctx:
@@ -6614,6 +6775,9 @@ class Fabric:
             ):
                 continue
             try:
+                # Standing orders first: park what a halt covers (and revive
+                # what a lift released) BEFORE anything can feel or escalate it.
+                self._apply_standing_orders_to_ledger(agent)
                 await self._dispatch_commitment_arousal(agent)
                 self._escalate_at_risk_commitments(agent)
                 # Expectations: resolve any that arrived, then feel the chase

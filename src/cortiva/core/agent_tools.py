@@ -390,6 +390,78 @@ REFOCUS_AGENT_TOOL = {
     },
 }
 
+ISSUE_STANDING_ORDER_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "issue_standing_order",
+        "description": (
+            "Issue a STANDING ORDER — a durable org-wide prohibition that "
+            "stays in force until a human lifts it ('all work on X is "
+            "halted'). Unlike a directive or an email, it does NOT expire "
+            "when acknowledged: it is injected into every colleague's "
+            "context every wake, blocks new commitments in its scope, and "
+            "parks existing ones. Use it to make a founder/executive "
+            "decision STICK across the whole org — e.g. when the founder "
+            "says 'stop all work on a product', register it here so the "
+            "halt outlives the email thread. Leadership only; the founder "
+            "sees and manages every order in the portal."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": (
+                        "The order, stated plainly and completely — what is "
+                        "prohibited and why (e.g. 'All work on MarketMesh is "
+                        "halted — commercial dispute; founder order')."
+                    ),
+                },
+                "scope_type": {
+                    "type": "string",
+                    "enum": ["product", "repo", "org"],
+                    "description": (
+                        "What the order covers: a product (by slug), a GitHub "
+                        "repo (owner/name), or the whole org."
+                    ),
+                },
+                "scope_value": {
+                    "type": "string",
+                    "description": (
+                        "The product slug or repo path. Leave empty for "
+                        "org-wide orders."
+                    ),
+                },
+            },
+            "required": ["text", "scope_type"],
+        },
+    },
+}
+
+LIFT_STANDING_ORDER_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "lift_standing_order",
+        "description": (
+            "Lift (deactivate) a standing order once the human who issued it "
+            "says it no longer applies. Commitments the order had parked "
+            "come back to life. Leadership only — and only on the issuer's "
+            "(or the founder's) explicit say-so, never on your own judgement "
+            "that it's probably stale."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "order_id": {
+                    "type": "string",
+                    "description": "The id of the order to lift (from your context block).",
+                },
+            },
+            "required": ["order_id"],
+        },
+    },
+}
+
 # Tool name -> the ReflectionSuffix field it populates.
 _TOOL_TO_SUFFIX_FIELD = {
     "optimize_schedule": "optimize_schedule",
@@ -403,6 +475,8 @@ _TOOL_TO_SUFFIX_FIELD = {
     "update_commitment": "update_commitment",
     "drink_coffee": "drink_coffee",
     "refocus_agent": "refocus_agent",
+    "issue_standing_order": "issue_standing_order",
+    "lift_standing_order": "lift_standing_order",
 }
 
 
@@ -412,6 +486,7 @@ def tools_for_agent(
     scheduling_authorised: set[str],
     culture_authorised: set[str] | None = None,
     performance_authorised: set[str] | None = None,
+    standing_order_authorised: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return the tool schemas an agent is allowed to call.
 
@@ -447,6 +522,9 @@ def tools_for_agent(
         tools.append(CULTURE_HEALTH_TOOL)
     if performance_authorised and agent_id in performance_authorised:
         tools.append(EFFICIENCY_REVIEW_TOOL)
+    if standing_order_authorised and agent_id in standing_order_authorised:
+        tools.append(ISSUE_STANDING_ORDER_TOOL)
+        tools.append(LIFT_STANDING_ORDER_TOOL)
     return tools
 
 

@@ -138,6 +138,16 @@ class ReflectionSuffix:
     never past a target's slots/RAM headroom, respects a move cooldown, and
     caps moves per cycle. Phase 1 is advisory (``apply`` ignored until the
     executor is enabled)."""
+    issue_standing_order: dict[str, Any] | None = None
+    """Issue a durable org-wide prohibition that stays in force until a
+    human lifts it: ``{"text": "...", "scope_type": "product|repo|org",
+    "scope_value": "<slug or owner/name>"?}``. Relayed to HQ (the source
+    of truth) and pushed back to every node; from then on it is injected
+    into every colleague's context each wake, blocks new commitments in
+    scope, and parks existing ones. AUTHORITY-GATED: leadership only."""
+    lift_standing_order: dict[str, Any] | None = None
+    """Lift a standing order on the issuer's (or founder's) explicit
+    say-so: ``{"order_id": "<id>"}``. AUTHORITY-GATED: leadership only."""
 
 
 @dataclass
