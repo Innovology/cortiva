@@ -331,9 +331,6 @@ class Fabric:
         # Per-agent accumulated familiarity signals for today
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
         self._emotional_states: dict[str, Any] = {}
-        # Classified inbound feedback awaiting affective application (drained in
-        # the async wake/reassess flow, where the neuro hook can be awaited).
-        self._pending_feedback: dict[str, list[tuple[FeedbackSignal, str]]] = {}
         # Event listeners for portal/WebSocket integration
         self._event_listeners: list[Any] = []
         # Structured event bus (new — used alongside legacy listeners)
@@ -1451,14 +1448,17 @@ class Fabric:
         normal: list[dict],
         authority: dict[str, str],
     ) -> None:
-        """Classify newly-seen inbound mail for valence and queue the affective
-        hit (Phase 2 — the extractor that makes feedback FIRE).
+        """Classify newly-seen inbound mail for valence into the DURABLE feedback
+        register (Phase 2 + 4 — the extractor that makes feedback FIRE and KEEP
+        weighing).
 
         Pass-1 deterministic classification (model-free, inline-safe). Neutral
-        mail is ignored; criticism/praise become a ``FeedbackSignal`` stashed for
-        the async drain and recorded to ``today/feedback.json`` (so the reality
-        drag also counts unaddressed criticism, and it's auditable). Dedup by
-        email_id; never raises."""
+        mail is ignored, self-mail skipped, dedup by email_id. Entries persist at
+        ``<agent>/feedback.json`` — the AGENT ROOT, not ``today/`` which resets
+        every wake — so a rebuke weighs for days (until the TTL ages it out),
+        not hours. The async drain applies the one-time affective hit
+        (``applied`` flag); the reality drag reads the open set every cycle.
+        Never raises."""
         import json as _json
         from datetime import UTC, datetime
 
@@ -1471,7 +1471,7 @@ class Fabric:
             return mm.group(0).lower() if mm else (s or "").strip().lower()
 
         self_handle = str(agent.id).lower()
-        path = agent.directory / "today" / "feedback.json"
+        path = agent.directory / "feedback.json"
         existing: list[dict] = []
         if path.exists():
             try:
@@ -1496,23 +1496,18 @@ class Fabric:
             if abs(valence) < 0.2 and severity < 0.4:
                 continue  # neutral — no affect, but recorded as seen above
             aw = self._rank_weight_for(authority.get(addr, "")) if addr in authority else 0.3
-            sig = FeedbackSignal(
-                valence=valence,
-                severity=severity,
-                authority_weight=aw,
-                classifier_confidence=conf,
-            )
-            self._pending_feedback.setdefault(agent.id, []).append((sig, addr))
             existing.append(
                 {
                     "email_id": eid,
                     "from": frm,
+                    "addr": addr,
                     "subject": str(m.get("subject", ""))[:120],
                     "valence": valence,
                     "severity": severity,
                     "authority_weight": aw,
-                    "addressed": False,
-                    "ts": now,
+                    "classifier_confidence": conf,
+                    "opened_at": now,
+                    "applied": False,
                 }
             )
             added = True
@@ -1523,11 +1518,68 @@ class Fabric:
             except OSError:
                 logger.debug("could not persist feedback.json for %s", agent.id, exc_info=True)
 
+    def _open_feedback(self, agent: Agent) -> list[dict]:
+        """Open (unexpired) feedback from the durable register; prunes items
+        older than the TTL so a rebuke can't nag forever. Self-cleaning."""
+        import json as _json
+        from datetime import UTC, datetime
+
+        path = agent.directory / "feedback.json"
+        if not path.exists():
+            return []
+        try:
+            items = _json.loads(path.read_text(encoding="utf-8")) or []
+        except (ValueError, OSError):
+            return []
+        now = datetime.now(UTC)
+        kept: list[dict] = []
+        for e in items:
+            try:
+                opened = datetime.fromisoformat(str(e.get("opened_at")))
+            except (ValueError, TypeError):
+                opened = now
+            if (now - opened).total_seconds() > self._FEEDBACK_TTL_DAYS * 86400:
+                continue  # aged out
+            kept.append(e)
+        if len(kept) != len(items):
+            try:
+                path.write_text(_json.dumps(kept, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+        return kept
+
     async def _drain_feedback(self, agent: Agent) -> None:
-        """Apply any feedback queued by _ingest_feedback this cycle (async so the
-        neuro hook can be awaited). Idempotent — the queue is popped."""
-        for sig, entity in self._pending_feedback.pop(agent.id, []):
-            await self._record_feedback_emotions(agent, sig, entity_id=entity)
+        """Apply the one-time affective hit for any feedback not yet applied
+        (async so the neuro hook can be awaited). Reads the durable register and
+        marks entries ``applied`` — so the sting fires exactly once and survives
+        a restart between ingest and drain."""
+        import json as _json
+
+        path = agent.directory / "feedback.json"
+        if not path.exists():
+            return
+        try:
+            items = _json.loads(path.read_text(encoding="utf-8")) or []
+        except (ValueError, OSError):
+            return
+        changed = False
+        for e in items:
+            if e.get("applied"):
+                continue
+            sig = FeedbackSignal(
+                valence=float(e.get("valence", 0.0)),
+                severity=float(e.get("severity", 0.5)),
+                authority_weight=float(e.get("authority_weight", 0.5)),
+                classifier_confidence=float(e.get("classifier_confidence", 1.0)),
+            )
+            await self._record_feedback_emotions(agent, sig, entity_id=str(e.get("addr", "")))
+            e["applied"] = True
+            changed = True
+        if changed:
+            try:
+                path.write_text(_json.dumps(items, indent=2), encoding="utf-8")
+            except OSError:
+                pass
 
     def _apply_reality_drag(self, agent: Agent) -> str:
         """Pull felt confidence toward reality, and surface why (Components C+E).
@@ -1538,7 +1590,6 @@ class Fabric:
         drag, blends it into emotions.json (so the dragged confidence is what
         surfaces), and returns an explainable block naming the cause. Returns
         "" when nothing is outstanding (no drag, no nag). Never raises."""
-        import json as _json
         from datetime import UTC, datetime
 
         try:
@@ -1573,26 +1624,17 @@ class Fabric:
                 drag += min(0.3, 0.08 * overdue)
                 reasons.append(f"{overdue} commitment(s) you owe are past due and undelivered")
 
-            # Unaddressed negative feedback (today/feedback.json, authority-weighted).
-            try:
-                raw = agent.read_today("feedback.json")
-                items = _json.loads(raw) if raw else []
-                crit = [
-                    f for f in (items or [])
-                    if float(f.get("valence", 0)) < -0.2 and not f.get("addressed")
-                ]
-                if crit:
-                    sev = sum(
-                        max(0.0, -float(f.get("valence", 0)))
-                        * float(f.get("authority_weight", 0.5))
-                        for f in crit
-                    )
-                    drag += min(0.4, 0.15 * sev)
-                    reasons.append(
-                        f"{len(crit)} piece(s) of critical feedback not yet addressed"
-                    )
-            except (ValueError, TypeError, OSError):
-                pass
+            # Unaddressed criticism still weighing (durable register, authority-weighted).
+            crit = [f for f in self._open_feedback(agent) if float(f.get("valence", 0)) < -0.2]
+            if crit:
+                sev = sum(
+                    max(0.0, -float(f.get("valence", 0))) * float(f.get("authority_weight", 0.5))
+                    for f in crit
+                )
+                drag += min(0.4, 0.15 * sev)
+                reasons.append(
+                    f"{len(crit)} piece(s) of critical feedback still weighing (unaddressed)"
+                )
 
             drag = min(drag, DRAG_MAX)
             if drag <= 0.0 or not reasons:
@@ -3991,6 +4033,12 @@ class Fabric:
     # TTL so a never-merged PR can't nag forever.
     _GITHUB_FEEDBACK_TTL_DAYS = 4.0
 
+    # Inbound feedback (criticism/praise on the agent's work) weighs on affect
+    # for a few days — long enough that a founder's rebuke keeps dragging
+    # confidence until it's genuinely worked through, then ages out so it can't
+    # haunt forever. The acute emotional hit fires once (the ``applied`` flag).
+    _FEEDBACK_TTL_DAYS = 3.0
+
     # Repeated-blocker tripwire: the same blocker recurring N times in a window
     # is a human problem, not a retry problem. After this many hits of the same
     # signature, force an escalation to a human even if the agent didn't emit
@@ -4726,9 +4774,11 @@ class Fabric:
                     except (ValueError, OSError):
                         continue
             _ex.resolve_from_inbox(agent.directory, senders_seen=seen)
-            # A reply from someone clears the outbound throttle for their thread
-            # so a real back-and-forth isn't capped like an unanswered nag.
-            self._clear_awaiting_for_senders(agent, set(seen.keys()))
+            # A GENUINELY NEW reply (inbound newer than our last send) clears the
+            # outbound throttle for that thread so a real back-and-forth isn't
+            # capped — but stale read/ history must not keep clearing it (that
+            # let the same ack fire repeatedly). Pass mtimes, not just senders.
+            self._clear_awaiting_for_senders(agent, seen)
         except Exception:
             logger.debug("expectation inbox-resolve failed for %s", agent.id, exc_info=True)
 
@@ -5726,28 +5776,46 @@ class Fabric:
         except OSError:
             pass
 
-    def _clear_awaiting_for_senders(self, agent: Agent, senders: set[str]) -> None:
-        """A reply arrived from these addresses → allow ONE more message on that
-        thread, but do NOT wipe the cap.
+    def _clear_awaiting_for_senders(self, agent: Agent, seen: dict[str, float]) -> None:
+        """A GENUINELY NEW reply frees one slot on that thread so a real
+        back-and-forth continues — but old mail must NOT keep clearing it.
 
-        The old behaviour deleted the ledger entry entirely, resetting count to 0
-        every time the counterpart wrote back. With two agents replying to each
-        other that meant the MAX_SENDS cap never bit — they ping-ponged the same
-        "good call" acknowledgement forever. A genuine back-and-forth needs at
-        most one fresh reply per inbound, not unlimited; so we decrement the
-        count by one (and clear the debounce) rather than zeroing it.
+        ``seen`` maps sender-address -> latest inbound file mtime (epoch). The
+        caller builds it from inbox/ AND inbox/read/, so it includes EVERYONE who
+        has ever written — and read/ never empties. The previous version cleared
+        the throttle for all of them every reassess (and popped the debounce),
+        which let the same acknowledgement fire 4× in a minute: each ~11s
+        reassess wiped the debounce because the counterpart's month-old mail was
+        still sitting in read/. Fix: only clear a thread when the sender's latest
+        inbound is NEWER than our last send on it — i.e. an actual reply since we
+        wrote, not stale history. Then decrement the count and lift the debounce
+        for a prompt response; otherwise leave the entry (and its debounce) alone.
         """
-        if not senders:
+        from datetime import datetime
+
+        if not seen:
             return
         led = self._load_outbox_ledger(agent)
         changed = False
         for e in led.values():
-            if str(e.get("to", "")).lower() in senders:
-                new_count = max(0, int(e.get("count", 0)) - 1)
-                if new_count != e.get("count") or e.get("last"):
-                    e["count"] = new_count
-                    e.pop("last", None)  # clear debounce so the one reply can go now
-                    changed = True
+            to = str(e.get("to", "")).lower()
+            reply_mtime = seen.get(to)
+            if reply_mtime is None:
+                continue
+            try:
+                last_ts = (
+                    datetime.fromisoformat(str(e.get("last"))).timestamp()
+                    if e.get("last")
+                    else 0.0
+                )
+            except (ValueError, TypeError):
+                last_ts = 0.0
+            if reply_mtime <= last_ts:
+                continue  # no NEW reply since we last wrote — keep the debounce
+            new_count = max(0, int(e.get("count", 0)) - 1)
+            e["count"] = new_count
+            e.pop("last", None)  # a real reply → allow a prompt response
+            changed = True
         if changed:
             self._save_outbox_ledger(agent, led)
 

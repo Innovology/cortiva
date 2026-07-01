@@ -68,8 +68,11 @@ def test_reply_clears_throttle(tmp_path):
     f = _fab()
     agent = SimpleNamespace(id="amara", directory=tmp_path)
     f._queue_outbound_email(agent, {"to": "simone@workforce.innovology.io", "subject": "help", "body": "x"})
-    # A reply from the recipient resets the thread so the conversation continues.
-    f._clear_awaiting_for_senders(agent, {"simone@workforce.innovology.io"})
+    # A GENUINELY NEW reply (inbound newer than our send) resets the thread so
+    # the conversation continues — pass the reply's mtime (here, just after).
+    import time
+
+    f._clear_awaiting_for_senders(agent, {"simone@workforce.innovology.io": time.time() + 5})
     f._queue_outbound_email(agent, {"to": "simone@workforce.innovology.io", "subject": "help", "body": "x"})
     sent = list((tmp_path / "outbox" / "email").glob("*.json"))
     assert len(sent) == 2

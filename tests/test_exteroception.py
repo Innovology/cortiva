@@ -139,3 +139,78 @@ def test_drag_humbles_a_confident_agent_without_flooring():
 def test_zero_drag_is_inert():
     d = reality_drag_dimensions(0.0)
     assert d.confidence == 0.0 and d.caution == 0.0
+
+
+# --- Phase 4: durable feedback register ------------------------------------
+
+import json as _json
+import tempfile as _tempfile
+from datetime import UTC as _UTC, datetime as _dt, timedelta as _td
+from pathlib import Path as _Path
+from types import SimpleNamespace as _NS
+
+from cortiva.core.fabric import Fabric
+
+
+def _fab_reg():
+    d = _Path(_tempfile.mkdtemp())
+    agent = _NS(id="ceo", directory=d)
+    fab = _NS(
+        _FEEDBACK_TTL_DAYS=Fabric._FEEDBACK_TTL_DAYS,
+        _rank_weight_for=lambda label: Fabric._rank_weight_for(None, label),
+    )
+    return fab, agent
+
+
+def _msg(frm, subject, text, eid):
+    return {"from": frm, "subject": subject, "text": text, "email_id": eid}
+
+
+def test_criticism_persists_to_durable_root_not_today():
+    fab, agent = _fab_reg()
+    priority = [_msg("alexander.browne@innovology.io", "Re: state of play", _FOUNDER_REBUKE, "e1")]
+    authority = {"alexander.browne@innovology.io": "the founder"}
+    Fabric._ingest_feedback(fab, agent, priority, [], authority)
+    # durable location — the agent ROOT, not today/ (which resets each wake)
+    assert (agent.directory / "feedback.json").exists()
+    assert not (agent.directory / "today" / "feedback.json").exists()
+    items = _json.loads((agent.directory / "feedback.json").read_text())
+    assert len(items) == 1
+    assert items[0]["valence"] < -0.5
+    assert items[0]["authority_weight"] == 1.0  # founder
+    assert items[0]["applied"] is False
+
+
+def test_ingest_dedups_by_email_id():
+    fab, agent = _fab_reg()
+    m = _msg("boss@x", "Re: x", "This isn't working, I'm disappointed.", "same")
+    Fabric._ingest_feedback(fab, agent, [m], [], {"boss@x": "your manager"})
+    Fabric._ingest_feedback(fab, agent, [m], [], {"boss@x": "your manager"})
+    items = _json.loads((agent.directory / "feedback.json").read_text())
+    assert len(items) == 1
+
+
+def test_ingest_skips_neutral_and_self():
+    fab, agent = _fab_reg()
+    Fabric._ingest_feedback(
+        fab, agent,
+        [_msg("colleague@x", "FYI", "Sharing the metrics export for your records.", "n1")],
+        [_msg("ceo@workforce.io", "my own note", "This isn't working, disappointed.", "s1")],
+        {},
+    )
+    # neutral recorded nothing; self-mail (contains agent id 'ceo') skipped
+    assert not (agent.directory / "feedback.json").exists()
+
+
+def test_open_feedback_prunes_expired_but_keeps_recent():
+    fab, agent = _fab_reg()
+    old = (_dt.now(_UTC) - _td(days=5)).isoformat()
+    new = (_dt.now(_UTC) - _td(hours=2)).isoformat()
+    (agent.directory / "feedback.json").write_text(_json.dumps([
+        {"email_id": "old", "valence": -0.8, "authority_weight": 1.0, "opened_at": old, "applied": True},
+        {"email_id": "new", "valence": -0.8, "authority_weight": 1.0, "opened_at": new, "applied": True},
+    ]))
+    open_items = Fabric._open_feedback(fab, agent)
+    assert len(open_items) == 1 and open_items[0]["email_id"] == "new"
+    # self-cleaned on disk
+    assert len(_json.loads((agent.directory / "feedback.json").read_text())) == 1
