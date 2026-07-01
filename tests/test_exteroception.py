@@ -75,9 +75,7 @@ def test_empty_mail_is_zero():
 
 
 def test_founder_criticism_stings_and_drops_confidence():
-    e = emotions_from_feedback(
-        FeedbackSignal(valence=-0.8, severity=0.9, authority_weight=1.0)
-    )
+    e = emotions_from_feedback(FeedbackSignal(valence=-0.8, severity=0.9, authority_weight=1.0))
     assert e.frustration > 0.3
     assert e.confidence < -0.2  # criticism erodes confidence regardless of authority
     assert e.caution > 0.0
@@ -86,17 +84,13 @@ def test_founder_criticism_stings_and_drops_confidence():
 
 def test_low_authority_praise_cannot_inflate_confidence():
     """Flattery from a peer/stranger may not pump self-regard."""
-    e = emotions_from_feedback(
-        FeedbackSignal(valence=0.9, severity=0.9, authority_weight=0.3)
-    )
+    e = emotions_from_feedback(FeedbackSignal(valence=0.9, severity=0.9, authority_weight=0.3))
     assert e.confidence == 0.0  # praise→confidence gated to authority >= 0.7
     assert e.satisfaction >= 0.0
 
 
 def test_authority_praise_may_lift_confidence():
-    e = emotions_from_feedback(
-        FeedbackSignal(valence=0.9, severity=0.9, authority_weight=1.0)
-    )
+    e = emotions_from_feedback(FeedbackSignal(valence=0.9, severity=0.9, authority_weight=1.0))
     assert e.confidence > 0.0
 
 
@@ -107,8 +101,12 @@ def test_negativity_bias_criticism_outweighs_equal_praise():
 
 
 def test_low_classifier_confidence_damps_affect():
-    sure = emotions_from_feedback(FeedbackSignal(valence=-0.8, severity=0.9, authority_weight=1.0, classifier_confidence=1.0))
-    unsure = emotions_from_feedback(FeedbackSignal(valence=-0.8, severity=0.9, authority_weight=1.0, classifier_confidence=0.2))
+    sure = emotions_from_feedback(
+        FeedbackSignal(valence=-0.8, severity=0.9, authority_weight=1.0, classifier_confidence=1.0)
+    )
+    unsure = emotions_from_feedback(
+        FeedbackSignal(valence=-0.8, severity=0.9, authority_weight=1.0, classifier_confidence=0.2)
+    )
     assert abs(unsure.frustration) < abs(sure.frustration)
 
 
@@ -121,8 +119,14 @@ def test_per_event_cap_bounds_a_single_message():
 
 
 def test_persona_thick_skin_dampens_frustration():
-    thin = emotions_from_feedback(FeedbackSignal(valence=-0.6, severity=0.8, authority_weight=1.0), PersonaModifiers(frustration_weight=1.5))
-    thick = emotions_from_feedback(FeedbackSignal(valence=-0.6, severity=0.8, authority_weight=1.0), PersonaModifiers(frustration_weight=0.4))
+    thin = emotions_from_feedback(
+        FeedbackSignal(valence=-0.6, severity=0.8, authority_weight=1.0),
+        PersonaModifiers(frustration_weight=1.5),
+    )
+    thick = emotions_from_feedback(
+        FeedbackSignal(valence=-0.6, severity=0.8, authority_weight=1.0),
+        PersonaModifiers(frustration_weight=0.4),
+    )
     assert thick.frustration < thin.frustration
 
 
@@ -194,7 +198,8 @@ def test_ingest_dedups_by_email_id():
 def test_ingest_skips_neutral_and_self():
     fab, agent = _fab_reg()
     Fabric._ingest_feedback(
-        fab, agent,
+        fab,
+        agent,
         [_msg("colleague@x", "FYI", "Sharing the metrics export for your records.", "n1")],
         [_msg("ceo@workforce.io", "my own note", "This isn't working, disappointed.", "s1")],
         {},
@@ -207,10 +212,26 @@ def test_open_feedback_prunes_expired_but_keeps_recent():
     fab, agent = _fab_reg()
     old = (_dt.now(_UTC) - _td(days=5)).isoformat()
     new = (_dt.now(_UTC) - _td(hours=2)).isoformat()
-    (agent.directory / "feedback.json").write_text(_json.dumps([
-        {"email_id": "old", "valence": -0.8, "authority_weight": 1.0, "opened_at": old, "applied": True},
-        {"email_id": "new", "valence": -0.8, "authority_weight": 1.0, "opened_at": new, "applied": True},
-    ]))
+    (agent.directory / "feedback.json").write_text(
+        _json.dumps(
+            [
+                {
+                    "email_id": "old",
+                    "valence": -0.8,
+                    "authority_weight": 1.0,
+                    "opened_at": old,
+                    "applied": True,
+                },
+                {
+                    "email_id": "new",
+                    "valence": -0.8,
+                    "authority_weight": 1.0,
+                    "opened_at": new,
+                    "applied": True,
+                },
+            ]
+        )
+    )
     open_items = Fabric._open_feedback(fab, agent)
     assert len(open_items) == 1 and open_items[0]["email_id"] == "new"
     # self-cleaned on disk
