@@ -1599,9 +1599,7 @@ class Fabric:
             gh = self._open_github_feedback(agent)
             if gh:
                 drag += min(0.3, 0.06 * len(gh))
-                reasons.append(
-                    f"{len(gh)} PR/issue thread(s) on your own work still unresolved"
-                )
+                reasons.append(f"{len(gh)} PR/issue thread(s) on your own work still unresolved")
 
             # Overdue, undelivered commitments the agent OWES.
             overdue = 0
@@ -4825,7 +4823,8 @@ class Fabric:
             from cortiva.core import commitments as _cm
 
             own_open = [
-                c for c in _cm.load(agent.directory)
+                c
+                for c in _cm.load(agent.directory)
                 if getattr(c, "status", "open") not in ("delivered", "withdrawn")
             ]
         except Exception:
@@ -5196,9 +5195,7 @@ class Fabric:
             "left unmerged is finished work you haven't shipped.\n",
         ]
         for d in opens[:15]:
-            seen = (
-                f" · seen {d.get('count')}×" if int(d.get("count", 1)) > 1 else ""
-            )
+            seen = f" · seen {d.get('count')}×" if int(d.get("count", 1)) > 1 else ""
             lines.append(f"- **{d.get('ref', '')}** — {d.get('subject', '')}{seen}")
         if len(opens) > 15:
             lines.append(
@@ -5804,9 +5801,7 @@ class Fabric:
                 continue
             try:
                 last_ts = (
-                    datetime.fromisoformat(str(e.get("last"))).timestamp()
-                    if e.get("last")
-                    else 0.0
+                    datetime.fromisoformat(str(e.get("last"))).timestamp() if e.get("last") else 0.0
                 )
             except (ValueError, TypeError):
                 last_ts = 0.0
@@ -5845,14 +5840,19 @@ class Fabric:
             if count >= self._OUTBOX_MAX_SENDS:
                 logger.info(
                     "Suppressed re-send for %s to %s (%d already sent, awaiting reply): %s",
-                    agent.id, to, count, spec.get("subject"),
+                    agent.id,
+                    to,
+                    count,
+                    spec.get("subject"),
                 )
                 self._emit("email.suppressed", agent_id=agent.id, to=to, reason="max_sends")
                 return
             if last and (now - last).total_seconds() < self._OUTBOX_DEBOUNCE_S:
                 logger.info(
                     "Suppressed re-send for %s to %s (debounce, awaiting reply): %s",
-                    agent.id, to, spec.get("subject"),
+                    agent.id,
+                    to,
+                    spec.get("subject"),
                 )
                 self._emit("email.suppressed", agent_id=agent.id, to=to, reason="debounce")
                 return
@@ -6135,12 +6135,13 @@ class Fabric:
             # This agent reports to the founder (i.e. the CEO).
             if founder:
                 self._queue_outbound_email(
-                    agent, {"to": founder, "subject": subject, "body": body},
+                    agent,
+                    {"to": founder, "subject": subject, "body": body},
                 )
             else:
                 logger.warning(
-                    "Escalation for %s reports to the founder but no founder "
-                    "contact is configured", agent.id,
+                    "Escalation for %s reports to the founder but no founder contact is configured",
+                    agent.id,
                 )
         elif mgr_email:
             self._queue_outbound_email(
@@ -6154,7 +6155,8 @@ class Fabric:
             logger.warning(
                 "Escalation for %s could not be routed to a manager (mgr_id=%r); "
                 "not escalating to the founder — check the org directory push.",
-                agent.id, mgr_id,
+                agent.id,
+                mgr_id,
             )
 
     # ------------------------------------------------------------------
