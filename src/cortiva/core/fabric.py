@@ -331,9 +331,6 @@ class Fabric:
         # Per-agent accumulated familiarity signals for today
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
         self._emotional_states: dict[str, Any] = {}
-        # Classified inbound feedback awaiting affective application (drained in
-        # the async wake/reassess flow, where the neuro hook can be awaited).
-        self._pending_feedback: dict[str, list[tuple[FeedbackSignal, str]]] = {}
         # Event listeners for portal/WebSocket integration
         self._event_listeners: list[Any] = []
         # Structured event bus (new — used alongside legacy listeners)
@@ -1451,14 +1448,17 @@ class Fabric:
         normal: list[dict],
         authority: dict[str, str],
     ) -> None:
-        """Classify newly-seen inbound mail for valence and queue the affective
-        hit (Phase 2 — the extractor that makes feedback FIRE).
+        """Classify newly-seen inbound mail for valence into the DURABLE feedback
+        register (Phase 2 + 4 — the extractor that makes feedback FIRE and KEEP
+        weighing).
 
         Pass-1 deterministic classification (model-free, inline-safe). Neutral
-        mail is ignored; criticism/praise become a ``FeedbackSignal`` stashed for
-        the async drain and recorded to ``today/feedback.json`` (so the reality
-        drag also counts unaddressed criticism, and it's auditable). Dedup by
-        email_id; never raises."""
+        mail is ignored, self-mail skipped, dedup by email_id. Entries persist at
+        ``<agent>/feedback.json`` — the AGENT ROOT, not ``today/`` which resets
+        every wake — so a rebuke weighs for days (until the TTL ages it out),
+        not hours. The async drain applies the one-time affective hit
+        (``applied`` flag); the reality drag reads the open set every cycle.
+        Never raises."""
         import json as _json
         from datetime import UTC, datetime
 
@@ -1471,7 +1471,7 @@ class Fabric:
             return mm.group(0).lower() if mm else (s or "").strip().lower()
 
         self_handle = str(agent.id).lower()
-        path = agent.directory / "today" / "feedback.json"
+        path = agent.directory / "feedback.json"
         existing: list[dict] = []
         if path.exists():
             try:
@@ -1496,23 +1496,18 @@ class Fabric:
             if abs(valence) < 0.2 and severity < 0.4:
                 continue  # neutral — no affect, but recorded as seen above
             aw = self._rank_weight_for(authority.get(addr, "")) if addr in authority else 0.3
-            sig = FeedbackSignal(
-                valence=valence,
-                severity=severity,
-                authority_weight=aw,
-                classifier_confidence=conf,
-            )
-            self._pending_feedback.setdefault(agent.id, []).append((sig, addr))
             existing.append(
                 {
                     "email_id": eid,
                     "from": frm,
+                    "addr": addr,
                     "subject": str(m.get("subject", ""))[:120],
                     "valence": valence,
                     "severity": severity,
                     "authority_weight": aw,
-                    "addressed": False,
-                    "ts": now,
+                    "classifier_confidence": conf,
+                    "opened_at": now,
+                    "applied": False,
                 }
             )
             added = True
@@ -1523,11 +1518,68 @@ class Fabric:
             except OSError:
                 logger.debug("could not persist feedback.json for %s", agent.id, exc_info=True)
 
+    def _open_feedback(self, agent: Agent) -> list[dict]:
+        """Open (unexpired) feedback from the durable register; prunes items
+        older than the TTL so a rebuke can't nag forever. Self-cleaning."""
+        import json as _json
+        from datetime import UTC, datetime
+
+        path = agent.directory / "feedback.json"
+        if not path.exists():
+            return []
+        try:
+            items = _json.loads(path.read_text(encoding="utf-8")) or []
+        except (ValueError, OSError):
+            return []
+        now = datetime.now(UTC)
+        kept: list[dict] = []
+        for e in items:
+            try:
+                opened = datetime.fromisoformat(str(e.get("opened_at")))
+            except (ValueError, TypeError):
+                opened = now
+            if (now - opened).total_seconds() > self._FEEDBACK_TTL_DAYS * 86400:
+                continue  # aged out
+            kept.append(e)
+        if len(kept) != len(items):
+            try:
+                path.write_text(_json.dumps(kept, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+        return kept
+
     async def _drain_feedback(self, agent: Agent) -> None:
-        """Apply any feedback queued by _ingest_feedback this cycle (async so the
-        neuro hook can be awaited). Idempotent — the queue is popped."""
-        for sig, entity in self._pending_feedback.pop(agent.id, []):
-            await self._record_feedback_emotions(agent, sig, entity_id=entity)
+        """Apply the one-time affective hit for any feedback not yet applied
+        (async so the neuro hook can be awaited). Reads the durable register and
+        marks entries ``applied`` — so the sting fires exactly once and survives
+        a restart between ingest and drain."""
+        import json as _json
+
+        path = agent.directory / "feedback.json"
+        if not path.exists():
+            return
+        try:
+            items = _json.loads(path.read_text(encoding="utf-8")) or []
+        except (ValueError, OSError):
+            return
+        changed = False
+        for e in items:
+            if e.get("applied"):
+                continue
+            sig = FeedbackSignal(
+                valence=float(e.get("valence", 0.0)),
+                severity=float(e.get("severity", 0.5)),
+                authority_weight=float(e.get("authority_weight", 0.5)),
+                classifier_confidence=float(e.get("classifier_confidence", 1.0)),
+            )
+            await self._record_feedback_emotions(agent, sig, entity_id=str(e.get("addr", "")))
+            e["applied"] = True
+            changed = True
+        if changed:
+            try:
+                path.write_text(_json.dumps(items, indent=2), encoding="utf-8")
+            except OSError:
+                pass
 
     def _apply_reality_drag(self, agent: Agent) -> str:
         """Pull felt confidence toward reality, and surface why (Components C+E).
@@ -1538,7 +1590,6 @@ class Fabric:
         drag, blends it into emotions.json (so the dragged confidence is what
         surfaces), and returns an explainable block naming the cause. Returns
         "" when nothing is outstanding (no drag, no nag). Never raises."""
-        import json as _json
         from datetime import UTC, datetime
 
         try:
@@ -1573,26 +1624,17 @@ class Fabric:
                 drag += min(0.3, 0.08 * overdue)
                 reasons.append(f"{overdue} commitment(s) you owe are past due and undelivered")
 
-            # Unaddressed negative feedback (today/feedback.json, authority-weighted).
-            try:
-                raw = agent.read_today("feedback.json")
-                items = _json.loads(raw) if raw else []
-                crit = [
-                    f for f in (items or [])
-                    if float(f.get("valence", 0)) < -0.2 and not f.get("addressed")
-                ]
-                if crit:
-                    sev = sum(
-                        max(0.0, -float(f.get("valence", 0)))
-                        * float(f.get("authority_weight", 0.5))
-                        for f in crit
-                    )
-                    drag += min(0.4, 0.15 * sev)
-                    reasons.append(
-                        f"{len(crit)} piece(s) of critical feedback not yet addressed"
-                    )
-            except (ValueError, TypeError, OSError):
-                pass
+            # Unaddressed criticism still weighing (durable register, authority-weighted).
+            crit = [f for f in self._open_feedback(agent) if float(f.get("valence", 0)) < -0.2]
+            if crit:
+                sev = sum(
+                    max(0.0, -float(f.get("valence", 0))) * float(f.get("authority_weight", 0.5))
+                    for f in crit
+                )
+                drag += min(0.4, 0.15 * sev)
+                reasons.append(
+                    f"{len(crit)} piece(s) of critical feedback still weighing (unaddressed)"
+                )
 
             drag = min(drag, DRAG_MAX)
             if drag <= 0.0 or not reasons:
@@ -3990,6 +4032,12 @@ class Fabric:
     # approval doesn't evaporate after the one wake it was shown in. Backstop
     # TTL so a never-merged PR can't nag forever.
     _GITHUB_FEEDBACK_TTL_DAYS = 4.0
+
+    # Inbound feedback (criticism/praise on the agent's work) weighs on affect
+    # for a few days — long enough that a founder's rebuke keeps dragging
+    # confidence until it's genuinely worked through, then ages out so it can't
+    # haunt forever. The acute emotional hit fires once (the ``applied`` flag).
+    _FEEDBACK_TTL_DAYS = 3.0
 
     # Repeated-blocker tripwire: the same blocker recurring N times in a window
     # is a human problem, not a retry problem. After this many hits of the same
