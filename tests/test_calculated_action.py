@@ -10,6 +10,7 @@ longer WIPES the throttle (it allows one more send, not unlimited).
 
 import json
 import tempfile
+import time as _time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,7 +56,9 @@ def test_no_history_no_brake():
 def test_warm_thread_says_hold():
     agent = _agent()
     recent = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
-    _write_ledger(agent, {"k": {"to": "maren@x", "subject": "SRE brief", "count": 1, "last": recent}})
+    _write_ledger(
+        agent, {"k": {"to": "maren@x", "subject": "SRE brief", "count": 1, "last": recent}}
+    )
     out = _brake(_fab(), agent)
     assert "HOLD" in out
     assert "SRE brief" in out
@@ -66,7 +69,9 @@ def test_warm_thread_says_hold():
 def test_capped_thread_says_stop_and_escalate():
     agent = _agent()
     old = (datetime.now(UTC) - timedelta(hours=50)).isoformat()
-    _write_ledger(agent, {"k": {"to": "maren@x", "subject": "URGENT data", "count": 3, "last": old}})
+    _write_ledger(
+        agent, {"k": {"to": "maren@x", "subject": "URGENT data", "count": 3, "last": old}}
+    )
     out = _brake(_fab(), agent)
     assert "STOP" in out
     assert "escalate" in out.lower()
@@ -94,8 +99,6 @@ def test_own_commitments_surface_as_finish_first(monkeypatch):
 
 # --- bounded reset + genuine-reply gating (the ping-pong / storm fix) ------
 
-import time as _time
-
 
 def _clear_shim():
     return SimpleNamespace(
@@ -108,7 +111,15 @@ def test_fresh_reply_decrements_and_lifts_debounce_but_not_wipe():
     """A reply NEWER than our last send frees one slot — decrement, not zero."""
     agent = _agent()
     _write_ledger(
-        agent, {"k": {"to": "maren@x", "subject": "brief", "count": 3, "last": "2026-01-01T00:00:00+00:00"}}
+        agent,
+        {
+            "k": {
+                "to": "maren@x",
+                "subject": "brief",
+                "count": 3,
+                "last": "2026-01-01T00:00:00+00:00",
+            }
+        },
     )
     # reply mtime well after the 2026-01-01 last-send → genuine reply
     Fabric._clear_awaiting_for_senders(_clear_shim(), agent, {"maren@x": _time.time()})
@@ -117,12 +128,14 @@ def test_fresh_reply_decrements_and_lifts_debounce_but_not_wipe():
     assert "last" not in entry  # a real reply lifts the debounce for a response
 
 
-def test_stale_mail_does_NOT_clear_the_throttle():
+def test_stale_mail_does_NOT_clear_the_throttle():  # noqa: N802
     """The storm fix: old mail sitting in read/ must not keep clearing the
     debounce every reassess (that let the same ack fire 4x in a minute)."""
     agent = _agent()
     just_sent = _iso_now()  # we sent moments ago
-    _write_ledger(agent, {"k": {"to": "marcus@x", "subject": "deck", "count": 1, "last": just_sent}})
+    _write_ledger(
+        agent, {"k": {"to": "marcus@x", "subject": "deck", "count": 1, "last": just_sent}}
+    )
     # counterpart's newest mail is OLD (epoch ~ 2020) — no reply since we wrote
     Fabric._clear_awaiting_for_senders(_clear_shim(), agent, {"marcus@x": 1_577_836_800.0})
     entry = json.loads((agent.directory / "outbox" / ".threads.json").read_text())["k"]
@@ -132,4 +145,5 @@ def test_stale_mail_does_NOT_clear_the_throttle():
 
 def _iso_now():
     from datetime import UTC, datetime
+
     return datetime.now(UTC).isoformat()
