@@ -18,7 +18,6 @@ from cortiva.core.emotions import (
     reality_drag_dimensions,
 )
 
-
 # --- Phase 2: deterministic valence classifier -----------------------------
 
 # The real founder rebuke that exposed the closed loop.
