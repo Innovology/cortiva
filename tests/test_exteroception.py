@@ -7,6 +7,14 @@ emotions (a founder's rebuke stings; a stranger's flattery is inert) and the
 reality drag (confidence pulled toward outcomes, bounded, released on resolution).
 """
 
+import json as _json
+import tempfile as _tempfile
+from datetime import UTC as _UTC
+from datetime import datetime as _dt
+from datetime import timedelta as _td
+from pathlib import Path as _Path
+from types import SimpleNamespace as _NS  # noqa: N814
+
 from cortiva.core.emotions import (
     DRAG_MAX,
     EmotionDimensions,
@@ -17,6 +25,7 @@ from cortiva.core.emotions import (
     emotions_from_feedback,
     reality_drag_dimensions,
 )
+from cortiva.core.fabric import Fabric
 
 # --- Phase 2: deterministic valence classifier -----------------------------
 
@@ -142,14 +151,6 @@ def test_zero_drag_is_inert():
 
 
 # --- Phase 4: durable feedback register ------------------------------------
-
-import json as _json
-import tempfile as _tempfile
-from datetime import UTC as _UTC, datetime as _dt, timedelta as _td
-from pathlib import Path as _Path
-from types import SimpleNamespace as _NS
-
-from cortiva.core.fabric import Fabric
 
 
 def _fab_reg():

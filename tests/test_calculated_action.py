@@ -10,6 +10,7 @@ longer WIPES the throttle (it allows one more send, not unlimited).
 
 import json
 import tempfile
+import time as _time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -94,8 +95,6 @@ def test_own_commitments_surface_as_finish_first(monkeypatch):
 
 # --- bounded reset + genuine-reply gating (the ping-pong / storm fix) ------
 
-import time as _time
-
 
 def _clear_shim():
     return SimpleNamespace(
@@ -117,7 +116,7 @@ def test_fresh_reply_decrements_and_lifts_debounce_but_not_wipe():
     assert "last" not in entry  # a real reply lifts the debounce for a response
 
 
-def test_stale_mail_does_NOT_clear_the_throttle():
+def test_stale_mail_does_NOT_clear_the_throttle():  # noqa: N802
     """The storm fix: old mail sitting in read/ must not keep clearing the
     debounce every reassess (that let the same ack fire 4x in a minute)."""
     agent = _agent()
