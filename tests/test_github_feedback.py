@@ -58,14 +58,23 @@ def test_same_thread_folds_and_counts_no_duplicates():
 def test_merge_notification_resolves_the_thread():
     _agent, rec, opn = _shim()
     rec([_gh("[Innovology/repo] adr-lint (PR #129)", "approved")])
-    rec([_gh("Re: [Innovology/repo] adr-lint (PR #129)", "samantha merged this pull request into main.")])
+    rec(
+        [
+            _gh(
+                "Re: [Innovology/repo] adr-lint (PR #129)",
+                "samantha merged this pull request into main.",
+            )
+        ]
+    )
     assert opn() == []
 
 
 def test_close_notification_resolves_the_thread():
     _agent, rec, opn = _shim()
     rec([_gh("[Innovology/repo] silent failure (Issue #102)", "reported")])
-    rec([_gh("Re: [Innovology/repo] silent failure (Issue #102)", "alex closed this as completed.")])
+    rec(
+        [_gh("Re: [Innovology/repo] silent failure (Issue #102)", "alex closed this as completed.")]
+    )
     assert opn() == []
 
 

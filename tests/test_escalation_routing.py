@@ -1,5 +1,6 @@
 """Escalation routes up the management chain, and outbound is throttled so an
 unanswered ask can't become a message storm."""
+
 from __future__ import annotations
 
 import json
@@ -30,7 +31,11 @@ def test_resolve_manager_cross_node(tmp_path):
                 "directory": [
                     {"id": "amara", "reports_to": "cto"},
                     {"id": "cto", "email": "samantha@workforce.innovology.io", "reports_to": "ceo"},
-                    {"id": "ceo", "email": "maren@workforce.innovology.io", "reports_to": "human-founder"},
+                    {
+                        "id": "ceo",
+                        "email": "maren@workforce.innovology.io",
+                        "reports_to": "human-founder",
+                    },
                 ]
             }
         ),
@@ -58,8 +63,12 @@ def test_outbound_rapid_resends_are_suppressed(tmp_path):
 def test_distinct_threads_not_suppressed(tmp_path):
     f = _fab()
     agent = SimpleNamespace(id="amara", directory=tmp_path)
-    f._queue_outbound_email(agent, {"to": "simone@workforce.innovology.io", "subject": "A", "body": "x"})
-    f._queue_outbound_email(agent, {"to": "simone@workforce.innovology.io", "subject": "B", "body": "x"})
+    f._queue_outbound_email(
+        agent, {"to": "simone@workforce.innovology.io", "subject": "A", "body": "x"}
+    )
+    f._queue_outbound_email(
+        agent, {"to": "simone@workforce.innovology.io", "subject": "B", "body": "x"}
+    )
     sent = list((tmp_path / "outbox" / "email").glob("*.json"))
     assert len(sent) == 2  # different subjects are different threads
 
@@ -67,12 +76,16 @@ def test_distinct_threads_not_suppressed(tmp_path):
 def test_reply_clears_throttle(tmp_path):
     f = _fab()
     agent = SimpleNamespace(id="amara", directory=tmp_path)
-    f._queue_outbound_email(agent, {"to": "simone@workforce.innovology.io", "subject": "help", "body": "x"})
+    f._queue_outbound_email(
+        agent, {"to": "simone@workforce.innovology.io", "subject": "help", "body": "x"}
+    )
     # A GENUINELY NEW reply (inbound newer than our send) resets the thread so
     # the conversation continues — pass the reply's mtime (here, just after).
     import time
 
     f._clear_awaiting_for_senders(agent, {"simone@workforce.innovology.io": time.time() + 5})
-    f._queue_outbound_email(agent, {"to": "simone@workforce.innovology.io", "subject": "help", "body": "x"})
+    f._queue_outbound_email(
+        agent, {"to": "simone@workforce.innovology.io", "subject": "help", "body": "x"}
+    )
     sent = list((tmp_path / "outbox" / "email").glob("*.json"))
     assert len(sent) == 2
