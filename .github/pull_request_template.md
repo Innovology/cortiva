@@ -1,12 +1,30 @@
 ## What
 
-<!-- Brief description of the change. -->
+<!-- Required. One sentence on what changed. -->
 
 ## Why
 
-<!-- Why is this change needed? Link to issue if applicable. -->
+<!-- Required. Why is this needed? Link the issue. -->
 
 Closes #
+
+## Acceptance Criteria
+
+<!-- Required. CI fails if:
+       · this section is missing
+       · no items are checked
+       · an unchecked item is not written as "N/A — <reason>"
+       · a checked item has no verification note after the "—"
+     Format for verified items:  - [x] Label — what you verified and how
+     Format for N/A items:       - [ ] Label — N/A — reason this doesn't apply -->
+
+- [ ] Tests — <!-- e.g. "pytest 47/47 pass", "mypy clean" -->
+- [ ] Exercised locally or in staging — <!-- describe the run, or N/A — reason -->
+- [ ] Adjacent paths spot-checked — <!-- what you checked for regressions, or N/A — reason -->
+
+## How
+
+<!-- How was this implemented? Any design decisions worth noting? -->
 
 ## ADR / RFC Reference
 
@@ -21,10 +39,6 @@ Leaving this blank or with the placeholder text will fail the ADR lint CI check.
 -->
 
 **ADR/RFC:** <!-- fill in -->
-
-## How
-
-<!-- How was this implemented? Any design decisions worth noting? -->
 
 ## AI Delegation
 
