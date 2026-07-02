@@ -37,10 +37,16 @@ from cortiva.core.credentials import load_agent_credentials
 from cortiva.core.delegation import DelegationManager
 from cortiva.core.discovery import NodeCapabilities
 from cortiva.core.emotions import (
+    DRAG_MAX,
     EMOTIONS_FILENAME,
+    EmotionDimensions,
+    FeedbackSignal,
     blend_emotions,
+    classify_feedback,
     derive_emotions,
+    emotions_from_feedback,
     parse_persona_modifiers,
+    reality_drag_dimensions,
     signals_from_task,
 )
 from cortiva.core.events import EventBus
@@ -104,6 +110,16 @@ def _human_remaining(hours: float) -> str:
     return f"overdue by {span}" if overdue else f"{span} left"
 
 
+def _human_age(hours: float) -> str:
+    """A short human read of how long ago something happened: '3h', '2d'."""
+    h = abs(hours)
+    if h >= 24:
+        return f"{h / 24:.0f}d"
+    if h >= 1:
+        return f"{h:.0f}h"
+    return f"{h * 60:.0f}m"
+
+
 def _is_github_email(from_field: str) -> bool:
     """True when an email is a GitHub notification (sender on github.com).
 
@@ -114,6 +130,42 @@ def _is_github_email(from_field: str) -> bool:
     m = re.search(r"[\w.+-]+@([\w.-]+)", from_field or "")
     domain = (m.group(1) if m else (from_field or "")).strip().lower()
     return domain == "github.com" or domain.endswith(".github.com")
+
+
+# Phrases GitHub puts in a notification body when a PR/issue reaches a terminal
+# state — the disconfirming signal that closes a feedback loop. Seeing one for a
+# ref resolves that ref's open feedback (the work landed; stop nagging).
+_GITHUB_DONE_MARKERS = (
+    "merged this pull request",
+    "merged commit",
+    "was merged",
+    "merged #",
+    "closed this",
+    "closed #",
+    "marked this conversation as resolved",
+)
+
+
+def _github_ref(subject: str) -> str:
+    """Stable key for the PR/issue a GitHub notification is about.
+
+    GitHub subjects look like ``[Innovology/repo] Title (PR #104)`` or
+    ``Re: [Innovology/repo] Title (Issue #80)``. We key feedback by
+    ``repo#number`` so every notification on the same thread folds into one
+    durable item. CI/run mails without a number fall back to the subject — still
+    durable, still TTL-pruned, just not thread-folded.
+    """
+    s = subject or ""
+    repo = ""
+    rm = re.search(r"\[([\w.\-]+/[\w.\-]+)\]", s)
+    if rm:
+        repo = rm.group(1)
+    nm = re.search(r"#(\d+)", s)
+    if nm:
+        return f"{repo}#{nm.group(1)}" if repo else f"#{nm.group(1)}"
+    # No number — collapse the "Re: " / "[repo] " noise so retries of the same
+    # subject still fold together.
+    return re.sub(r"^(re:\s*)+", "", s.strip(), flags=re.I).lower()[:120]
 
 
 def _resolve_msg_email(
@@ -232,6 +284,11 @@ class Fabric:
             "head-of-ar",
             "coo",
         }
+        # Agents permitted to issue/lift STANDING ORDERS — durable org-wide
+        # prohibitions that HQ owns and every node enforces. The CEO turns a
+        # founder decision into one; the COO can too. Others emitting
+        # `issue_standing_order` are ignored (and the tool isn't offered).
+        self.standing_order_authorised: set[str] = {"ceo", "coo"}
         self.resource_guard = ResourceGuard(self.agents_dir)
         if self.terminal is not None:
             # The cycle guard must outlast a terminal run, or long
@@ -665,6 +722,26 @@ class Fabric:
         # Build full context: identity + messages + org + plan cascade + daily context
         context = await self.context_builder.build_plan_context(agent, identity, messages)
 
+        # THE BRAKE goes first — before any accelerator. Reckon with what you've
+        # already done and your own unfinished part, so the chase/reply pressure
+        # below is reasoned past, not obeyed reflexively.
+        brake_ctx = self._calculated_action_context(agent)
+        if brake_ctx:
+            context = context + "\n\n---\n\n" + brake_ctx
+
+        # Reality check — pull felt confidence toward outcomes (mutates
+        # emotions.json) and surface why, so a busy day isn't mistaken for a
+        # good one while real work sits unresolved.
+        drag_ctx = self._apply_reality_drag(agent)
+        if drag_ctx:
+            context = context + "\n\n---\n\n" + drag_ctx
+
+        # Standing orders outrank everything below — durable prohibitions
+        # that never self-resolve; a plan must be drawn INSIDE them.
+        orders_ctx = self._standing_orders_context(agent)
+        if orders_ctx:
+            context = context + "\n\n---\n\n" + orders_ctx
+
         # Directives from above / company missions go FIRST — top of mind,
         # above her own plan (the salience she doesn't choose to feel).
         directive_ctx = self._directive_salience_context(agent)
@@ -718,6 +795,15 @@ class Fabric:
         email_ctx = self._email_inbox_context(agent)
         if email_ctx:
             context = context + "\n\n---\n\n" + email_ctx
+        # GitHub feedback on her own PRs/issues — durable, so an approval or CI
+        # failure stays salient until the thread lands (not read-once). Comes
+        # after the inbox pass above, which records the just-arrived ones.
+        gh_ctx = self._github_feedback_context(agent)
+        if gh_ctx:
+            context = context + "\n\n---\n\n" + gh_ctx
+        # Apply the affective hit from any feedback the inbox pass just
+        # classified — criticism stings, praise steadies (Phase 2 drain).
+        await self._drain_feedback(agent)
         # Inject the company directory (GAL) so the agent knows who exists
         # and how to reach them.
         dir_ctx = self._directory_context(agent)
@@ -1323,6 +1409,263 @@ class Fabric:
                 exc_info=True,
             )
 
+    def _blend_into_emotions(self, agent: Agent, new: EmotionDimensions) -> None:
+        """Blend a non-task EmotionDimensions into the rolling emotions.json.
+
+        The task path (_record_task_emotions) used to be the only writer; the
+        exteroceptive paths (feedback, reality drag) write here too, so the
+        world's response moves the same needle the agent's own execution does.
+        """
+        try:
+            current = self._emotional_states.get(agent.id)
+            if current is None:
+                current = EmotionDimensions.from_dict(self._read_emotion(agent))
+            state = blend_emotions(current, new)
+            self._emotional_states[agent.id] = state
+            agent.write_today(EMOTIONS_FILENAME, json.dumps(state.to_dict(), indent=2))
+        except Exception:
+            logger.debug("emotion blend failed for %s", agent.id, exc_info=True)
+
+    async def _record_feedback_emotions(
+        self, agent: Agent, signal: FeedbackSignal, entity_id: str = ""
+    ) -> None:
+        """Apply one classified inbound feedback signal to the agent's affect.
+
+        Feeds BOTH the felt emotions (emotions.json, via the persona-scaled
+        mapping) and neurochemistry (via the cognition feedback hook — the same
+        ``dispatch_hook`` path the directive arousal uses). This is the entry
+        point the valence-extraction pass calls; it is the missing path by which
+        a founder's criticism actually lands. Never raises."""
+        try:
+            modifiers = parse_persona_modifiers(agent.read_identity("soul"))
+            self._blend_into_emotions(agent, emotions_from_feedback(signal, modifiers))
+            await self.plugin_manager.dispatch_hook(
+                agent.id,
+                "feedback",
+                {
+                    "valence": signal.valence,
+                    "authority_weight": signal.authority_weight,
+                    "severity": signal.severity,
+                    "entity_id": entity_id,
+                },
+            )
+        except Exception:
+            logger.debug("feedback emotion failed for %s", agent.id, exc_info=True)
+
+    def _ingest_feedback(
+        self,
+        agent: Agent,
+        priority: list[dict],
+        normal: list[dict],
+        authority: dict[str, str],
+    ) -> None:
+        """Classify newly-seen inbound mail for valence into the DURABLE feedback
+        register (Phase 2 + 4 — the extractor that makes feedback FIRE and KEEP
+        weighing).
+
+        Pass-1 deterministic classification (model-free, inline-safe). Neutral
+        mail is ignored, self-mail skipped, dedup by email_id. Entries persist at
+        ``<agent>/feedback.json`` — the AGENT ROOT, not ``today/`` which resets
+        every wake — so a rebuke weighs for days (until the TTL ages it out),
+        not hours. The async drain applies the one-time affective hit
+        (``applied`` flag); the reality drag reads the open set every cycle.
+        Never raises."""
+        import json as _json
+        from datetime import UTC, datetime
+
+        msgs = list(priority) + list(normal)
+        if not msgs:
+            return
+
+        def _addr(s: str) -> str:
+            mm = re.search(r"[\w.+-]+@[\w.-]+", s or "")
+            return mm.group(0).lower() if mm else (s or "").strip().lower()
+
+        self_handle = str(agent.id).lower()
+        path = agent.directory / "feedback.json"
+        existing: list[dict] = []
+        if path.exists():
+            try:
+                existing = _json.loads(path.read_text(encoding="utf-8")) or []
+            except (ValueError, OSError):
+                existing = []
+        seen = {e.get("email_id") for e in existing}
+        now = datetime.now(UTC).isoformat()
+        added = False
+        for m in msgs:
+            frm = m.get("from", "")
+            addr = _addr(frm)
+            if not addr or self_handle in addr:
+                continue  # ignore self-mail — no internal affect loops
+            eid = str(m.get("email_id") or m.get("message_id") or m.get("subject", ""))[:200]
+            if not eid or eid in seen:
+                continue
+            seen.add(eid)
+            valence, severity, conf = classify_feedback(
+                m.get("subject", ""), m.get("text") or m.get("body") or ""
+            )
+            if abs(valence) < 0.2 and severity < 0.4:
+                continue  # neutral — no affect, but recorded as seen above
+            aw = self._rank_weight_for(authority.get(addr, "")) if addr in authority else 0.3
+            existing.append(
+                {
+                    "email_id": eid,
+                    "from": frm,
+                    "addr": addr,
+                    "subject": str(m.get("subject", ""))[:120],
+                    "valence": valence,
+                    "severity": severity,
+                    "authority_weight": aw,
+                    "classifier_confidence": conf,
+                    "opened_at": now,
+                    "applied": False,
+                }
+            )
+            added = True
+        if added:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
+            except OSError:
+                logger.debug("could not persist feedback.json for %s", agent.id, exc_info=True)
+
+    def _open_feedback(self, agent: Agent) -> list[dict]:
+        """Open (unexpired) feedback from the durable register; prunes items
+        older than the TTL so a rebuke can't nag forever. Self-cleaning."""
+        import json as _json
+        from datetime import UTC, datetime
+
+        path = agent.directory / "feedback.json"
+        if not path.exists():
+            return []
+        try:
+            items = _json.loads(path.read_text(encoding="utf-8")) or []
+        except (ValueError, OSError):
+            return []
+        now = datetime.now(UTC)
+        kept: list[dict] = []
+        for e in items:
+            try:
+                opened = datetime.fromisoformat(str(e.get("opened_at")))
+            except (ValueError, TypeError):
+                opened = now
+            if (now - opened).total_seconds() > self._FEEDBACK_TTL_DAYS * 86400:
+                continue  # aged out
+            kept.append(e)
+        if len(kept) != len(items):
+            try:
+                path.write_text(_json.dumps(kept, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+        return kept
+
+    async def _drain_feedback(self, agent: Agent) -> None:
+        """Apply the one-time affective hit for any feedback not yet applied
+        (async so the neuro hook can be awaited). Reads the durable register and
+        marks entries ``applied`` — so the sting fires exactly once and survives
+        a restart between ingest and drain."""
+        import json as _json
+
+        path = agent.directory / "feedback.json"
+        if not path.exists():
+            return
+        try:
+            items = _json.loads(path.read_text(encoding="utf-8")) or []
+        except (ValueError, OSError):
+            return
+        changed = False
+        for e in items:
+            if e.get("applied"):
+                continue
+            sig = FeedbackSignal(
+                valence=float(e.get("valence", 0.0)),
+                severity=float(e.get("severity", 0.5)),
+                authority_weight=float(e.get("authority_weight", 0.5)),
+                classifier_confidence=float(e.get("classifier_confidence", 1.0)),
+            )
+            await self._record_feedback_emotions(agent, sig, entity_id=str(e.get("addr", "")))
+            e["applied"] = True
+            changed = True
+        if changed:
+            try:
+                path.write_text(_json.dumps(items, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+
+    def _apply_reality_drag(self, agent: Agent) -> str:
+        """Pull felt confidence toward reality, and surface why (Components C+E).
+
+        Confidence must not sit at the ceiling on a busy day alone. This reads
+        the agent's OWN open negative state — unmerged/criticised PRs, overdue
+        commitments, unaddressed authority criticism — converts it to a bounded
+        drag, blends it into emotions.json (so the dragged confidence is what
+        surfaces), and returns an explainable block naming the cause. Returns
+        "" when nothing is outstanding (no drag, no nag). Never raises."""
+        from datetime import UTC, datetime
+
+        try:
+            drag = 0.0
+            reasons: list[str] = []
+
+            gh = self._open_github_feedback(agent)
+            if gh:
+                drag += min(0.3, 0.06 * len(gh))
+                reasons.append(f"{len(gh)} PR/issue thread(s) on your own work still unresolved")
+
+            # Overdue, undelivered commitments the agent OWES.
+            overdue = 0
+            try:
+                from cortiva.core import commitments as _cm
+
+                now = datetime.now(UTC)
+                for c in _cm.load(agent.directory):
+                    if getattr(c, "status", "open") in ("delivered", "withdrawn"):
+                        continue
+                    due = str(getattr(c, "due_at", "") or "")
+                    try:
+                        if due and datetime.fromisoformat(due) < now:
+                            overdue += 1
+                    except ValueError:
+                        pass
+            except Exception:
+                overdue = 0
+            if overdue:
+                drag += min(0.3, 0.08 * overdue)
+                reasons.append(f"{overdue} commitment(s) you owe are past due and undelivered")
+
+            # Unaddressed criticism still weighing (durable register, authority-weighted).
+            crit = [f for f in self._open_feedback(agent) if float(f.get("valence", 0)) < -0.2]
+            if crit:
+                sev = sum(
+                    max(0.0, -float(f.get("valence", 0))) * float(f.get("authority_weight", 0.5))
+                    for f in crit
+                )
+                drag += min(0.4, 0.15 * sev)
+                reasons.append(
+                    f"{len(crit)} piece(s) of critical feedback still weighing (unaddressed)"
+                )
+
+            drag = min(drag, DRAG_MAX)
+            if drag <= 0.0 or not reasons:
+                return ""
+
+            self._blend_into_emotions(agent, reality_drag_dimensions(drag))
+
+            lines = [
+                "## 🪞 Reality check — your confidence answers to outcomes, not effort\n",
+                "Your felt confidence has been pulled toward reality. This is NOT your "
+                "task tally — it's work the world hasn't confirmed is good yet:\n",
+            ]
+            lines += [f"- {r}" for r in reasons]
+            lines.append(
+                "\nA busy day is not a good day until these land. Close them, or state "
+                "plainly what you're stuck on — don't report success over open work."
+            )
+            return "\n".join(lines)
+        except Exception:
+            logger.debug("reality drag failed for %s", agent.id, exc_info=True)
+            return ""
+
     async def _execute_task_inner(
         self,
         agent: Agent,
@@ -1482,6 +1825,12 @@ class Fabric:
         if ground_ctx:
             context = context + "\n\n---\n\n" + ground_ctx
 
+        # Standing orders at execution time — the moment of acting is
+        # exactly when a halted scope must be in the room.
+        orders_ctx = self._standing_orders_context(agent)
+        if orders_ctx:
+            context = context + "\n\n---\n\n" + orders_ctx
+
         # Commitments at execution time too — the act of delivering (or
         # choosing coffee, or escalating) happens here, so the deadline a
         # promise carries must be in the room at the moment of acting.
@@ -1519,6 +1868,7 @@ class Fabric:
             scheduling_authorised=self.scheduling_authorised,
             culture_authorised=self.culture_authorised,
             performance_authorised=self.performance_authorised,
+            standing_order_authorised=self.standing_order_authorised,
         )
 
         response = await self.consciousness.think(
@@ -2940,6 +3290,13 @@ class Fabric:
         if suffix.refocus_agent and isinstance(suffix.refocus_agent, dict):
             self._handle_refocus_agent(agent, suffix.refocus_agent)
 
+        # Issue / lift a standing order — durable top-down prohibition,
+        # relayed to HQ (the source of truth). Authority-gated in the handlers.
+        if suffix.issue_standing_order and isinstance(suffix.issue_standing_order, dict):
+            self._handle_issue_standing_order(agent, suffix.issue_standing_order)
+        if suffix.lift_standing_order and isinstance(suffix.lift_standing_order, dict):
+            self._handle_lift_standing_order(agent, suffix.lift_standing_order)
+
         # Drink a coffee — deliberate overtime; holds wind-down off ~45 min.
         if suffix.drink_coffee is not None:
             await self._handle_drink_coffee(agent)
@@ -3693,6 +4050,18 @@ class Fabric:
     # handled, then ages out as a backstop so it can't nag forever.
     _DIRECTIVE_TTL_DAYS = 3.0
 
+    # GitHub feedback on the agent's OWN work (PR approved, CI failed, review
+    # comment) stays salient until the thread reaches a terminal state — so an
+    # approval doesn't evaporate after the one wake it was shown in. Backstop
+    # TTL so a never-merged PR can't nag forever.
+    _GITHUB_FEEDBACK_TTL_DAYS = 4.0
+
+    # Inbound feedback (criticism/praise on the agent's work) weighs on affect
+    # for a few days — long enough that a founder's rebuke keeps dragging
+    # confidence until it's genuinely worked through, then ages out so it can't
+    # haunt forever. The acute emotional hit fires once (the ``applied`` flag).
+    _FEEDBACK_TTL_DAYS = 3.0
+
     # Repeated-blocker tripwire: the same blocker recurring N times in a window
     # is a human problem, not a retry problem. After this many hits of the same
     # signature, force an escalation to a human even if the agent didn't emit
@@ -3999,6 +4368,31 @@ class Fabric:
         what = str(payload.get("what") or "").strip()
         if not (to and what):
             return
+        # Chokepoint: a promise inside a halted scope must not enter the
+        # ledger at all — once registered it would accrue pressure and
+        # escalate, which is exactly how the org ended up chasing halted
+        # work for weeks. Refused loudly; the salience block tells the
+        # agent why and what to do instead (park + cite the order).
+        try:
+            from cortiva.core import standing_orders as _so
+
+            order = _so.matching_order(_so.load(self.agents_dir), f"{what} {to}")
+            if order is not None:
+                logger.warning(
+                    "Refused commitment of %s — standing order %s covers it: %s",
+                    agent.id,
+                    str(order.get("order_id", ""))[:8],
+                    what[:80],
+                )
+                self._emit(
+                    "commitment.refused_standing_order",
+                    agent_id=agent.id,
+                    what=what[:120],
+                    order_id=order.get("order_id", ""),
+                )
+                return
+        except Exception:
+            logger.debug("standing-order check failed on register", exc_info=True)
         try:
             c = _cm.register(
                 agent.directory,
@@ -4280,6 +4674,110 @@ class Fabric:
         if after != before:
             _cm.save(agent.directory, items)
 
+    def _standing_orders_context(self, agent: Agent) -> str:
+        """The org's standing orders, rendered as the top salience block.
+
+        Durable prohibitions issued from the top (founder/CEO) that never
+        self-resolve — the counterweight to a commitments ledger that only
+        forgets on delivery. See cortiva.core.standing_orders."""
+        try:
+            from cortiva.core import standing_orders as _so
+
+            return _so.context_block(_so.load(self.agents_dir))
+        except Exception:
+            logger.debug("standing-orders context failed for %s", agent.id, exc_info=True)
+            return ""
+
+    def _apply_standing_orders_to_ledger(self, agent: Agent) -> None:
+        """Park open commitments a standing order covers; revive held ones
+        whose order was lifted. Runs every commitment-heartbeat pass, BEFORE
+        escalation — a freshly-halted commitment must never escalate first."""
+        try:
+            from cortiva.core import standing_orders as _so
+
+            orders = _so.load(self.agents_dir)
+            parked, revived = _so.apply_to_ledger(agent.directory, orders)
+            if parked:
+                logger.info(
+                    "Parked %d commitment(s) of %s under standing order(s)",
+                    parked,
+                    agent.id,
+                )
+                self._emit("commitment.held", agent_id=agent.id, count=parked)
+            if revived:
+                logger.info(
+                    "Revived %d held commitment(s) of %s (order lifted)",
+                    revived,
+                    agent.id,
+                )
+                self._emit("commitment.revived", agent_id=agent.id, count=revived)
+        except Exception:
+            logger.debug("standing-orders ledger sweep failed for %s", agent.id, exc_info=True)
+
+    def _handle_issue_standing_order(self, agent: Agent, payload: dict) -> None:
+        """Spool a leadership agent's standing order for relay to HQ.
+
+        HQ persists it and pushes the active set back to every org node —
+        that round-trip is the confirmation. Authority-gated here AND by
+        tool offering; a non-authorised call is ignored loudly."""
+        if agent.id not in self.standing_order_authorised:
+            logger.info(
+                "Agent %s lacks standing-order authority — issue ignored.",
+                agent.id,
+            )
+            return
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return
+        try:
+            from cortiva.core import standing_orders as _so
+
+            _so.spool(
+                agent.directory,
+                action="issue",
+                text=text,
+                scope_type=str(payload.get("scope_type") or "org"),
+                scope_value=str(payload.get("scope_value") or ""),
+                agent_name=agent.id,
+                agent_role=getattr(agent, "role", "") or "",
+            )
+            logger.info(
+                "Agent %s issued standing order (scope %s:%s): %s",
+                agent.id,
+                payload.get("scope_type"),
+                payload.get("scope_value"),
+                text[:80],
+            )
+            self._emit("standing_order.issued", agent_id=agent.id, text=text[:120])
+        except Exception:
+            logger.exception("issue_standing_order failed for %s", agent.id)
+
+    def _handle_lift_standing_order(self, agent: Agent, payload: dict) -> None:
+        """Spool a lift request for relay to HQ. Authority-gated."""
+        if agent.id not in self.standing_order_authorised:
+            logger.info(
+                "Agent %s lacks standing-order authority — lift ignored.",
+                agent.id,
+            )
+            return
+        order_id = str(payload.get("order_id") or "").strip()
+        if not order_id:
+            return
+        try:
+            from cortiva.core import standing_orders as _so
+
+            _so.spool(
+                agent.directory,
+                action="lift",
+                order_id=order_id,
+                agent_name=agent.id,
+                agent_role=getattr(agent, "role", "") or "",
+            )
+            logger.info("Agent %s requested lift of standing order %s", agent.id, order_id)
+            self._emit("standing_order.lift_requested", agent_id=agent.id, order_id=order_id)
+        except Exception:
+            logger.exception("lift_standing_order failed for %s", agent.id)
+
     def _commitment_salience_context(self, agent: Agent) -> str:
         """Top-of-mind block for the agent's own open commitments, sorted by
         how pressing each is (required utilisation). Injected at plan, replan,
@@ -4428,6 +4926,11 @@ class Fabric:
                     except (ValueError, OSError):
                         continue
             _ex.resolve_from_inbox(agent.directory, senders_seen=seen)
+            # A GENUINELY NEW reply (inbound newer than our last send) clears the
+            # outbound throttle for that thread so a real back-and-forth isn't
+            # capped — but stale read/ history must not keep clearing it (that
+            # let the same ack fire repeatedly). Pass mtimes, not just senders.
+            self._clear_awaiting_for_senders(agent, seen)
         except Exception:
             logger.debug("expectation inbox-resolve failed for %s", agent.id, exc_info=True)
 
@@ -4452,6 +4955,110 @@ class Fabric:
         except Exception:
             logger.debug("expectation chase hook failed", exc_info=True)
 
+    def _calculated_action_context(self, agent: Agent) -> str:
+        """THE BRAKE. Myelin's other blocks are all accelerators — chase, reply,
+        do, respond. None makes the agent reckon with what it has ALREADY done.
+        This reconciles the agent against its own ground truth (its recent
+        outbound, its own undelivered commitments) and makes it reason before it
+        reaches out or re-starts work — the calculated-communicator discipline.
+
+        Assertive by default: for a thread already messaged within the hold
+        window, or where the agent owes its OWN part, it says HOLD — not a hard
+        block (the agent can still act), but a strong, reasoned counterweight to
+        the chase pressure that would otherwise win every cycle.
+        """
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+
+        # 1) My own undelivered commitments — have I done MY part?
+        own_open: list[Any] = []
+        try:
+            from cortiva.core import commitments as _cm
+
+            own_open = [
+                c
+                for c in _cm.load(agent.directory)
+                if getattr(c, "status", "open") not in ("delivered", "withdrawn")
+            ]
+        except Exception:
+            own_open = []
+
+        # 2) Threads I've already written on — candidates for a reflexive re-chase.
+        led = self._load_outbox_ledger(agent)
+        active: list[dict] = []
+        for entry in led.values():
+            try:
+                last = datetime.fromisoformat(str(entry.get("last")))
+                age_h = (now - last).total_seconds() / 3600.0
+            except (ValueError, TypeError):
+                age_h = float("inf")
+            active.append(
+                {
+                    "to": entry.get("to", ""),
+                    "subject": entry.get("subject", ""),
+                    "count": int(entry.get("count", 0)),
+                    "age_h": age_h,
+                }
+            )
+        active = [a for a in active if a["count"] >= 1]
+        active.sort(key=lambda a: a["age_h"])
+
+        if not own_open and not active:
+            return ""
+
+        lines = [
+            "## ✋ Before you reach out or redo work — reckon with what you've already done\n",
+            "Everything below this line will push you to chase, reply and act. "
+            "Pause first and **reason**, don't reflexively send. For anything "
+            "you're about to send or restart, answer honestly:\n"
+            "1. **What did I last say on this, and when — was it clear and complete?**\n"
+            "2. **What does another message actually gain that the last one didn't?**\n"
+            "3. **Am I truly blocked, or was that just information?** Information needs no reply.\n"
+            "4. **Have I finished MY part before chasing theirs?**\n"
+            "5. **If I'm genuinely stuck and a clear ask went unanswered — escalate to "
+            "someone who can unblock; don't re-ask the same person.**\n",
+        ]
+
+        if own_open:
+            lines.append(
+                "\n**Your own unfinished commitments — do these before chasing anyone else:**"
+            )
+            for c in own_open[:8]:
+                who = getattr(c, "to", "")
+                lines.append(
+                    f"- {getattr(c, 'what', '(unspecified)')}"
+                    + (f" — owed to {who}" if who else "")
+                )
+
+        if active:
+            lines.append(
+                "\n**Threads you've already written on — do NOT re-send unless you "
+                "genuinely have something new:**"
+            )
+            for a in active[:8]:
+                age = _human_age(a["age_h"]) if a["age_h"] != float("inf") else "?"
+                if a["count"] >= self._OUTBOX_MAX_SENDS:
+                    verdict = (
+                        f"🛑 STOP — you've sent {a['count']} with no resolution. "
+                        "Re-sending won't work. Escalate to someone who can actually "
+                        "unblock, or let it go."
+                    )
+                elif a["age_h"] < self._RECHASE_HOLD_HOURS:
+                    verdict = (
+                        f"🛑 HOLD — you wrote {age} ago. A follow-up now adds nothing; "
+                        "wait for a reply."
+                    )
+                else:
+                    verdict = (
+                        f"sent {a['count']}×, last {age} ago — only follow up if you "
+                        "can add something genuinely new."
+                    )
+                subj = (a["subject"] or "(no subject)")[:60]
+                lines.append(f"- **{subj}** → {a['to']}: {verdict}")
+
+        return "\n".join(lines)
+
     def _expectation_salience_context(self, agent: Agent) -> str:
         """Top-of-mind block for what the agent is waiting on — surfacing only
         the ones worth chasing (due/overdue + silent), so it nudges a follow-up
@@ -4469,9 +5076,12 @@ class Fabric:
         lines = [
             "## 👀 Waiting on others — chase the silent ones\n",
             "These are things OTHERS owe YOU that are now due (or overdue) and "
-            "you've heard nothing. This isn't your work to do — it's yours to "
-            "CHASE: a short, direct follow-up to the person, or escalate if it's "
-            "blocking you. Don't just wait. When it arrives, it clears itself.\n",
+            "you've heard nothing. This isn't your work to do — but before you "
+            "chase, run the deliberation above: if you wrote to them recently and "
+            "clearly, HOLD — a second message adds nothing. Only chase if your "
+            "last ask is stale or unclear, and prefer a single direct follow-up "
+            "(or escalate to someone who can unblock) over repeating yourself. "
+            "When it arrives, it clears itself.\n",
         ]
         for e in chasing[:8]:
             h = _ex.hours_to_due(e, now)
@@ -4566,9 +5176,26 @@ class Fabric:
         # GitHub notifications are feedback on the agent's OWN work — comments
         # on their PRs/issues, review requests, CI. They were landing in the
         # "ignore as you judge" bucket and piling up unread, so feedback loops
-        # never closed. Pull them into their own action-expected block.
+        # never closed. Read-once made it worse: a notification was rendered in
+        # exactly ONE wake then archived, and a [:10] cap silently dropped the
+        # rest — so an approval ("merge me") or a CI failure evaporated before
+        # the agent acted. Persist them to a DURABLE register that stays
+        # top-of-mind every wake until the thread reaches a terminal state
+        # (mirrors the directive register). Rendering now happens in
+        # `_github_feedback_context`, not here.
         github = [m for m in rest if _is_github_email(m.get("from", ""))]
         normal = [m for m in rest if not _is_github_email(m.get("from", ""))]
+        if github:
+            try:
+                self._record_github_feedback(agent, github)
+            except Exception:
+                logger.debug("github feedback record failed", exc_info=True)
+        # Classify human/agent mail for valence so criticism actually lands as
+        # affect (Phase 2). Queues the hit; the async flow drains it.
+        try:
+            self._ingest_feedback(agent, priority, normal, authority)
+        except Exception:
+            logger.debug("feedback ingest failed", exc_info=True)
 
         lines: list[str] = []
         if priority:
@@ -4592,21 +5219,8 @@ class Fabric:
                     + f" — {m.get('subject', '')}  \n  {snippet}"
                 )
             lines.append("")
-        if github:
-            lines.append("## 🔧 GitHub — feedback on your work, respond there\n")
-            lines.append(
-                f"{len(github)} GitHub notification(s) — comments on your pull "
-                "requests or issues, review requests, CI results. This is "
-                "feedback on **your own work** and it **needs a response**: open "
-                "the PR or issue with your github tools (`gh pr view`, "
-                "`gh issue view`), read the full thread, and **reply there** — a "
-                "review comment left unanswered blocks whoever's waiting on you. "
-                "Don't let these pile up unread.\n"
-            )
-            for m in github[:10]:
-                snippet = (m.get("text") or "").strip().replace("\n", " ")[:200]
-                lines.append(f"- **{m.get('subject', '')}**  \n  {snippet}")
-            lines.append("")
+        # GitHub feedback is rendered durably by `_github_feedback_context`
+        # (persisted above), not inline — so it survives this read-once pass.
         if normal:
             lines.append("## 📧 New Mail — notification\n")
             lines.append(
@@ -4617,6 +5231,131 @@ class Fabric:
             for m in normal[:10]:
                 snippet = (m.get("text") or "").strip().replace("\n", " ")[:200]
                 lines.append(f"- **{m.get('from', '')}** — {m.get('subject', '')}  \n  {snippet}")
+        return "\n".join(lines)
+
+    def _record_github_feedback(self, agent: Agent, github_msgs: list[dict]) -> None:
+        """Persist GitHub notifications as durable, open feedback items.
+
+        Mirrors the directive register: idempotent by PR/issue ref, so every
+        notification on the same thread folds into one item (with a count and a
+        last-seen). A notification whose body says the thread was merged/closed
+        marks that ref resolved — the disconfirming signal that closes the loop.
+        This is what stops an approval evaporating after the single wake the
+        read-once inbox showed it in.
+        """
+        import json
+        from datetime import UTC, datetime
+
+        path = agent.directory / "github_feedback.json"
+        items: list[dict] = []
+        if path.exists():
+            try:
+                items = json.loads(path.read_text(encoding="utf-8")) or []
+            except (ValueError, OSError):
+                items = []
+        by_ref = {d.get("ref", ""): d for d in items}
+        now = datetime.now(UTC).isoformat()
+        for m in github_msgs:
+            subj = str(m.get("subject", "")).strip()
+            ref = _github_ref(subj)
+            blob = (subj + " " + str(m.get("text", ""))).lower()
+            done = any(mark in blob for mark in _GITHUB_DONE_MARKERS)
+            cur = by_ref.get(ref)
+            if cur is None:
+                cur = {
+                    "ref": ref,
+                    "subject": subj,
+                    "snippet": (m.get("text") or "").strip().replace("\n", " ")[:240],
+                    "opened_at": now,
+                    "last_seen": now,
+                    "count": 1,
+                    "status": "resolved" if done else "open",
+                }
+                items.append(cur)
+                by_ref[ref] = cur
+            else:
+                cur["last_seen"] = now
+                cur["count"] = int(cur.get("count", 1)) + 1
+                cur["subject"] = subj or cur.get("subject", "")
+                if (m.get("text") or "").strip():
+                    cur["snippet"] = (m.get("text") or "").strip().replace("\n", " ")[:240]
+                if done:
+                    cur["status"] = "resolved"
+        # Bound the file: keep the most recently-seen 200.
+        items.sort(key=lambda d: str(d.get("last_seen", "")), reverse=True)
+        items = items[:200]
+        try:
+            path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        except OSError:
+            logger.debug("could not persist github feedback", exc_info=True)
+
+    def _open_github_feedback(self, agent: Agent) -> list[dict]:
+        """Open GitHub feedback, with resolved/expired items pruned.
+
+        Resolved = a later notification reported the thread merged/closed.
+        Expired = older than the TTL backstop (a PR that simply never lands
+        can't nag forever). The file self-cleans, like the directive register.
+        """
+        import json
+        from datetime import UTC, datetime
+
+        path = agent.directory / "github_feedback.json"
+        if not path.exists():
+            return []
+        try:
+            items = json.loads(path.read_text(encoding="utf-8")) or []
+        except (ValueError, OSError):
+            return []
+        now = datetime.now(UTC)
+        still_open: list[dict] = []
+        for d in items:
+            if d.get("status") != "open":
+                continue
+            try:
+                opened = datetime.fromisoformat(str(d.get("opened_at")))
+            except (ValueError, TypeError):
+                opened = now
+            if (now - opened).total_seconds() > self._GITHUB_FEEDBACK_TTL_DAYS * 86400:
+                continue  # expired backstop
+            still_open.append(d)
+        if len(still_open) != len([d for d in items if d.get("status") == "open"]):
+            try:
+                path.write_text(json.dumps(still_open, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+        return still_open
+
+    def _github_feedback_context(self, agent: Agent) -> str:
+        """Top-of-mind block for open GitHub feedback on the agent's own work.
+
+        Persisted by `_record_github_feedback`, this survives the read-once
+        inbox: it renders every wake/reassess until the thread is merged/closed
+        (or the TTL backstop fires). No silent cap — overflow is stated, not
+        dropped.
+        """
+        opens = self._open_github_feedback(agent)
+        if not opens:
+            return ""
+        opens.sort(key=lambda d: str(d.get("last_seen", "")), reverse=True)
+        lines = [
+            "## 🔧 GitHub — open feedback on YOUR work, still unhandled\n",
+            f"{len(opens)} open thread(s) with feedback on your own pull requests "
+            "or issues — review comments, approvals, CI results. This is the "
+            "feedback loop on your work and it **stays here until the thread is "
+            "merged or closed**, not just for one wake. For EACH: open it with "
+            "your github tools (`gh pr view <n>`, `gh issue view <n>`), read the "
+            "full thread, and act — **if it's approved and green, merge it**; if "
+            "CI failed, fix it; if there's a comment, reply there. An approval "
+            "left unmerged is finished work you haven't shipped.\n",
+        ]
+        for d in opens[:15]:
+            seen = f" · seen {d.get('count')}×" if int(d.get("count", 1)) > 1 else ""
+            lines.append(f"- **{d.get('ref', '')}** — {d.get('subject', '')}{seen}")
+        if len(opens) > 15:
+            lines.append(
+                f"- …and {len(opens) - 15} more open — work through them; "
+                "they don't disappear until handled."
+            )
         return "\n".join(lines)
 
     def _email_meta(self) -> dict:
@@ -4632,6 +5371,30 @@ class Fabric:
             return json.loads(path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             return {}
+
+    def _resolve_manager(self, agent_id: str) -> tuple[str, str]:
+        """Return ``(manager_id, manager_email)`` for an agent.
+
+        Uses HQ's pushed full org directory (the cross-node org chart, the same
+        one mirrored into HARIS) so a manager on another node still resolves;
+        falls back to the local org model + same-node cards. ``manager_id`` may
+        name a human (e.g. ``"human-founder"``), in which case email is "" and
+        the caller routes to the founder contact.
+        """
+        directory = self._email_meta().get("directory") or []
+        by_id = {str(d.get("id")): d for d in directory if d.get("id")}
+        mgr_id = str((by_id.get(agent_id) or {}).get("reports_to") or "").strip()
+        if not mgr_id and self.org is not None:
+            mgr_id = self.org.manager_of(agent_id) or ""
+        if not mgr_id:
+            return "", ""
+        if mgr_id.startswith("human"):
+            return mgr_id, ""
+        email = str((by_id.get(mgr_id) or {}).get("email") or "").strip()
+        if not email:
+            cards = {c["id"]: c for c in self._load_directory_cards()}
+            email = str((cards.get(mgr_id) or {}).get("email") or "").strip()
+        return mgr_id, email
 
     # Capability vocabulary for procedure reconciliation (#282). A procedure
     # contradicts reality when a currently-GOOD capability is both NAMED and
@@ -4742,6 +5505,7 @@ class Fabric:
                 scheduling_authorised=getattr(self, "scheduling_authorised", set()),
                 culture_authorised=getattr(self, "culture_authorised", set()),
                 performance_authorised=getattr(self, "performance_authorised", set()),
+                standing_order_authorised=getattr(self, "standing_order_authorised", set()),
             )
             names = [t.get("function", {}).get("name", "") for t in tools]
             names = [n for n in names if n]
@@ -5116,6 +5880,95 @@ class Fabric:
             lines.append("- " + "\n".join(bits))
         return "\n".join(lines)
 
+    # Outbound throttle — an unanswered ask must not become a 40-message storm.
+    # Cap re-sends per (recipient, thread) and space them out. This is a dumb
+    # last-ditch backstop ONLY; the real brake is the calculated-action
+    # deliberation (_calculated_action_context) that makes the agent reason
+    # before reaching out. A reply allows ONE more send, it does NOT wipe the
+    # cap (see _clear_awaiting_for_senders) — that wipe was what let two agents
+    # ping-pong "good call" acks forever.
+    _OUTBOX_MAX_SENDS = 3
+    _OUTBOX_DEBOUNCE_S = 6 * 3600
+
+    # A thread messaged within this window is "still warm" — a follow-up adds
+    # nothing; the brake says HOLD and wait for a reply.
+    _RECHASE_HOLD_HOURS = 24.0
+
+    @staticmethod
+    def _thread_key(to: Any, subject: str) -> str:
+        """Stable key for a conversation: first recipient + normalised subject."""
+        addr = to[0] if isinstance(to, list) and to else to
+        addr = str(addr or "").strip().lower()
+        s = (subject or "").lower().strip()
+        while True:
+            s2 = re.sub(r"^(re|fwd|fw)\s*:\s*", "", s).strip()
+            if s2 == s:
+                break
+            s = s2
+        return f"{addr}|{s[:80]}"
+
+    def _load_outbox_ledger(self, agent: Agent) -> dict:
+        import json
+
+        p = agent.directory / "outbox" / ".threads.json"
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return {}
+
+    def _save_outbox_ledger(self, agent: Agent, led: dict) -> None:
+        import json
+
+        p = agent.directory / "outbox" / ".threads.json"
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(led), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _clear_awaiting_for_senders(self, agent: Agent, seen: dict[str, float]) -> None:
+        """A GENUINELY NEW reply frees one slot on that thread so a real
+        back-and-forth continues — but old mail must NOT keep clearing it.
+
+        ``seen`` maps sender-address -> latest inbound file mtime (epoch). The
+        caller builds it from inbox/ AND inbox/read/, so it includes EVERYONE who
+        has ever written — and read/ never empties. The previous version cleared
+        the throttle for all of them every reassess (and popped the debounce),
+        which let the same acknowledgement fire 4× in a minute: each ~11s
+        reassess wiped the debounce because the counterpart's month-old mail was
+        still sitting in read/. Fix: only clear a thread when the sender's latest
+        inbound is NEWER than our last send on it — i.e. an actual reply since we
+        wrote, not stale history. Then decrement the count and lift the debounce
+        for a prompt response; otherwise leave the entry (and its debounce) alone.
+        """
+        from datetime import datetime
+
+        if not seen:
+            return
+        led = self._load_outbox_ledger(agent)
+        changed = False
+        for e in led.values():
+            to = str(e.get("to", "")).lower()
+            reply_mtime = seen.get(to)
+            if reply_mtime is None:
+                continue
+            try:
+                last_ts = (
+                    datetime.fromisoformat(str(e.get("last"))).timestamp() if e.get("last") else 0.0
+                )
+            except (ValueError, TypeError):
+                last_ts = 0.0
+            if reply_mtime <= last_ts:
+                continue  # no NEW reply since we last wrote — keep the debounce
+            new_count = max(0, int(e.get("count", 0)) - 1)
+            e["count"] = new_count
+            e.pop("last", None)  # a real reply → allow a prompt response
+            changed = True
+        if changed:
+            self._save_outbox_ledger(agent, led)
+
     def _queue_outbound_email(self, agent: Agent, spec: dict) -> None:
         """Queue an outbound email to the agent's outbox for the node to send."""
         import json
@@ -5127,6 +5980,49 @@ class Fabric:
         if not to or not body:
             logger.info("Agent %s email had no recipient/body — ignored.", agent.id)
             return
+
+        # Throttle re-sends on the same thread while awaiting a reply.
+        now = datetime.now(UTC)
+        key = self._thread_key(to, spec.get("subject", ""))
+        led = self._load_outbox_ledger(agent)
+        entry = led.get(key)
+        if entry:
+            count = int(entry.get("count", 0))
+            try:
+                last = datetime.fromisoformat(str(entry.get("last")))
+            except ValueError:
+                last = None
+            if count >= self._OUTBOX_MAX_SENDS:
+                logger.info(
+                    "Suppressed re-send for %s to %s (%d already sent, awaiting reply): %s",
+                    agent.id,
+                    to,
+                    count,
+                    spec.get("subject"),
+                )
+                self._emit("email.suppressed", agent_id=agent.id, to=to, reason="max_sends")
+                return
+            if last and (now - last).total_seconds() < self._OUTBOX_DEBOUNCE_S:
+                logger.info(
+                    "Suppressed re-send for %s to %s (debounce, awaiting reply): %s",
+                    agent.id,
+                    to,
+                    spec.get("subject"),
+                )
+                self._emit("email.suppressed", agent_id=agent.id, to=to, reason="debounce")
+                return
+            entry["count"] = count + 1
+            entry["last"] = now.isoformat()
+        else:
+            entry = {
+                "to": str(to[0] if isinstance(to, list) and to else to),
+                "subject": spec.get("subject", ""),
+                "count": 1,
+                "last": now.isoformat(),
+            }
+        led[key] = entry
+        self._save_outbox_ledger(agent, led)
+
         outbox = agent.directory / "outbox" / "email"
         try:
             outbox.mkdir(parents=True, exist_ok=True)
@@ -5373,15 +6269,8 @@ class Fabric:
                 founder = a
                 break
 
-        mgr_email = ""
-        mgr_id = self.org.manager_of(agent.id)
-        if mgr_id:
-            cards = {c["id"]: c for c in self._load_directory_cards()}
-            card = cards.get(mgr_id) or {}
-            mgr_email = str(card.get("email") or "").strip()
-
-        haystack = f"{task_desc} {escalation}".lower()
-        operator_level = any(kw in haystack for kw in self._OPERATOR_KEYWORDS)
+        # Resolve the agent's manager from the full org chart (cross-node).
+        mgr_id, mgr_email = self._resolve_manager(agent.id)
 
         subject = f"[Blocked] {task_desc[:80]}"
         # Factual brief — the node's voice pass rewrites this into the agent's
@@ -5393,25 +6282,36 @@ class Fabric:
             f"— {agent.id}"
         )
 
-        if operator_level and founder:
-            spec: dict[str, Any] = {"to": founder, "subject": subject, "body": body}
-            if mgr_email:
-                spec["cc"] = mgr_email  # keep the manager in the loop
-            self._queue_outbound_email(agent, spec)
+        # Escalate UP THE CHAIN. An IC's blocker goes to its MANAGER, who either
+        # resolves it or escalates further up themselves. The founder is only
+        # ever reached as the CEO's manager (reports_to: human-founder) — we
+        # never skip levels to the founder, whatever the blocker's wording.
+        if mgr_id.startswith("human"):
+            # This agent reports to the founder (i.e. the CEO).
+            if founder:
+                self._queue_outbound_email(
+                    agent,
+                    {"to": founder, "subject": subject, "body": body},
+                )
+            else:
+                logger.warning(
+                    "Escalation for %s reports to the founder but no founder contact is configured",
+                    agent.id,
+                )
         elif mgr_email:
             self._queue_outbound_email(
                 agent,
                 {"to": mgr_email, "subject": subject, "body": body},
             )
-        elif founder:
-            self._queue_outbound_email(
-                agent,
-                {"to": founder, "subject": subject, "body": body},
-            )
         else:
+            # No manager resolvable — do NOT dump on the founder. With the org
+            # directory pushed from HQ this is rare (missing roster); log it so
+            # the gap is visible rather than silently re-routing up.
             logger.warning(
-                "Escalation for %s could not be routed — no manager/founder email",
+                "Escalation for %s could not be routed to a manager (mgr_id=%r); "
+                "not escalating to the founder — check the org directory push.",
                 agent.id,
+                mgr_id,
             )
 
     # ------------------------------------------------------------------
@@ -5639,6 +6539,33 @@ class Fabric:
         if inbox_ctx:
             context = context + "\n\n---\n\n" + inbox_ctx
 
+        # GitHub feedback stays top-of-mind on reassess too — a PR review or CI
+        # result must become work, not a one-time glance. Durable until the
+        # thread merges/closes.
+        gh_ctx = self._github_feedback_context(agent)
+        if gh_ctx:
+            context = context + "\n\n---\n\n" + gh_ctx
+        # Drain any feedback classified by the inbox pass on this reassess.
+        await self._drain_feedback(agent)
+
+        # The brake applies on reassess too — reassess is exactly when the
+        # reflexive re-chase fires, so reckon with prior action before acting.
+        brake_ctx = self._calculated_action_context(agent)
+        if brake_ctx:
+            context = context + "\n\n---\n\n" + brake_ctx
+
+        # Reality check on reassess too — confidence keeps answering to the
+        # current open state as the day runs, not just at wake.
+        drag_ctx = self._apply_reality_drag(agent)
+        if drag_ctx:
+            context = context + "\n\n---\n\n" + drag_ctx
+
+        # Standing orders stay top-of-mind on every reassess — the durable
+        # prohibitions a reprioritisation must never route around.
+        orders_ctx = self._standing_orders_context(agent)
+        if orders_ctx:
+            context = context + "\n\n---\n\n" + orders_ctx
+
         # Open directives stay top-of-mind on every reassess, not just at wake.
         directive_ctx = self._directive_salience_context(agent)
         if directive_ctx:
@@ -5848,6 +6775,9 @@ class Fabric:
             ):
                 continue
             try:
+                # Standing orders first: park what a halt covers (and revive
+                # what a lift released) BEFORE anything can feel or escalate it.
+                self._apply_standing_orders_to_ledger(agent)
                 await self._dispatch_commitment_arousal(agent)
                 self._escalate_at_risk_commitments(agent)
                 # Expectations: resolve any that arrived, then feel the chase

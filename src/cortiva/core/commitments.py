@@ -90,7 +90,9 @@ class Commitment:
     subtasks: list[dict[str, Any]] = field(default_factory=list)
     """``[{"desc": str, "done": bool}, ...]`` — when present, progress is
     derived from these (objective) rather than the self-reported float."""
-    status: str = "open"  # open | delivered | missed | withdrawn
+    status: str = "open"  # open | held | delivered | missed | withdrawn
+    held_order_id: str = ""  # standing order that parked this (status=held)
+    held_at: str = ""  # when it was parked
     created_at: str = ""
     delivered_at: str = ""
     artifact: str = ""  # optional proof link (URL / doc id / commit)
@@ -111,6 +113,8 @@ class Commitment:
             "progress": self.progress,
             "subtasks": self.subtasks,
             "status": self.status,
+            "held_order_id": self.held_order_id,
+            "held_at": self.held_at,
             "created_at": self.created_at,
             "delivered_at": self.delivered_at,
             "artifact": self.artifact,
@@ -133,6 +137,8 @@ class Commitment:
             progress=_clamp01(_safe_float(d.get("progress"), 0.0)),
             subtasks=list(d.get("subtasks") or []),
             status=str(d.get("status") or "open"),
+            held_order_id=str(d.get("held_order_id") or ""),
+            held_at=str(d.get("held_at") or ""),
             created_at=str(d.get("created_at") or ""),
             delivered_at=str(d.get("delivered_at") or ""),
             artifact=str(d.get("artifact") or ""),
