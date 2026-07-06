@@ -644,6 +644,10 @@ class Fabric:
         # Commitment pressure also spikes the chemistry at wake — the deadline
         # weight she carries from yesterday's promises, felt before she plans.
         await self._dispatch_commitment_arousal(agent)
+        # The downward mirror: a manager's felt pull to ensure her TEAM delivers,
+        # so stewarding the org weighs as much as her own deadlines and the asks
+        # landing from above — and doesn't lose every cycle to upward reporting.
+        await self._dispatch_stewardship_arousal(agent)
 
         agent.transition(AgentState.PLANNING)
 
@@ -748,16 +752,18 @@ class Fabric:
         if directive_ctx:
             context = context + "\n\n---\n\n" + directive_ctx
 
+        # For a manager, ensuring the TEAM delivers sits right below the asks
+        # from above — the downward mirror, ABOVE her own promises, so stewarding
+        # the org isn't buried under her personal deadlines or upward reporting.
+        reports_ctx = self._reports_commitment_context(agent)
+        if reports_ctx:
+            context = context + "\n\n---\n\n" + reports_ctx
+
         # The agent's own commitments — promises she's made, with their
         # deadlines and how pressing each is right now.
         commit_ctx = self._commitment_salience_context(agent)
         if commit_ctx:
             context = context + "\n\n---\n\n" + commit_ctx
-
-        # For a manager: reports whose own promises are slipping (her focus).
-        reports_ctx = self._reports_commitment_context(agent)
-        if reports_ctx:
-            context = context + "\n\n---\n\n" + reports_ctx
 
         # Things she's waiting on that are now due + silent — chase them.
         self._resolve_expectations_from_inbox(agent)
@@ -4637,6 +4643,29 @@ class Fabric:
         except Exception:
             logger.debug("commitment arousal hook failed", exc_info=True)
 
+    async def _dispatch_stewardship_arousal(self, agent: Agent) -> None:
+        """Feed a manager's team-delivery load into chemistry — the drive to
+        steward (unblock, re-scope, re-resource) that rises as the team's
+        promises slip. The downward mirror of ``_dispatch_commitment_arousal``.
+        Read-only; idempotent (the plugin raises drive/alertness to a floor,
+        never stacks). Non-managers and on-track teams produce no pressure and
+        fire nothing."""
+        try:
+            load = self._team_delivery_load(agent)
+            pressure = float(load.get("pressure", 0.0) or 0.0)
+            if pressure <= 0.0:
+                return
+            await self.plugin_manager.dispatch_hook(
+                agent.id,
+                "stewardship",
+                {
+                    "pressure": pressure,
+                    "at_risk": int(load.get("at_risk", 0)) + int(load.get("overdue", 0)),
+                },
+            )
+        except Exception:
+            logger.debug("stewardship arousal hook failed", exc_info=True)
+
     def _escalate_at_risk_commitments(self, agent: Agent) -> None:
         """For each open commitment that can't land at a normal pace (U≥1) or is
         overdue, raise it to a human — once per commitment. Also archives
@@ -4857,41 +4886,134 @@ class Fabric:
             )
         return "\n".join(lines)
 
-    def _reports_commitment_context(self, agent: Agent) -> str:
-        """For a manager: their reports' at-risk / overdue commitments, so a
-        slipping promise gets management focus rather than sliding quietly."""
+    def _team_delivery_load(self, agent: Agent) -> dict:
+        """Aggregate a manager's team-delivery picture from their reports'
+        commitment ledgers — the single source of truth for BOTH the stewardship
+        salience block and the stewardship arousal hook.
+
+        Returns ``{promised, at_risk, overdue, pressure, slipping_rows,
+        on_track_rows}`` where ``pressure`` [0,1] tracks how badly the team is
+        slipping (the worst single report's felt pressure, lifted a little for
+        each additional report that's also behind) — so it stays near zero while
+        the team is on track and climbs as real value goes at risk. The row
+        lists are pre-formatted for the salience block."""
+        empty = {
+            "promised": 0,
+            "at_risk": 0,
+            "overdue": 0,
+            "pressure": 0.0,
+            "slipping_rows": [],
+            "on_track_rows": [],
+        }
         if self.org is None:
-            return ""
+            return empty
         reports = self.org.subordinates_of(agent.id)
         if not reports:
-            return ""
+            return empty
         from datetime import UTC, datetime
 
         from cortiva.core import commitments as _cm
 
         now = datetime.now(UTC)
-        rows: list[str] = []
+        promised = at_risk = overdue = 0
+        slipping_reports = 0
+        slipping_felt: list[float] = []
+        slipping_rows: list[str] = []
+        on_track_rows: list[str] = []
         for rid in reports:
             try:
                 ra = self.get_agent(rid)
                 items = _cm.load(ra.directory)
             except Exception:
                 continue
-            for c in items:
-                if c.status != "open":
-                    continue
+            opens = [c for c in items if c.status == "open"]
+            if not opens:
+                continue
+            report_slipping = False
+            for c in opens:
+                promised += 1
+                is_od = _cm.is_overdue(c, now)
                 u = _cm.required_utilisation(c, now)
-                if u < _cm.AT_RISK_UTILISATION and not _cm.is_overdue(c, now):
-                    continue
-                state = "🔴 OVERDUE" if _cm.is_overdue(c, now) else f"🔴 at risk (U={u:.1f})"
-                rows.append(f'- **{rid}** — "{c.what}" to {c.to}, due {c.due_at}: {state}')
-        if not rows:
+                if is_od or u >= _cm.AT_RISK_UTILISATION:
+                    report_slipping = True
+                    if is_od:
+                        overdue += 1
+                        state = "🔴 OVERDUE"
+                    else:
+                        at_risk += 1
+                        state = f"🟠 at risk (U={u:.1f})"
+                    slipping_rows.append(
+                        f'- **{rid}** — "{c.what}" to {c.to}, due {c.due_at}: {state}'
+                    )
+                else:
+                    on_track_rows.append(f'- **{rid}** — "{c.what}" to {c.to}, due {c.due_at}')
+            if report_slipping:
+                slipping_reports += 1
+                slipping_felt.append(_cm.felt_pressure(opens, now))
+        # Pressure reflects the team being BEHIND, not merely busy: zero while
+        # everyone is on track (any open promise carries a hair of felt pressure,
+        # so we must gate on actual slippage), driven by the worst slipping
+        # report and lifted a little for each additional report also behind.
+        worst = max(slipping_felt, default=0.0)
+        pressure = min(1.0, worst + 0.1 * max(0, slipping_reports - 1)) if slipping_reports else 0.0
+        return {
+            "promised": promised,
+            "at_risk": at_risk,
+            "overdue": overdue,
+            "pressure": round(pressure, 3),
+            "slipping_rows": slipping_rows,
+            "on_track_rows": on_track_rows,
+        }
+
+    def _reports_commitment_context(self, agent: Agent) -> str:
+        """Top-of-mind block for a manager: ensuring their TEAM delivers value —
+        the downward mirror of ``_directive_salience_context``. Surfaces the
+        team's live promises proactively (not only once they're on fire) and
+        escalates the slipping ones with a delegate-and-track template, in the
+        same imperative register as the directives that land from above. This is
+        what stops 'ensure the team delivers' losing every cycle to upward
+        reporting — it now sits at the top of mind with the same weight."""
+        load = self._team_delivery_load(agent)
+        if load["promised"] == 0:
             return ""
-        return (
-            "## ⚠️ Your team's at-risk commitments\n"
-            "Reports of yours are behind on promises they made. This is yours "
-            "to help unblock, re-scope, or chase — don't let it slide.\n" + "\n".join(rows[:12])
-        )
+        lines = [
+            "## ⬇️ Top of mind — ensuring your team delivers",
+            "",
+            "**Your core job as a manager is your team delivering value — this "
+            "OUTRANKS polishing your own reporting upward.** A report's "
+            "undelivered promise is *your* problem to solve, not only theirs. "
+            "Don't leave a slip as a note or a nudge — **act through your "
+            "authority**: unblock it, re-scope it with the owner, chase it, or "
+            "direct the AR/resourcing lead to **re-resource** (move focus or add "
+            "a hand). Track it to delivery, then confirm the value actually "
+            "landed — never count it handled on a reply alone.",
+        ]
+        slipping = load["slipping_rows"]
+        if slipping:
+            lines.append("")
+            lines.append(
+                f"**🔴 Slipping now — {len(slipping)} at risk / overdue. Step in this cycle:**"
+            )
+            lines.extend(slipping[:12])
+            lines.append("")
+            lines.append(
+                "Decompose each into a parent task with SUB-TASKS:\n"
+                "```\n"
+                "- [ ] **[CRITICAL]** Unblock <report>'s slipping <promise>\n"
+                "  - [ ] Find what's actually blocking them (ask / check)\n"
+                "  - [ ] Unblock, re-scope, or direct AR to re-resource\n"
+                "  - [ ] Track to delivery; confirm the value actually landed\n"
+                "```"
+            )
+        on_track = load["on_track_rows"]
+        if on_track:
+            lines.append("")
+            lines.append(
+                f"**On track — {len(on_track)} promise(s) your team is carrying. "
+                "Keep them moving so these don't become the next fire:**"
+            )
+            lines.extend(on_track[:10])
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Expectations — things the agent is WAITING ON from others. The mirror
@@ -6571,14 +6693,18 @@ class Fabric:
         if directive_ctx:
             context = context + "\n\n---\n\n" + directive_ctx
 
+        # Ensuring the team delivers stays top-of-mind on reassess too, right
+        # below the asks from above and above her own promises (same order as
+        # wake) — the team's delivery heat shifts cycle to cycle.
+        reports_ctx = self._reports_commitment_context(agent)
+        if reports_ctx:
+            context = context + "\n\n---\n\n" + reports_ctx
+
         # Commitments stay top-of-mind on every reassess too — their pressure
         # shifts as the clock runs down, so a reassess must see the current heat.
         commit_ctx = self._commitment_salience_context(agent)
         if commit_ctx:
             context = context + "\n\n---\n\n" + commit_ctx
-        reports_ctx = self._reports_commitment_context(agent)
-        if reports_ctx:
-            context = context + "\n\n---\n\n" + reports_ctx
         self._resolve_expectations_from_inbox(agent)
         expect_ctx = self._expectation_salience_context(agent)
         if expect_ctx:
@@ -6780,6 +6906,9 @@ class Fabric:
                 self._apply_standing_orders_to_ledger(agent)
                 await self._dispatch_commitment_arousal(agent)
                 self._escalate_at_risk_commitments(agent)
+                # A manager also feels the downward pull each heartbeat: her
+                # team's slipping delivery drives her to steward it (idempotent).
+                await self._dispatch_stewardship_arousal(agent)
                 # Expectations: resolve any that arrived, then feel the chase
                 # of those now due + silent (mild frustration, not cortisol).
                 self._resolve_expectations_from_inbox(agent)
