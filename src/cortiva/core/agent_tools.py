@@ -428,8 +428,7 @@ ISSUE_STANDING_ORDER_TOOL: dict[str, Any] = {
                 "scope_value": {
                     "type": "string",
                     "description": (
-                        "The product slug or repo path. Leave empty for "
-                        "org-wide orders."
+                        "The product slug or repo path. Leave empty for org-wide orders."
                     ),
                 },
             },

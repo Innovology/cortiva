@@ -1,0 +1,25 @@
+name: AC Lint
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  ac-check:
+    name: Verify acceptance criteria
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
+
+    steps:
+      - name: Checkout (for lint script)
+        uses: actions/checkout@v4
+
+      - name: Run acceptance criteria check
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          chmod +x .github/scripts/check-ac.sh
+          .github/scripts/check-ac.sh
