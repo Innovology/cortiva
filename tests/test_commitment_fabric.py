@@ -238,3 +238,106 @@ def test_stewardship_arousal_silent_when_team_on_track(tmp_path) -> None:
     fab.plugin_manager = SimpleNamespace(dispatch_hook=_dispatch)
     asyncio.run(fab._dispatch_stewardship_arousal(_ceo(tmp_path)))
     assert fired == {}  # on-track team → no pressure → nothing fired
+
+
+# ---------------------------------------------------------------------------
+# Overtime-before-complaint: the saveable band (doesn't fit normal hours,
+# overtime still lands it) must force an explicit choice — and escalations
+# must say whether overtime was used.
+# ---------------------------------------------------------------------------
+
+
+def _register_with_u(agent_dir, *, u, hours_left=10.0, to="maren@x", what="the thing"):
+    """Register an open commitment engineered to a required-utilisation of ~u."""
+    now = datetime.now(UTC)
+    return cm.register(
+        agent_dir,
+        to=to,
+        what=what,
+        due=(now + timedelta(hours=hours_left)).isoformat(),
+        effort_hours=u * hours_left,
+    )
+
+
+def test_overtime_can_save_band() -> None:
+    now = datetime.now(UTC)
+
+    def mk(u, hours_left=10.0, overdue=False):
+        c = cm.Commitment(
+            id="x",
+            to="a@x",
+            what="w",
+            due_at=(now + timedelta(hours=(-1 if overdue else hours_left))).isoformat(),
+            effort_hours=u * hours_left,
+        )
+        return c
+
+    assert not cm.overtime_can_save(mk(0.1), now)  # fits a normal day
+    assert cm.overtime_can_save(mk(0.5), now)  # the saveable band
+    assert cm.overtime_can_save(mk(0.95), now)  # still under wall-clock
+    assert not cm.overtime_can_save(mk(1.5), now)  # beyond wall-clock
+    assert not cm.overtime_can_save(mk(0.5, overdue=True), now)  # past saving
+
+
+def test_overtime_block_fires_in_band_and_demands_choice(tmp_path) -> None:
+    a = _agent(tmp_path)
+    _register_with_u(a.directory, u=0.5)
+    out = _fab()._overtime_decision_context(a)
+    assert "Overtime decision" in out
+    assert "drink_coffee" in out
+    assert "Renegotiate" in out
+    assert "Escalate for help" in out
+    assert "not acceptable" in out  # the ban on bare complaints
+
+
+def test_overtime_block_silent_when_on_track_or_hopeless(tmp_path) -> None:
+    a = _agent(tmp_path)
+    _register_with_u(a.directory, u=0.1, what="easy")  # fits normal hours
+    _register_with_u(a.directory, u=2.0, what="hopeless")  # beyond wall-clock
+    assert _fab()._overtime_decision_context(a) == ""
+
+
+def test_overtime_block_suppressed_while_caffeinated(tmp_path) -> None:
+    a = _agent(tmp_path)
+    _register_with_u(a.directory, u=0.5)
+    # Stamp a fresh coffee — the agent is already pushing.
+    today = a.directory / "today"
+    today.mkdir()
+    (today / "coffee.json").write_text(json.dumps([datetime.now(UTC).isoformat()]))
+    assert _fab()._overtime_decision_context(a) == ""
+
+
+def test_escalation_reports_overtime_honesty(tmp_path) -> None:
+    a = _agent(tmp_path)
+    now = datetime.now(UTC)
+    cm.register(
+        a.directory,
+        to="maren@x",
+        what="doomed",
+        due=(now + timedelta(hours=1)).isoformat(),
+        effort_hours=40,
+    )
+    fab = _fab()
+    caught: list[str] = []
+    fab._route_escalation = lambda agent, desc, esc: caught.append(esc)
+
+    # No coffee taken → the escalation says so.
+    fab._escalate_at_risk_commitments(a)
+    assert caught and "No overtime was taken" in caught[0]
+
+    # Second agent DID pull overtime → the escalation credits it.
+    b_dir = tmp_path / "cfo"
+    b_dir.mkdir()
+    b = SimpleNamespace(id="cfo", directory=b_dir)
+    cm.register(
+        b_dir,
+        to="maren@x",
+        what="doomed too",
+        due=(now + timedelta(hours=1)).isoformat(),
+        effort_hours=40,
+    )
+    (b_dir / "today").mkdir()
+    (b_dir / "today" / "coffee.json").write_text(json.dumps([datetime.now(UTC).isoformat()]))
+    caught.clear()
+    fab._escalate_at_risk_commitments(b)
+    assert caught and "pulled overtime first (1 coffee(s)" in caught[0]

@@ -69,6 +69,13 @@ _TIME_FLOOR_HOURS = 0.25
 # threshold for overtime + escalation.
 AT_RISK_UTILISATION = 1.0
 
+# A normal rota day is ~7.5h of a 24h wall clock ≈ 0.3. Below this a promise
+# still fits inside normal working hours; between this and AT_RISK_UTILISATION
+# it NO LONGER fits a normal day but IS still winnable by pulling overtime
+# (drink_coffee extends the working day); at/above AT_RISK it exceeds literal
+# wall-clock and overtime can't save it — that's when escalation is honest.
+NORMAL_PACE_UTILISATION = 0.3
+
 # Count-load: carrying many open promises is its own pressure (the "too many
 # balls in the air" cortisol), independent of any single deadline. Below the
 # comfort line it adds nothing; it ramps to full across the span above it.
@@ -369,6 +376,18 @@ def required_utilisation(c: Commitment, now: datetime | None = None) -> float:
         # overdue" still rank against each other.
         return max(AT_RISK_UTILISATION, work / _TIME_FLOOR_HOURS)
     return work / rem
+
+
+def overtime_can_save(c: Commitment, now: datetime | None = None) -> bool:
+    """True when this promise no longer fits normal working hours but IS still
+    winnable by extending the day (overtime) — the band where the right
+    response is a deliberate choice (push / renegotiate / escalate), never a
+    bare "I don't have enough time" complaint. Overdue is past saving; U ≥
+    AT_RISK exceeds literal wall-clock, which overtime can't add to."""
+    if c.status != "open" or is_overdue(c, now):
+        return False
+    u = required_utilisation(c, now)
+    return NORMAL_PACE_UTILISATION <= u < AT_RISK_UTILISATION
 
 
 def count_load(commitments: list[Commitment]) -> float:
