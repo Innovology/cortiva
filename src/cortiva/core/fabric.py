@@ -765,6 +765,13 @@ class Fabric:
         if commit_ctx:
             context = context + "\n\n---\n\n" + commit_ctx
 
+        # Promises that no longer fit normal hours but overtime still lands —
+        # force the explicit push/renegotiate/escalate choice, never a bare
+        # "not enough time" complaint.
+        overtime_ctx = self._overtime_decision_context(agent)
+        if overtime_ctx:
+            context = context + "\n\n---\n\n" + overtime_ctx
+
         # Things she's waiting on that are now due + silent — chase them.
         self._resolve_expectations_from_inbox(agent)
         expect_ctx = self._expectation_salience_context(agent)
@@ -1843,6 +1850,12 @@ class Fabric:
         commit_ctx = self._commitment_salience_context(agent)
         if commit_ctx:
             context = context + "\n\n---\n\n" + commit_ctx
+
+        # Execution is exactly where the overtime choice is made — the
+        # `drink_coffee` suffix fires from this reply.
+        overtime_ctx = self._overtime_decision_context(agent)
+        if overtime_ctx:
+            context = context + "\n\n---\n\n" + overtime_ctx
 
         # High-stakes deliberation (#270): for a critical / risk-laden task,
         # force a System-2 pass — reason through options, what could go wrong,
@@ -4604,7 +4617,10 @@ class Fabric:
 
     async def _handle_drink_coffee(self, agent: Agent) -> None:
         """The agent chose to pull overtime. Route to the cognition plugin,
-        which holds sleep-pressure-driven wind-down off for ~45 minutes."""
+        which holds sleep-pressure-driven wind-down off for ~45 minutes. Also
+        stamp the coffee ledger — the overtime-decision block suppresses while
+        a cup is fresh, and escalations report it (proof the agent used its own
+        levers before asking for help)."""
         try:
             await self.plugin_manager.dispatch_hook(agent.id, "coffee", {})
             logger.info(
@@ -4614,6 +4630,92 @@ class Fabric:
             self._emit("agent.coffee", agent_id=agent.id)
         except Exception:
             logger.debug("coffee hook failed", exc_info=True)
+        try:
+            from datetime import UTC, datetime
+
+            path = agent.directory / "today" / "coffee.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            stamps: list[str] = []
+            if path.exists():
+                stamps = json.loads(path.read_text(encoding="utf-8")) or []
+            stamps.append(datetime.now(UTC).isoformat())
+            path.write_text(json.dumps(stamps[-50:]), encoding="utf-8")
+        except Exception:
+            logger.debug("coffee ledger stamp failed for %s", agent.id, exc_info=True)
+
+    def _recent_coffees(self, agent: Agent, hours: float) -> int:
+        """How many coffees the agent pulled in the last ``hours`` — read from
+        the ledger ``_handle_drink_coffee`` stamps. 0 on any problem."""
+        try:
+            from datetime import UTC, datetime, timedelta
+
+            path = agent.directory / "today" / "coffee.json"
+            if not path.exists():
+                return 0
+            cutoff = datetime.now(UTC) - timedelta(hours=hours)
+            n = 0
+            for s in json.loads(path.read_text(encoding="utf-8")) or []:
+                try:
+                    if datetime.fromisoformat(s) >= cutoff:
+                        n += 1
+                except ValueError:
+                    continue
+            return n
+        except Exception:
+            return 0
+
+    def _overtime_decision_context(self, agent: Agent) -> str:
+        """The forced overtime choice — fires while any promise sits in the
+        band where it NO LONGER fits normal working hours but overtime still
+        lands it (NORMAL_PACE ≤ U < AT_RISK, not overdue).
+
+        This is the gap that produced org-wide "I don't have enough time"
+        complaints: agents hold the overtime capability (drink_coffee) but
+        nothing confronted them with the choice while it could still help —
+        they drifted through the saveable band, hit the wall, and the
+        auto-escalation complained upward on their behalf. The block demands an
+        explicit, stated decision instead: push, renegotiate, or escalate —
+        never a bare complaint. Suppressed for ~45m after a coffee (the agent
+        is already pushing; let them work)."""
+        try:
+            from cortiva.core import commitments as _cm
+
+            items = _cm.load(agent.directory)
+        except Exception:
+            return ""
+        savable = [c for c in items if _cm.overtime_can_save(c)]
+        if not savable:
+            return ""
+        if self._recent_coffees(agent, hours=0.75) > 0:
+            return ""  # already on overtime — let them push, don't nag
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        lines = [
+            "## ☕ Overtime decision — these no longer fit in normal hours",
+            "",
+            "The promises below **won't land inside a normal working day any "
+            "more, but they ARE still winnable by pushing** — you have the "
+            "overtime capability: `drink_coffee` holds your wind-down off ~45 "
+            "minutes per cup and stacks (honest cost: the tiredness isn't "
+            "removed, it lands later). For EACH one, make an explicit choice "
+            "THIS cycle and state it in your plan:",
+            "1. **Pull overtime** — `drink_coffee` and keep working it now, or",
+            "2. **Renegotiate** — email the counterparty NOW to re-scope or move the date, or",
+            "3. **Escalate for help** — only with (1) and (2) consciously ruled out, and say why.",
+            '**Complaining you "don\'t have enough time" while this choice '
+            "sits unmade is not acceptable — the time exists; it's yours to "
+            "take.**",
+            "",
+        ]
+        for c in savable[:8]:
+            u = _cm.required_utilisation(c, now)
+            lines.append(
+                f'- "{c.what}" to {c.to}, due {c.due_at} — needs '
+                f"{u * 100:.0f}% of your remaining wall-clock (a normal day "
+                f"gives ~{_cm.NORMAL_PACE_UTILISATION * 100:.0f}%)."
+            )
+        return "\n".join(lines)
 
     async def _dispatch_commitment_arousal(self, agent: Agent) -> None:
         """Feed the agent's aggregate commitment pressure into chemistry — the
@@ -4687,12 +4789,21 @@ class Fabric:
             if u < _cm.AT_RISK_UTILISATION and not _cm.is_overdue(c, now):
                 continue
             worked = c.effort_hours * _cm.progress_of(c)
+            # Honesty: say whether the agent used its own overtime lever before
+            # this landed on a human — a manager reading "no overtime taken"
+            # can push back on the complaint instead of absorbing it.
+            coffees = self._recent_coffees(agent, hours=24.0)
+            overtime_note = (
+                f" I pulled overtime first ({coffees} coffee(s) in the last 24h)."
+                if coffees
+                else " No overtime was taken before this escalation."
+            )
             esc = (
                 f"A commitment I made is at risk and I can't land it at a normal "
                 f'pace. "{c.what}" — promised to {c.to}, due {c.due_at}. About '
                 f"{worked:.1f}h of ~{c.effort_hours:.1f}h is done and the time "
                 f"left can't absorb the rest. I need help, a re-scope, or a new "
-                f"deadline."
+                f"deadline." + overtime_note
             )
             try:
                 self._route_escalation(agent, c.what, esc)
@@ -6705,6 +6816,12 @@ class Fabric:
         commit_ctx = self._commitment_salience_context(agent)
         if commit_ctx:
             context = context + "\n\n---\n\n" + commit_ctx
+        # A reassess is a natural decision point for the overtime choice —
+        # promises drift into the saveable band as the clock runs, and the
+        # choice must confront the agent before the wall does.
+        overtime_ctx = self._overtime_decision_context(agent)
+        if overtime_ctx:
+            context = context + "\n\n---\n\n" + overtime_ctx
         self._resolve_expectations_from_inbox(agent)
         expect_ctx = self._expectation_salience_context(agent)
         if expect_ctx:
