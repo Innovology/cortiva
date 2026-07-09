@@ -26,6 +26,25 @@ Closes #
 
 <!-- How was this implemented? Any design decisions worth noting? -->
 
+## Observability Impact
+
+<!--
+REQUIRED when this PR touches src/cortiva/. CI fails if section is missing
+or contains the placeholder. Choose one:
+
+  1. Describe the observability posture of the change:
+       "Adds two new emit_simple calls; trace_id propagated from task_id.
+        No new service boundaries. No SLI impact."
+  2. No observability surface introduced:
+       N/A — <reason e.g. "test-only change", "config update, no new event emissions">
+
+Every new FabricEvent / emit_simple call must carry a trace_id.
+Every new outbound HTTP call must propagate a traceparent header.
+See RB-001 §5.5 and §7 for the full gate spec.
+-->
+
+**Observability Impact:** <!-- fill in or N/A — reason -->
+
 ## ADR / RFC Reference
 
 <!--
