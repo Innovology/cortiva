@@ -285,6 +285,17 @@ def create_app(
                     pass
         return metrics
 
+    @app.get("/api/workforce/dashboard")
+    async def get_workforce_dashboard(user: User = Depends(get_current_user)):
+        """Return the live AR workforce dashboard (v2 schema)."""
+        dashboard_path = agents_path / "coo" / "today" / "ar-dashboard-v2.json"
+        if not dashboard_path.exists():
+            raise HTTPException(status_code=404, detail="AR dashboard not yet deployed")
+        try:
+            return json.loads(dashboard_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=500, detail=f"Dashboard data malformed: {exc}")
+
     # ----- Agent commands (via IPC) -----
 
     def _send_ipc(command: str, **kwargs: Any) -> dict[str, Any]:
