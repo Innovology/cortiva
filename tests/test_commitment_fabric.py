@@ -341,3 +341,76 @@ def test_escalation_reports_overtime_honesty(tmp_path) -> None:
     caught.clear()
     fab._escalate_at_risk_commitments(b)
     assert caught and "pulled overtime first (1 coffee(s)" in caught[0]
+
+
+# ---------------------------------------------------------------------------
+# Founder-brief ritual: the org head periodically consults the OWNER on
+# direction — pull the leadership's roadmap/strategy material, push it to the
+# founder for feedback. Resolves only on a real sent "Founder Brief" email.
+# ---------------------------------------------------------------------------
+
+
+def _head_fab(founder_addr="alex@x.io", *, head=True):
+    fab = Fabric.__new__(Fabric)
+    fab.org = SimpleNamespace(
+        subordinates_of=lambda aid: ["cto", "cpo"] if aid == "ceo" else [],
+        manager_of=lambda aid: "human-founder" if aid == "ceo" else "ceo",
+    )
+    fab.agents = {"ceo": object(), "cto": object(), "cpo": object()}
+    fab._email_meta = lambda: {"contacts": [{"address": founder_addr}]} if founder_addr else {}
+    return fab
+
+
+def test_founder_brief_fires_for_org_head_never_briefed(tmp_path) -> None:
+    a = _agent(tmp_path)  # id="ceo"
+    out = _head_fab()._founder_brief_context(a)
+    assert "Founder brief due" in out
+    assert "never sent" in out
+    assert "PULL" in out and "PUSH" in out
+    assert "feedback" in out
+    assert "not a status report" in out.lower() or "CONSULTATION" in out
+
+
+def test_founder_brief_silent_for_non_head_and_no_founder(tmp_path) -> None:
+    fab = _head_fab()
+    # A mid-org manager (cto reports to ceo, an in-org agent) never sees it.
+    d = tmp_path / "cto"
+    d.mkdir()
+    cto = SimpleNamespace(id="cto", directory=d)
+    assert fab._founder_brief_context(cto) == ""
+    # No founder contact configured → nowhere to send → silent.
+    a = _agent(tmp_path)
+    assert _head_fab(founder_addr=None)._founder_brief_context(a) == ""
+
+
+def _write_sent_brief(agent_dir, *, to="alex@x.io", subject="Founder Brief — W28", when=None):
+    sent = agent_dir / "outbox" / "email" / "sent"
+    sent.mkdir(parents=True, exist_ok=True)
+    when = when or datetime.now(UTC)
+    (sent / "b.json").write_text(
+        json.dumps({"to": to, "subject": subject, "queued_at": when.isoformat()})
+    )
+
+
+def test_founder_brief_resolves_on_sent_brief_and_reopens_after_cadence(tmp_path) -> None:
+    a = _agent(tmp_path)
+    fab = _head_fab()
+    # A brief sent yesterday → quiet.
+    _write_sent_brief(a.directory, when=datetime.now(UTC) - timedelta(days=1))
+    assert fab._founder_brief_context(a) == ""
+    # …and the resolution is cached.
+    assert json.loads((a.directory / "founder_briefs.json").read_text())["last_brief_at"]
+    # A brief 8 days old → cadence elapsed → fires again with the age named.
+    _write_sent_brief(a.directory, when=datetime.now(UTC) - timedelta(days=8))
+    (a.directory / "founder_briefs.json").unlink()
+    out = fab._founder_brief_context(a)
+    assert "Founder brief due" in out
+    assert "8 days ago" in out
+
+
+def test_founder_brief_ignores_non_brief_mail_to_founder(tmp_path) -> None:
+    a = _agent(tmp_path)
+    # Ordinary founder mail (status/asks) does NOT count as a brief.
+    _write_sent_brief(a.directory, subject="Two items I need from you this week")
+    out = _head_fab()._founder_brief_context(a)
+    assert "Founder brief due" in out

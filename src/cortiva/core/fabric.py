@@ -15,6 +15,7 @@ import logging
 import os
 import platform
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -758,6 +759,13 @@ class Fabric:
         reports_ctx = self._reports_commitment_context(agent)
         if reports_ctx:
             context = context + "\n\n---\n\n" + reports_ctx
+
+        # The org head's periodic consultation with the owner — pull the
+        # leadership's strategy/roadmap material, put it in front of the
+        # founder for feedback. Upward substance, not upward status.
+        brief_ctx = self._founder_brief_context(agent)
+        if brief_ctx:
+            context = context + "\n\n---\n\n" + brief_ctx
 
         # The agent's own commitments — promises she's made, with their
         # deadlines and how pressing each is right now.
@@ -4745,6 +4753,137 @@ class Fabric:
         except Exception:
             logger.debug("commitment arousal hook failed", exc_info=True)
 
+    # Days between founder briefs — the consultation cadence for org heads.
+    _FOUNDER_BRIEF_CADENCE_DAYS = 7.0
+
+    def _founder_addresses(self) -> set[str]:
+        """Founder email addresses from the org's email config contacts."""
+        addrs: set[str] = set()
+        try:
+            for c in self._email_meta().get("contacts") or []:
+                m = re.search(r"[\w.+-]+@[\w.-]+", str(c.get("address", "")))
+                if m:
+                    addrs.add(m.group(0).lower())
+        except Exception:
+            logger.debug("founder address resolution failed", exc_info=True)
+        return addrs
+
+    def _is_org_head(self, agent: Agent) -> bool:
+        """True for the agent at the top of the chart — has reports, and their
+        named manager is a human outside the agent set (e.g. 'human-founder')."""
+        if self.org is None or not self.org.subordinates_of(agent.id):
+            return False
+        mgr = self.org.manager_of(agent.id)
+        return mgr is None or mgr not in self.agents
+
+    def _last_founder_brief_at(self, agent: Agent) -> datetime | None:
+        """When the last real founder brief was SENT — resolved from the sent
+        record (an email to a founder address whose subject starts 'Founder
+        Brief'), cached in ``founder_briefs.json``. Planning to brief is not
+        briefing; only the sent artifact counts."""
+        from datetime import UTC, datetime
+
+        state_path = agent.directory / "founder_briefs.json"
+        last: datetime | None = None
+        try:
+            if state_path.exists():
+                s = json.loads(state_path.read_text(encoding="utf-8")).get("last_brief_at")
+                if s:
+                    last = datetime.fromisoformat(s)
+        except (ValueError, OSError):
+            last = None
+        founders = self._founder_addresses()
+        sent = agent.directory / "outbox" / "email" / "sent"
+        if founders and sent.is_dir():
+            for p in sent.glob("*.json"):
+                try:
+                    d = json.loads(p.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    continue
+                subject = str(d.get("subject") or "")
+                if not subject.lower().startswith("founder brief"):
+                    continue
+                recips = " ".join(str(d.get(k) or "") for k in ("to", "cc")).lower()
+                if not any(a in recips for a in founders):
+                    continue
+                try:
+                    when = datetime.fromisoformat(str(d.get("queued_at") or d.get("sent_at") or ""))
+                    if when.tzinfo is None:
+                        when = when.replace(tzinfo=UTC)
+                except (ValueError, TypeError):
+                    try:
+                        when = datetime.fromtimestamp(p.stat().st_mtime, tz=UTC)
+                    except OSError:
+                        continue
+                if last is None or when > last:
+                    last = when
+        if last is not None:
+            try:
+                state_path.write_text(
+                    json.dumps({"last_brief_at": last.isoformat()}), encoding="utf-8"
+                )
+            except OSError:
+                pass
+        return last
+
+    def _founder_brief_context(self, agent: Agent) -> str:
+        """The consultation ritual for the org head — periodically pull the
+        strategy/roadmap material their leadership has produced and put it in
+        front of the founder FOR FEEDBACK, while direction can still be steered.
+
+        Fixes the gap the sailcoach roadmap exposed: the CTO/CPO's roadmap
+        thinking never consolidated into an artifact, never reached the CEO,
+        and the CEO never thought to offer the founder a look — every channel
+        upward was reactive (replies, status, asks). Nothing in the machinery
+        modelled the OWNER as a stakeholder whose feedback should be sought on
+        direction. This block is the counterweight to the delivery-stewardship
+        one: stewardship stopped upward *status theatre*; this mandates upward
+        *consultation* — sharing substance and inviting steer, which is a
+        different act entirely. Resolves only when a 'Founder Brief' email is
+        actually sent to a founder address."""
+        if not self._is_org_head(agent):
+            return ""
+        if not self._founder_addresses():
+            return ""  # no founder contact configured — nowhere to send it
+        from datetime import UTC, datetime
+
+        last = self._last_founder_brief_at(agent)
+        now = datetime.now(UTC)
+        if last is not None:
+            days = (now - last).total_seconds() / 86400.0
+            if days < self._FOUNDER_BRIEF_CADENCE_DAYS:
+                return ""
+            opener = f"Your last founder brief was {days:.0f} days ago."
+        else:
+            opener = "You have never sent the founder a brief."
+        return "\n".join(
+            [
+                "## 🧭 Founder brief due — consult the owner on direction",
+                "",
+                f"{opener} The founder owns this company; the significant work "
+                "products shaping where it goes over the coming months — product "
+                "roadmaps, feature strategy, architecture positions — belong in "
+                "front of them **for feedback while direction can still be "
+                "steered**, not discovered after the fact. This is "
+                "CONSULTATION, not a status report: you are sharing substance "
+                "and inviting steer, not performing busyness.",
+                "",
+                "1. **PULL** — ask your leadership team what roadmap/strategy "
+                "material they have produced or are carrying in their heads. If "
+                "it exists only as fragments across plans and 1-1s, have them "
+                "consolidate it into one shareable artifact first.",
+                "2. **PUSH** — email the founder with a subject starting "
+                '"Founder Brief": include the artifacts (or where they live), '
+                "name the direction decisions currently in motion, and "
+                "explicitly invite feedback — e.g. \"here's the roadmap "
+                "Samantha & Astrid have produced; we would appreciate your "
+                'steer".',
+                "",
+                "This resolves ONLY when that email is actually sent — planning "
+                "to brief is not briefing.",
+            ]
+        )
+
     async def _dispatch_stewardship_arousal(self, agent: Agent) -> None:
         """Feed a manager's team-delivery load into chemistry — the drive to
         steward (unblock, re-scope, re-resource) that rises as the team's
@@ -6810,6 +6949,12 @@ class Fabric:
         reports_ctx = self._reports_commitment_context(agent)
         if reports_ctx:
             context = context + "\n\n---\n\n" + reports_ctx
+
+        # A due founder brief keeps confronting the org head on reassess too —
+        # it self-resolves only when the brief is actually sent.
+        brief_ctx = self._founder_brief_context(agent)
+        if brief_ctx:
+            context = context + "\n\n---\n\n" + brief_ctx
 
         # Commitments stay top-of-mind on every reassess too — their pressure
         # shifts as the clock runs down, so a reassess must see the current heat.
