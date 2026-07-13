@@ -20,7 +20,15 @@ from typing import Any
 
 @dataclass
 class FabricEvent:
-    """A structured event emitted by the fabric or its subsystems."""
+    """A structured event emitted by the fabric or its subsystems.
+
+    Trace context (RB-001 §5.5):
+      trace_id — W3C-style trace identifier shared across all events that
+                 belong to the same logical operation (e.g. a task lifecycle).
+                 Callers should propagate this from the inbound request or
+                 task context; leave None only for truly independent events.
+      span_id  — Unique per event; auto-generated when not supplied.
+    """
 
     event_type: str
     agent_id: str | None = None
@@ -28,6 +36,8 @@ class FabricEvent:
     data: dict[str, Any] = field(default_factory=dict)
     department: str | None = None
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    trace_id: str | None = None
+    span_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -37,6 +47,8 @@ class FabricEvent:
             "timestamp": self.timestamp,
             "data": self.data,
             "department": self.department,
+            "trace_id": self.trace_id,
+            "span_id": self.span_id,
         }
 
     def to_json(self) -> str:
@@ -51,6 +63,8 @@ class FabricEvent:
             data=data.get("data", {}),
             department=data.get("department"),
             event_id=data.get("event_id", uuid.uuid4().hex[:12]),
+            trace_id=data.get("trace_id"),
+            span_id=data.get("span_id", uuid.uuid4().hex[:16]),
         )
 
 
@@ -132,11 +146,22 @@ class EventBus:
                 except Exception:
                     pass  # Don't let subscriber errors break the bus
 
-    def emit_simple(self, event_type: str, agent_id: str | None = None, **data: Any) -> FabricEvent:
-        """Convenience method to emit an event from simple arguments."""
+    def emit_simple(
+        self,
+        event_type: str,
+        agent_id: str | None = None,
+        trace_id: str | None = None,
+        **data: Any,
+    ) -> FabricEvent:
+        """Convenience method to emit an event from simple arguments.
+
+        Pass ``trace_id`` to correlate this event with others in the same
+        logical operation (task lifecycle, request chain, incident span).
+        """
         event = FabricEvent(
             event_type=event_type,
             agent_id=agent_id,
+            trace_id=trace_id,
             data=data,
         )
         self.emit(event)
