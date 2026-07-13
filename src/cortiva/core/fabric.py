@@ -6261,6 +6261,9 @@ class Fabric:
     # ping-pong "good call" acks forever.
     _OUTBOX_MAX_SENDS = 3
     _OUTBOX_DEBOUNCE_S = 6 * 3600
+    # Humans (founder contacts, anyone off the workforce domain) get one
+    # unanswered follow-up per DAY, not one per 6h — see _queue_outbound_email.
+    _OUTBOX_HUMAN_DEBOUNCE_S = 24 * 3600
 
     # A thread messaged within this window is "still warm" — a follow-up adds
     # nothing; the brake says HOLD and wait for a reply.
@@ -6334,6 +6337,14 @@ class Fabric:
                 last_ts = 0.0
             if reply_mtime <= last_ts:
                 continue  # no NEW reply since we last wrote — keep the debounce
+            # Clear AT MOST ONCE per distinct reply. Without this, anything
+            # that refreshes an inbound file's mtime (a re-delivered message,
+            # an inbox sync) re-cleared the throttle on every reassess — which
+            # is how the founder got two near-identical mails 69 seconds
+            # apart: send → mtime race re-clears → send again.
+            if reply_mtime <= float(e.get("cleared_for", 0.0) or 0.0):
+                continue  # this reply already spent its one clear
+            e["cleared_for"] = reply_mtime
             new_count = max(0, int(e.get("count", 0)) - 1)
             e["count"] = new_count
             e.pop("last", None)  # a real reply → allow a prompt response
@@ -6354,8 +6365,30 @@ class Fabric:
             return
 
         # Throttle re-sends on the same thread while awaiting a reply.
+        # HUMANS get a longer debounce than agents: chasing a colleague-agent
+        # twice in a working day is fine; chasing the founder at 05:25 and
+        # again at 14:59 reads as nagging — one unanswered follow-up per day
+        # is the ceiling for anyone outside the workforce.
         now = datetime.now(UTC)
         key = self._thread_key(to, spec.get("subject", ""))
+        debounce_s = float(self._OUTBOX_DEBOUNCE_S)
+        try:
+            first_to = str(to[0] if isinstance(to, list) and to else to or "").lower()
+            m = re.search(r"[\w.+-]+@([\w.-]+)", first_to)
+            to_domain = m.group(1) if m else ""
+            meta = self._email_meta()
+            workforce = str(meta.get("domain") or "").lower()
+            founder_addrs = set()
+            for c in meta.get("contacts") or []:
+                fm = re.search(r"[\w.+-]+@[\w.-]+", str(c.get("address", "")))
+                if fm:
+                    founder_addrs.add(fm.group(0).lower())
+            addr_m = re.search(r"[\w.+-]+@[\w.-]+", first_to)
+            addr = addr_m.group(0) if addr_m else first_to
+            if addr in founder_addrs or (workforce and to_domain != workforce):
+                debounce_s = self._OUTBOX_HUMAN_DEBOUNCE_S
+        except Exception:
+            logger.debug("human-debounce classification failed", exc_info=True)
         led = self._load_outbox_ledger(agent)
         entry = led.get(key)
         if entry:
@@ -6374,7 +6407,7 @@ class Fabric:
                 )
                 self._emit("email.suppressed", agent_id=agent.id, to=to, reason="max_sends")
                 return
-            if last and (now - last).total_seconds() < self._OUTBOX_DEBOUNCE_S:
+            if last and (now - last).total_seconds() < debounce_s:
                 logger.info(
                     "Suppressed re-send for %s to %s (debounce, awaiting reply): %s",
                     agent.id,

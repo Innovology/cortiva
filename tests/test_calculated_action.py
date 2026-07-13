@@ -147,3 +147,83 @@ def _iso_now():
     from datetime import UTC, datetime
 
     return datetime.now(UTC).isoformat()
+
+
+def test_same_reply_clears_only_once():
+    """The echo fix: ONE distinct reply spends ONE clear. A re-delivered
+    inbound (fresh mtime = same reply) must not re-clear the throttle every
+    reassess — that raced two near-identical mails to the founder 69s apart."""
+    agent = _agent()
+    reply_mtime = _time.time()
+    _write_ledger(
+        agent,
+        {
+            "k": {
+                "to": "alex@x",
+                "subject": "two items",
+                "count": 3,
+                "last": "2026-01-01T00:00:00+00:00",
+            }
+        },
+    )
+    Fabric._clear_awaiting_for_senders(_clear_shim(), agent, {"alex@x": reply_mtime})
+    entry = json.loads((agent.directory / "outbox" / ".threads.json").read_text())["k"]
+    assert entry["count"] == 2  # first clear honoured
+    # Same reply seen again on the next reassess ("last" is gone, so without
+    # the cleared_for guard this would decrement again).
+    Fabric._clear_awaiting_for_senders(_clear_shim(), agent, {"alex@x": reply_mtime})
+    entry = json.loads((agent.directory / "outbox" / ".threads.json").read_text())["k"]
+    assert entry["count"] == 2  # NOT decremented again
+    # A genuinely NEWER reply clears one more.
+    Fabric._clear_awaiting_for_senders(_clear_shim(), agent, {"alex@x": reply_mtime + 60})
+    entry = json.loads((agent.directory / "outbox" / ".threads.json").read_text())["k"]
+    assert entry["count"] == 1
+
+
+def _queue_shim(agent, meta):
+    ns = SimpleNamespace(
+        _load_outbox_ledger=lambda a: Fabric._load_outbox_ledger(SimpleNamespace(), a),
+        _save_outbox_ledger=lambda a, led: Fabric._save_outbox_ledger(SimpleNamespace(), a, led),
+        _thread_key=Fabric._thread_key,
+        _email_meta=lambda: meta,
+        _emit=lambda *a, **k: None,
+        _OUTBOX_MAX_SENDS=Fabric._OUTBOX_MAX_SENDS,
+        _OUTBOX_DEBOUNCE_S=Fabric._OUTBOX_DEBOUNCE_S,
+        _OUTBOX_HUMAN_DEBOUNCE_S=Fabric._OUTBOX_HUMAN_DEBOUNCE_S,
+    )
+    return ns
+
+
+def test_human_recipient_gets_daily_debounce():
+    """Chasing the founder twice in a working day is nagging: the debounce for
+    founder contacts / off-domain humans is 24h, while agents keep 6h."""
+    from datetime import UTC, datetime, timedelta
+
+    agent = _agent()
+    meta = {"domain": "workforce.x", "contacts": [{"address": "Alex <alex@px.io>"}]}
+    ten_h_ago = (datetime.now(UTC) - timedelta(hours=10)).isoformat()
+
+    # Founder thread last mailed 10h ago: inside the 24h human debounce → suppressed.
+    key_f = Fabric._thread_key("alex@px.io", "two items")
+    _write_ledger(
+        agent, {key_f: {"to": "alex@px.io", "subject": "two items", "count": 1, "last": ten_h_ago}}
+    )
+    Fabric._queue_outbound_email(
+        _queue_shim(agent, meta),
+        agent,
+        {"to": "alex@px.io", "subject": "Re: two items", "body": "chase"},
+    )
+    assert not list((agent.directory / "outbox" / "email").glob("*.json"))
+
+    # Same staleness to a workforce AGENT: past the 6h debounce → sends.
+    key_a = Fabric._thread_key("astrid@workforce.x", "deck")
+    _write_ledger(
+        agent,
+        {key_a: {"to": "astrid@workforce.x", "subject": "deck", "count": 1, "last": ten_h_ago}},
+    )
+    Fabric._queue_outbound_email(
+        _queue_shim(agent, meta),
+        agent,
+        {"to": "astrid@workforce.x", "subject": "Re: deck", "body": "chase"},
+    )
+    assert len(list((agent.directory / "outbox" / "email").glob("*.json"))) == 1
