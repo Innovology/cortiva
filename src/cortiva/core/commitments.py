@@ -378,6 +378,29 @@ def required_utilisation(c: Commitment, now: datetime | None = None) -> float:
     return work / rem
 
 
+def is_self_owed(c: Commitment, *, agent_id: str, first_name: str = "", email: str = "") -> bool:
+    """True when this promise is owed to the agent ITSELF — a self-set deadline
+    on self-scoped work in a self-planned day.
+
+    The distinction is load-bearing: a promise to SOMEONE ELSE that slips is
+    theirs to hear about; a deadline you set YOURSELF that slips is yours to
+    move, descope, or make — flagging it to a human ("I can't fit a 2h task
+    into 30 minutes, just wanted to flag it") transfers your planning problem
+    to someone who never owned it."""
+    to = (c.to or "").strip().lower()
+    if not to:
+        return True  # a promise to nobody is a self-plan
+    candidates = {agent_id.strip().lower()}
+    if first_name:
+        candidates.add(first_name.strip().lower())
+    if email:
+        e = email.strip().lower()
+        candidates.add(e)
+        candidates.add(e.split("@")[0])
+    to_token = re.split(r"[@<\s(]", to)[0]
+    return to in candidates or to_token in candidates
+
+
 def overtime_can_save(c: Commitment, now: datetime | None = None) -> bool:
     """True when this promise no longer fits normal working hours but IS still
     winnable by extending the day (overtime) — the band where the right

@@ -414,3 +414,103 @@ def test_founder_brief_ignores_non_brief_mail_to_founder(tmp_path) -> None:
     _write_sent_brief(a.directory, subject="Two items I need from you this week")
     out = _head_fab()._founder_brief_context(a)
     assert "Founder brief due" in out
+
+
+# ---------------------------------------------------------------------------
+# Own your deadlines: a self-set deadline that slips is the OWNER's decision
+# (reschedule/descope/overtime) — never a "just flagging it" mail to a human.
+# A promise to someone else escalates as a DECISION with a committed new date.
+# ---------------------------------------------------------------------------
+
+
+def test_is_self_owed_detection() -> None:
+    def mk(to):
+        return cm.Commitment(id="x", to=to, what="w", due_at="", effort_hours=1)
+
+    kw = {"agent_id": "ceo", "first_name": "Maren", "email": "maren@workforce.x"}
+    assert cm.is_self_owed(mk("Maren"), **kw)
+    assert cm.is_self_owed(mk("maren@workforce.x"), **kw)
+    assert cm.is_self_owed(mk("ceo"), **kw)
+    assert cm.is_self_owed(mk(""), **kw)  # promise to nobody = self-plan
+    assert not cm.is_self_owed(mk("alex@px.io"), **kw)
+    assert not cm.is_self_owed(mk("Samantha"), **kw)
+
+
+def _esc_fab(cards):
+    fab = _fab()
+    fab._load_directory_cards = lambda: cards
+    fab._recent_coffees = lambda agent, hours: 0
+    fab._emit = lambda *a, **k: None
+    return fab
+
+
+def test_self_set_deadline_never_emails_a_human(tmp_path) -> None:
+    a = _agent(tmp_path)
+    now = datetime.now(UTC)
+    cm.register(
+        a.directory,
+        to="Maren",
+        what="my own planning item",
+        due=(now + timedelta(hours=1)).isoformat(),
+        effort_hours=40,
+    )
+    fab = _esc_fab([{"id": "ceo", "first": "Maren", "email": "maren@workforce.x"}])
+    sent: list = []
+    fab._route_escalation = lambda agent, desc, esc: sent.append(esc)
+    fab._escalate_at_risk_commitments(a)
+    assert sent == []  # no flag mail, ever
+    # …and it doesn't re-fire every heartbeat: escalated_at is stamped.
+    items = cm.load(a.directory)
+    assert items[0].escalated_at
+
+
+def test_other_owed_escalation_is_a_decision_not_a_flag(tmp_path) -> None:
+    a = _agent(tmp_path)
+    now = datetime.now(UTC)
+    cm.register(
+        a.directory,
+        to="alex@px.io",
+        what="board pack",
+        due=(now + timedelta(hours=1)).isoformat(),
+        effort_hours=40,
+    )
+    fab = _esc_fab([{"id": "ceo", "first": "Maren", "email": "maren@workforce.x"}])
+    sent: list = []
+    fab._route_escalation = lambda agent, desc, esc: sent.append(esc)
+    fab._escalate_at_risk_commitments(a)
+    assert len(sent) == 1
+    esc = sent[0]
+    assert "My decision: I am rescheduling delivery to" in esc
+    assert "push back now" in esc  # actionable, recipient can veto
+    assert "honest reason" in esc.lower()
+    assert "I need help" not in esc  # the old shrug is gone
+    assert "No overtime was taken" in esc  # honesty line preserved
+
+
+def test_salience_mirror_for_failing_self_deadline(tmp_path) -> None:
+    a = _agent(tmp_path)
+    now = datetime.now(UTC)
+    cm.register(
+        a.directory,
+        to="Maren",
+        what="my own planning item",
+        due=(now + timedelta(hours=1)).isoformat(),
+        effort_hours=40,
+    )
+    fab = _esc_fab([{"id": "ceo", "first": "Maren", "email": "maren@workforce.x"}])
+    out = fab._commitment_salience_context(a)
+    assert "This deadline is YOURS" in out
+    assert "Do NOT email anyone a flag" in out
+    # An on-track self item gets no mirror.
+    a2_dir = tmp_path / "cfo"
+    a2_dir.mkdir()
+    a2 = SimpleNamespace(id="cfo", directory=a2_dir)
+    cm.register(
+        a2_dir,
+        to="Simone",
+        what="easy",
+        due=(now + timedelta(days=10)).isoformat(),
+        effort_hours=1,
+    )
+    fab2 = _esc_fab([{"id": "cfo", "first": "Simone", "email": "simone@workforce.x"}])
+    assert "This deadline is YOURS" not in fab2._commitment_salience_context(a2)
