@@ -4908,23 +4908,26 @@ class Fabric:
             logger.debug("stewardship arousal hook failed", exc_info=True)
 
     def _escalate_at_risk_commitments(self, agent: Agent) -> None:
-        """For each open commitment that can't land at a normal pace (U≥1) or is
-        overdue, act — once per commitment. Also archives long-overdue
+        """Reckon each open commitment that can't land at a normal pace (U≥1)
+        or is overdue — once per commitment. Also archives long-overdue
         undelivered promises as missed (self-cleaning ledger).
 
-        Two cases, and the difference is the whole point:
+        NO ONE IS AUTO-MAILED. Founder, twice: a last-minute "just wanted to
+        flag it" about a self-set deadline transfers the agent's planning
+        failure to someone who never owned it — and "I do not need to know that
+        they chose to extend their deadline" killed even the courtesy
+        notification. The machine's job is to make the slip FELT and TRACKED,
+        not to broadcast it:
 
-        * **Self-owed** (a deadline the agent set itself, on work it scoped, in
-          a day it planned): NO human is emailed. "I can't fit a 2h task into
-          30 minutes, just wanted to flag it" arriving 30 minutes before a
-          self-set deadline transfers the agent's planning failure to someone
-          who never owned it. The decision stays with the owner — reschedule
-          openly (tracked as an owner-reschedule), descope, or make it with
-          overtime; the salience block confronts them every cycle.
-        * **Owed to someone else**: the counterparty deserves to hear — but as
-          a DECISION, not a flag. The escalation leads with the agent's own
-          committed proposal (a realistic new date at normal pace), states the
-          honest reason, and carries the overtime record. Actionable or silent.
+        * the 🪞 mirror in the commitment salience block demands the owner
+          decision every cycle — reschedule (tracked as an owner-reschedule,
+          the scar to watch), descope, or make it with overtime;
+        * the manager sees slippage through the stewardship rollup — the
+          surveillance channel that actually owns the problem;
+        * the ONLY reschedule that warrants contacting the counterparty is one
+          where THEY set the date — a genuine renegotiation, which is the
+          agent's own reasoned email guided by the mirror, never this mailer;
+        * delivery (or an honest miss in the ledger) is the record.
         """
         from cortiva.core import commitments as _cm
 
@@ -4933,73 +4936,28 @@ class Fabric:
             return
         before = json.dumps([c.to_dict() for c in items], sort_keys=True)
         _cm.prune(items)
-        from datetime import UTC, datetime, timedelta
+        from datetime import UTC, datetime
 
         now = datetime.now(UTC)
-        # Who this agent IS, for the self-owed test (best-effort).
-        first_name = email = ""
-        try:
-            for card in self._load_directory_cards():
-                if card.get("id") == agent.id:
-                    first_name = str(card.get("first") or card.get("name") or "")
-                    email = str(card.get("email") or "")
-                    break
-        except Exception:
-            pass
         for c in items:
             if c.status != "open" or c.escalated_at:
                 continue
             u = _cm.required_utilisation(c, now)
             if u < _cm.AT_RISK_UTILISATION and not _cm.is_overdue(c, now):
                 continue
-            if _cm.is_self_owed(c, agent_id=agent.id, first_name=first_name, email=email):
-                # Your deadline, your call — no flag mail. Stamp escalated_at so
-                # this fires exactly once; the commitment salience block keeps
-                # demanding the owner-decision until it's rescheduled, descoped,
-                # delivered, or archived as missed.
-                c.escalated_at = now.isoformat()
-                self._emit(
-                    "commitment.self_deadline_at_risk",
-                    agent_id=agent.id,
-                    what=c.what[:80],
-                )
-                logger.info(
-                    "Self-set deadline at risk for %s (%r) — owner decision, no escalation mail",
-                    agent.id,
-                    c.what[:60],
-                )
-                continue
-            worked = c.effort_hours * _cm.progress_of(c)
-            # Honesty: say whether the agent used its own overtime lever before
-            # this landed on a human — a manager reading "no overtime taken"
-            # can push back on the complaint instead of absorbing it.
-            coffees = self._recent_coffees(agent, hours=24.0)
-            overtime_note = (
-                f" I pulled overtime first ({coffees} coffee(s) in the last 24h)."
-                if coffees
-                else " No overtime was taken before this escalation."
+            # Stamp once so this never re-fires; the salience mirror carries
+            # the confrontation from here.
+            c.escalated_at = now.isoformat()
+            self._emit(
+                "commitment.deadline_at_risk",
+                agent_id=agent.id,
+                what=c.what[:80],
             )
-            # Lead with a committed default proposal, not a shrug: the date this
-            # actually lands at a sustainable normal pace. The recipient accepts
-            # by silence or pushes back — either way it's actionable.
-            work_left = _cm.work_remaining_hours(c)
-            proposal = (now + timedelta(hours=work_left / _cm.NORMAL_PACE_UTILISATION)).strftime(
-                "%A %Y-%m-%d %H:%M UTC"
+            logger.info(
+                "Commitment at risk for %s (%r) — owner decision via salience, no auto-mail",
+                agent.id,
+                c.what[:60],
             )
-            esc = (
-                f'My commitment to you is not going to land on time: "{c.what}" '
-                f"— due {c.due_at}, about {worked:.1f}h of ~{c.effort_hours:.1f}h "
-                f"done. My decision: I am rescheduling delivery to {proposal} "
-                f"and will deliver by then — push back now if that date doesn't "
-                f"work and I'll re-plan around your constraint. The honest "
-                f"reason it slipped: [say it plainly — a planning miss is a "
-                f"planning miss]." + overtime_note
-            )
-            try:
-                self._route_escalation(agent, c.what, esc)
-                c.escalated_at = now.isoformat()
-            except Exception:
-                logger.exception("commitment escalation failed for %s", agent.id)
         after = json.dumps([c.to_dict() for c in items], sort_keys=True)
         if after != before:
             _cm.save(agent.directory, items)
@@ -5146,13 +5104,15 @@ class Fabric:
             "remaining, the more it weighs on you; that pressure is real and "
             "yours to discharge. Work the most pressing first. Log progress as "
             "you go so a half-done job doesn't read as a crisis. If one truly "
-            "can't land: a deadline YOU set on YOUR OWN plan is yours to move — "
+            "can't land: a deadline YOU chose is yours to move — "
             "reschedule it (`update_commitment` with a new due date), descope "
-            "it, or make it with overtime; **never email anyone a 'just "
-            "flagging' about your own planning — moving your own deadline is "
-            "your job, not theirs.** Only a promise to SOMEONE ELSE warrants "
-            "telling them — and then lead with your new committed date, not a "
-            "flag. Need to push through tonight? `drink_coffee`. And "
+            "it, or make it with overtime, **silently: never email anyone a "
+            "'just flagging' OR a courtesy 'I'm extending my deadline' note "
+            "— nobody needs to know you moved a date you set; they'll see "
+            "the delivery.** The ONLY slip that warrants an email is one "
+            "where the COUNTERPARTY set the date — then renegotiate "
+            "properly: your new committed date plus the honest reason. "
+            "Need to push through tonight? `drink_coffee`. And "
             "register any NEW promise you make this cycle with "
             "`register_commitment` so it joins this list.\n",
             "**Test before you trust.** Before you believe a commitment is "
@@ -5195,21 +5155,35 @@ class Fabric:
                         f"  \n  ✅ a real artifact exists ({desc}) — if this "
                         "commitment is done, mark it delivered to close it."
                     )
-            # A failing deadline the agent set ITSELF gets the mirror, not a
-            # megaphone: the decision is theirs alone, and flagging it upward
-            # ("I can't fit a 2h task into 30 minutes, just wanted to flag it")
-            # is explicitly not an option.
+            # A failing deadline gets the mirror, not a megaphone: the decision
+            # is the agent's alone. Flagging it upward ("I can't fit a 2h task
+            # into 30 minutes, just wanted to flag it") is not an option, and
+            # neither is a courtesy note about a self-administered date move —
+            # founder: "I do not need to know that they chose to extend their
+            # deadline."
             own = ""
-            if (u >= _cm.AT_RISK_UTILISATION or _cm.is_overdue(c, now)) and _cm.is_self_owed(
-                c, agent_id=agent.id, first_name=_first, email=_email
-            ):
-                own = (
-                    "  \n  🪞 **This deadline is YOURS — you scoped it, you "
-                    "scheduled it. Decide NOW: reschedule it to a date you'll "
-                    "actually hit (`update_commitment`, openly — it's tracked), "
-                    "descope it, or make it with overtime. Do NOT email anyone "
-                    "a flag about it — nobody else owns your plan.**"
-                )
+            if u >= _cm.AT_RISK_UTILISATION or _cm.is_overdue(c, now):
+                if _cm.is_self_owed(c, agent_id=agent.id, first_name=_first, email=_email):
+                    own = (
+                        "  \n  🪞 **This deadline is YOURS — you scoped it, you "
+                        "scheduled it. Decide NOW: reschedule it to a date you'll "
+                        "actually hit (`update_commitment`, openly — it's tracked), "
+                        "descope it, or make it with overtime. Do NOT email anyone "
+                        "a flag about it — nobody else owns your plan.**"
+                    )
+                else:
+                    own = (
+                        "  \n  🪞 **This won't land on time. Decide NOW, "
+                        "silently: if YOU chose this date, move it "
+                        "(`update_commitment` to a date you'll actually hit — "
+                        "tracked, no announcement; they'll see the delivery) "
+                        "or make it with overtime. Do NOT send a flag or a "
+                        "courtesy 'rescheduling' note — nobody needs to know "
+                        "you moved your own deadline. ONLY if the counterparty "
+                        "set this date themselves does an email make sense — a "
+                        "real renegotiation carrying your new committed date "
+                        "and the honest reason, nothing less.**"
+                    )
             lines.append(
                 f"- **{c.what}** — to {c.to}; due {c.due_at} "
                 f"({_human_remaining(rem_h)}); {prog * 100:.0f}% done of "
