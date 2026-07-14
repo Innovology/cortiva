@@ -68,6 +68,8 @@ def test_expectation_salience_only_when_due_and_silent(tmp_path) -> None:
 
 
 def test_escalates_at_risk_once_then_idempotent(tmp_path) -> None:
+    """At-risk reckoning stamps escalated_at exactly once and mails NOBODY
+    (the mirror + stewardship rollup carry it; no auto-mail exists)."""
     a = _agent(tmp_path)
     now = datetime.now(UTC)
     cm.register(
@@ -81,11 +83,12 @@ def test_escalates_at_risk_once_then_idempotent(tmp_path) -> None:
     fab = _fab()
     calls: list = []
     fab._route_escalation = lambda agent, desc, esc: calls.append((desc, esc))
+    fab._emit = lambda *a, **k: None
     fab._escalate_at_risk_commitments(a)
-    assert len(calls) == 1  # overdue + work owed → escalated
-    assert cm.load(a.directory)[0].escalated_at  # marked
+    assert calls == []  # no auto-mail, ever
+    assert cm.load(a.directory)[0].escalated_at  # reckoned once
     fab._escalate_at_risk_commitments(a)
-    assert len(calls) == 1  # idempotent — not re-escalated
+    assert calls == []  # and stays silent
 
 
 def test_withdrawn_and_delivered_never_escalate(tmp_path) -> None:
@@ -307,42 +310,6 @@ def test_overtime_block_suppressed_while_caffeinated(tmp_path) -> None:
     assert _fab()._overtime_decision_context(a) == ""
 
 
-def test_escalation_reports_overtime_honesty(tmp_path) -> None:
-    a = _agent(tmp_path)
-    now = datetime.now(UTC)
-    cm.register(
-        a.directory,
-        to="maren@x",
-        what="doomed",
-        due=(now + timedelta(hours=1)).isoformat(),
-        effort_hours=40,
-    )
-    fab = _fab()
-    caught: list[str] = []
-    fab._route_escalation = lambda agent, desc, esc: caught.append(esc)
-
-    # No coffee taken → the escalation says so.
-    fab._escalate_at_risk_commitments(a)
-    assert caught and "No overtime was taken" in caught[0]
-
-    # Second agent DID pull overtime → the escalation credits it.
-    b_dir = tmp_path / "cfo"
-    b_dir.mkdir()
-    b = SimpleNamespace(id="cfo", directory=b_dir)
-    cm.register(
-        b_dir,
-        to="maren@x",
-        what="doomed too",
-        due=(now + timedelta(hours=1)).isoformat(),
-        effort_hours=40,
-    )
-    (b_dir / "today").mkdir()
-    (b_dir / "today" / "coffee.json").write_text(json.dumps([datetime.now(UTC).isoformat()]))
-    caught.clear()
-    fab._escalate_at_risk_commitments(b)
-    assert caught and "pulled overtime first (1 coffee(s)" in caught[0]
-
-
 # ---------------------------------------------------------------------------
 # Founder-brief ritual: the org head periodically consults the OWNER on
 # direction — pull the leadership's roadmap/strategy material, push it to the
@@ -464,7 +431,10 @@ def test_self_set_deadline_never_emails_a_human(tmp_path) -> None:
     assert items[0].escalated_at
 
 
-def test_other_owed_escalation_is_a_decision_not_a_flag(tmp_path) -> None:
+def test_no_auto_mail_for_anyone_and_fires_once(tmp_path) -> None:
+    """Founder: "I do not need to know that they chose to extend their
+    deadline." NO commitment auto-mail — self- OR other-owed. The mirror and
+    the manager's stewardship rollup carry it instead."""
     a = _agent(tmp_path)
     now = datetime.now(UTC)
     cm.register(
@@ -478,13 +448,12 @@ def test_other_owed_escalation_is_a_decision_not_a_flag(tmp_path) -> None:
     sent: list = []
     fab._route_escalation = lambda agent, desc, esc: sent.append(esc)
     fab._escalate_at_risk_commitments(a)
-    assert len(sent) == 1
-    esc = sent[0]
-    assert "My decision: I am rescheduling delivery to" in esc
-    assert "push back now" in esc  # actionable, recipient can veto
-    assert "honest reason" in esc.lower()
-    assert "I need help" not in esc  # the old shrug is gone
-    assert "No overtime was taken" in esc  # honesty line preserved
+    assert sent == []  # nobody is auto-mailed, whoever it's owed to
+    items = cm.load(a.directory)
+    assert items[0].escalated_at  # stamped once — never re-fires
+    sent.clear()
+    fab._escalate_at_risk_commitments(a)
+    assert sent == []
 
 
 def test_salience_mirror_for_failing_self_deadline(tmp_path) -> None:
@@ -514,3 +483,22 @@ def test_salience_mirror_for_failing_self_deadline(tmp_path) -> None:
     )
     fab2 = _esc_fab([{"id": "cfo", "first": "Simone", "email": "simone@workforce.x"}])
     assert "This deadline is YOURS" not in fab2._commitment_salience_context(a2)
+
+
+def test_salience_mirror_for_failing_other_owed_deadline(tmp_path) -> None:
+    """Other-owed failing deadlines get the silent-reschedule mirror: move it
+    without an announcement; only a counterparty-set date warrants an email."""
+    a = _agent(tmp_path)
+    now = datetime.now(UTC)
+    cm.register(
+        a.directory,
+        to="alex@px.io",
+        what="board pack",
+        due=(now + timedelta(hours=1)).isoformat(),
+        effort_hours=40,
+    )
+    fab = _esc_fab([{"id": "ceo", "first": "Maren", "email": "maren@workforce.x"}])
+    out = fab._commitment_salience_context(a)
+    assert "Decide NOW, silently" in out
+    assert "nobody needs to know you moved your own deadline" in out
+    assert "ONLY if the counterparty set this date" in out
