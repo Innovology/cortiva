@@ -126,8 +126,7 @@ class TestIncidentTraceChain:
 
         trace_ids = {e.trace_id for e in emitted}
         assert trace_ids == {incident_trace_id}, (
-            "all events in an incident chain must carry the same trace_id; "
-            f"got: {trace_ids}"
+            f"all events in an incident chain must carry the same trace_id; got: {trace_ids}"
         )
 
     def test_span_ids_are_unique_within_incident(self) -> None:
@@ -141,8 +140,7 @@ class TestIncidentTraceChain:
 
         span_ids = [e.span_id for e in emitted]
         assert len(span_ids) == len(set(span_ids)), (
-            "each event in an incident must have a unique span_id "
-            f"(got duplicates in {span_ids})"
+            f"each event in an incident must have a unique span_id (got duplicates in {span_ids})"
         )
 
     def test_independent_events_use_different_trace_ids(self) -> None:
