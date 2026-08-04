@@ -804,6 +804,12 @@ class Fabric:
         # Consume the hooks (they've been injected into the plan context)
         self.hook_router.pending_for(agent_id)
 
+        # Reality gap first: after a long offline stretch everything the agent
+        # remembers about current state is stale — the epistemic frame must be
+        # in place before any block invites it to reason about the world.
+        stale_ctx = self._staleness_context(agent)
+        if stale_ctx:
+            context = context + "\n\n---\n\n" + stale_ctx
         # Grounded work: only claim work you could actually fetch the data for;
         # a gap is a request to your manager, never an invented result.
         ground_ctx = self._grounded_work_context(agent)
@@ -1840,6 +1846,12 @@ class Fabric:
         cap_email = self._email_capability_context(agent)
         if cap_email:
             context = context + "\n\n---\n\n" + cap_email
+        # Reality gap at execution too — the write-up is where stale memory
+        # turns into a confident false report (#282 lesson: the anchor must be
+        # in the room at the moment of the act).
+        stale_ctx = self._staleness_context(agent)
+        if stale_ctx:
+            context = context + "\n\n---\n\n" + stale_ctx
         # Grounded work at execution too — the moment fabrication happens is
         # when the agent writes up what it "did"; the rule must be in the room.
         ground_ctx = self._grounded_work_context(agent)
@@ -3312,6 +3324,9 @@ class Fabric:
         if suffix.update_commitment and isinstance(suffix.update_commitment, dict):
             self._handle_update_commitment(agent, suffix.update_commitment)
 
+        if suffix.reject_delivery and isinstance(suffix.reject_delivery, dict):
+            self._handle_reject_delivery(agent, suffix.reject_delivery)
+
         # Re-task another agent — the org's executable lever for a priority
         # change. Authority-gated in the handler.
         if suffix.refocus_agent and isinstance(suffix.refocus_agent, dict):
@@ -4454,9 +4469,12 @@ class Fabric:
                 subtasks_done=list(payload.get("subtasks_done") or []) or None,
                 effort_hours=payload.get("effort_hours"),
                 artifact=str(payload.get("artifact") or ""),
+                blocked_on=str(payload.get("blocked_on") or ""),
+                blocked_to=str(payload.get("blocked_to") or ""),
                 # Verify-before-trust: a 'delivered' claim must be backed by a
-                # real artifact (sent email / PR / document), or it doesn't
-                # close. The agent can't confabulate its way to done.
+                # real artifact (sent email / PR / document), and a 'blocked'
+                # claim by the ask actually being in the sent record — the
+                # agent can't confabulate its way to done OR to relief.
                 require_evidence=True,
             )
             if c is None:
@@ -4475,6 +4493,23 @@ class Fabric:
                     agent_id=agent.id,
                     to=c.to,
                     verification=c.verification,
+                )
+            elif c.status == "blocked":
+                # The honest ask landed: pressure comes off, and the gap is
+                # now the manager's to resolve (it surfaces in their
+                # stewardship block as an unblock item).
+                logger.info(
+                    "Agent %s blocked commitment %s on '%s' — ask sent to %s",
+                    agent.id,
+                    c.id[:8],
+                    c.blocked_on[:60],
+                    c.blocked_to,
+                )
+                self._emit(
+                    "commitment.blocked",
+                    agent_id=agent.id,
+                    blocked_on=c.blocked_on[:120],
+                    blocked_to=c.blocked_to,
                 )
             elif claimed_delivered and c.claimed_delivered_at:
                 # The agent SAID delivered but reality didn't back it. Log it
@@ -4517,6 +4552,77 @@ class Fabric:
         if name in ("ar", "agent resourcing", "resourcing"):
             return True
         return any(k in name for k in ("resourc", "people", "workforce", "talent", "culture"))
+
+    def _manages(self, caller: str, target: str) -> bool:
+        """True when ``caller`` is in ``target``'s management chain (directly
+        or above). Line management only — no department carve-outs: pushing
+        back on a report's claimed delivery is a manager's act."""
+        if self.org is None or caller == target:
+            return False
+        cur = target
+        for _ in range(12):
+            mgr = self.org.manager_of(cur)
+            if not mgr:
+                return False
+            if mgr == caller:
+                return True
+            cur = mgr
+        return False
+
+    def _handle_reject_delivery(self, agent: Agent, payload: dict) -> None:
+        """A manager's push-back on a report's claimed delivery: the claim
+        didn't survive scrutiny, so the commitment reopens as owed, carrying
+        the rejection note the report will see top-of-mind next cycle. The
+        manager is expected to ALSO email the report the specific gap in their
+        own voice — the ledger records the truth; the email carries the
+        relationship. Authority-gated to the report's management chain."""
+        target = str(payload.get("report") or payload.get("agent_id") or "").strip()
+        commitment_id = str(payload.get("commitment_id") or "").strip()
+        reason = str(payload.get("reason") or "").strip()
+        if not (target and commitment_id and reason):
+            logger.info(
+                "reject_delivery from %s ignored — report, commitment_id and "
+                "a specific reason are all required",
+                agent.id,
+            )
+            return
+        if not self._manages(agent.id, target):
+            logger.info(
+                "reject_delivery REJECTED: %s is not in %s's management chain",
+                agent.id,
+                target,
+            )
+            return
+        try:
+            from cortiva.core import commitments as _cm
+
+            target_dir = self.agents_dir / target
+            if not target_dir.is_dir():
+                return
+            c = _cm.reject(target_dir, commitment_id=commitment_id, by=agent.id, reason=reason)
+            if c is None:
+                logger.info(
+                    "reject_delivery: no delivered commitment %s for %s",
+                    commitment_id[:8],
+                    target,
+                )
+                return
+            logger.info(
+                "Agent %s REJECTED %s's delivery of %s: %s",
+                agent.id,
+                target,
+                c.id[:8],
+                reason[:80],
+            )
+            self._emit(
+                "commitment.rejected",
+                agent_id=target,
+                rejected_by=agent.id,
+                what=c.what[:120],
+                reason=reason[:200],
+            )
+        except Exception:
+            logger.exception("reject_delivery failed for %s", agent.id)
 
     def _handle_refocus_agent(self, agent: Agent, payload: dict) -> None:
         """The org's executable re-task lever: redirect another agent onto a
@@ -5072,9 +5178,13 @@ class Fabric:
         and execution so the deadline a promise carries is never out of sight."""
         from cortiva.core import commitments as _cm
 
-        items = _cm.load(agent.directory)
+        # Settle any pending 'blocked' claims against the sent record first —
+        # an ask that landed flips to blocked (pressure off); one that never
+        # went out lapses (pressure back on, with the reason visible below).
+        items = _cm.reconcile_blocked(agent.directory)
         opens = [c for c in items if c.status == "open"]
-        if not opens:
+        blocked = [c for c in items if c.status == "blocked"]
+        if not opens and not blocked:
             # No open commitments yet — still show the standing nudge so the
             # agent registers the FIRST promise it makes (the block can't
             # prompt registration of a commitment that doesn't exist yet).
@@ -5122,6 +5232,17 @@ class Fabric:
             "Each item below shows what reality says. A ⚠️ means you (or a past "
             "you) called it done but nothing was found — so it's still owed: "
             "send the real thing now, then mark it delivered.\n",
+            "**Missing something you need? Say so — that IS the work.** If a "
+            "commitment can't be done honestly because you lack the data, "
+            "access, or a decision: do NOT write the result from memory or "
+            "invention — a made-up deliverable will be checked against reality "
+            "and rejected, and then it's owed twice. Instead: email whoever can "
+            "provide it, naming exactly what you need, then `update_commitment` "
+            "with `blocked_on` (the missing thing) and `blocked_to` (who you "
+            "asked). Once your ask is really in your sent record, the deadline "
+            "pressure comes off and the gap becomes your manager's to resolve. "
+            "'Happy to do this, I need X and Y' is a deliverable; fiction "
+            "never is.\n",
         ]
         for c in opens[:8]:
             u = _cm.required_utilisation(c, now)
@@ -5140,7 +5261,23 @@ class Fabric:
             # Reality test, surfaced inline. Claimed-but-unverified is the loud
             # case — the agent believes it's done and it isn't.
             reality = ""
-            if c.claimed_delivered_at:
+            if c.rejected_by and c.verification.startswith("delivery REJECTED"):
+                reality = (
+                    f"  \n  ⛔ **Your delivery was REJECTED by {c.rejected_by}** "
+                    f"— {c.verification.split(':', 1)[-1].strip()}. The claim "
+                    "did not survive scrutiny, so this is owed AGAIN. Address "
+                    "the specific gap named — with real data this time, or an "
+                    "honest 'I need X' (`blocked_on`/`blocked_to`) if you "
+                    "can't reach it — then re-deliver."
+                )
+            elif c.claimed_blocked_at:
+                reality = (
+                    f"  \n  ⚠️ **You claimed this is blocked on "
+                    f"'{c.blocked_on}' but no ask to {c.blocked_to} is in your "
+                    "sent record yet** — the pressure stays ON until the ask "
+                    "actually goes out. Send it (or keep working)."
+                )
+            elif c.claimed_delivered_at:
                 reality = (
                     "  \n  ⚠️ **You marked this delivered but NO artifact was "
                     "found** — no sent email to "
@@ -5189,6 +5326,26 @@ class Fabric:
                 f"({_human_remaining(rem_h)}); {prog * 100:.0f}% done of "
                 f"~{c.effort_hours:.1f}h — {heat}  \n  id `{c.id[:8]}`{reality}{own}"
             )
+        if blocked:
+            lines.append(
+                "\n**⏸️ Blocked — honest asks in flight.** These carry no "
+                "deadline pressure while you wait, but they are NOT closed: "
+                "the moment the missing piece lands (check your inbox), log "
+                "progress to resume. A wait that's gone stale is yours to "
+                "chase or re-plan around."
+            )
+            for c in blocked[:6]:
+                age = _cm.blocked_age_days(c, now)
+                stale = (
+                    "  \n  ⏰ **This wait is going stale — chase "
+                    f"{c.blocked_to} now, or re-plan the work without it.**"
+                    if age > _cm.STALE_BLOCKED_DAYS
+                    else ""
+                )
+                lines.append(
+                    f"- **{c.what}** — blocked on *{c.blocked_on}*; asked "
+                    f"{c.blocked_to} {age:.0f} day(s) ago  \n  id `{c.id[:8]}`{stale}"
+                )
         return "\n".join(lines)
 
     def _team_delivery_load(self, agent: Agent) -> dict:
@@ -5197,11 +5354,14 @@ class Fabric:
         salience block and the stewardship arousal hook.
 
         Returns ``{promised, at_risk, overdue, pressure, slipping_rows,
-        on_track_rows}`` where ``pressure`` [0,1] tracks how badly the team is
-        slipping (the worst single report's felt pressure, lifted a little for
-        each additional report that's also behind) — so it stays near zero while
-        the team is on track and climbs as real value goes at risk. The row
-        lists are pre-formatted for the salience block."""
+        on_track_rows, claimed_rows, blocked_rows}`` where ``pressure`` [0,1]
+        tracks how badly the team is slipping (the worst single report's felt
+        pressure, lifted a little for each additional report that's also
+        behind) — so it stays near zero while the team is on track and climbs
+        as real value goes at risk. ``claimed_rows`` are recent 'delivered'
+        claims to VERIFY before accepting; ``blocked_rows`` are the team's
+        honest asks now waiting on the manager. The row lists are
+        pre-formatted for the salience block."""
         empty = {
             "promised": 0,
             "at_risk": 0,
@@ -5209,6 +5369,8 @@ class Fabric:
             "pressure": 0.0,
             "slipping_rows": [],
             "on_track_rows": [],
+            "claimed_rows": [],
+            "blocked_rows": [],
         }
         if self.org is None:
             return empty
@@ -5225,12 +5387,46 @@ class Fabric:
         slipping_felt: list[float] = []
         slipping_rows: list[str] = []
         on_track_rows: list[str] = []
+        claimed_rows: list[str] = []
+        blocked_rows: list[str] = []
         for rid in reports:
             try:
                 ra = self.get_agent(rid)
-                items = _cm.load(ra.directory)
+                # Settle pending blocked claims so the manager sees the
+                # verified picture, not the report's say-so.
+                items = _cm.reconcile_blocked(ra.directory)
             except Exception:
                 continue
+            # A report saying done is a CLAIM, not a fact — surface recent
+            # deliveries with their receipt so the manager verifies before
+            # accepting, and unverified claims so they get challenged.
+            for c in items:
+                if c.status == "delivered" and c.delivered_at:
+                    try:
+                        dt = datetime.fromisoformat(c.delivered_at)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=UTC)
+                        if (now - dt).days > 7:
+                            continue
+                    except (ValueError, TypeError):
+                        continue
+                    claimed_rows.append(
+                        f'- **{rid}** — "{c.what}" to {c.to}: claims DELIVERED '
+                        f"(receipt: {c.verification or 'none recorded'}; "
+                        f"id `{c.id[:8]}`)"
+                    )
+                elif c.status == "open" and c.claimed_delivered_at:
+                    claimed_rows.append(
+                        f'- **{rid}** — "{c.what}" to {c.to}: SAID done but no '
+                        f"artifact exists — challenge this (id `{c.id[:8]}`)"
+                    )
+                elif c.status == "blocked":
+                    age = _cm.blocked_age_days(c, now)
+                    blocked_rows.append(
+                        f'- **{rid}** — "{c.what}": blocked on '
+                        f"*{c.blocked_on}*, asked {c.blocked_to} "
+                        f"{age:.0f} day(s) ago"
+                    )
             opens = [c for c in items if c.status == "open"]
             if not opens:
                 continue
@@ -5268,6 +5464,8 @@ class Fabric:
             "pressure": round(pressure, 3),
             "slipping_rows": slipping_rows,
             "on_track_rows": on_track_rows,
+            "claimed_rows": claimed_rows,
+            "blocked_rows": blocked_rows,
         }
 
     def _reports_commitment_context(self, agent: Agent) -> str:
@@ -5279,7 +5477,7 @@ class Fabric:
         what stops 'ensure the team delivers' losing every cycle to upward
         reporting — it now sits at the top of mind with the same weight."""
         load = self._team_delivery_load(agent)
-        if load["promised"] == 0:
+        if load["promised"] == 0 and not load["claimed_rows"] and not load["blocked_rows"]:
             return ""
         lines = [
             "## ⬇️ Top of mind — ensuring your team delivers",
@@ -5293,6 +5491,45 @@ class Fabric:
             "a hand). Track it to delivery, then confirm the value actually "
             "landed — never count it handled on a reply alone.",
         ]
+        claimed = load["claimed_rows"]
+        if claimed:
+            lines.append("")
+            lines.append(
+                f"**🔎 Claims to verify — {len(claimed)}. A report saying done "
+                "is a claim, not a fact — validate it before you accept it:**"
+            )
+            lines.extend(claimed[:8])
+            lines.append("")
+            lines.append(
+                "Check each receipt against what YOU actually know — the "
+                "artifact itself, your own inbox and prior briefs, the real "
+                "system state. Numbers with no source, statuses you can't see, "
+                "'root causes' with no evidence behind them, or claims that "
+                "contradict something you know: **push back**. Email the report "
+                "naming the specific gap, AND reject the claim "
+                "(`reject_delivery` with their id, the commitment id and your "
+                "reason) so it reopens as owed — a false 'done' that stands "
+                "becomes YOUR false report upward. When a claim holds up, "
+                "accept it citing what you checked — never on their say-so "
+                "alone."
+            )
+        team_blocked = load["blocked_rows"]
+        if team_blocked:
+            lines.append("")
+            lines.append(
+                f"**🙋 Honest asks waiting on you — {len(team_blocked)}. A "
+                "report has said 'I need X to do this' and named you or a "
+                "provider — the RIGHT behaviour, and it only stays right if "
+                "asking actually works:**"
+            )
+            lines.extend(team_blocked[:8])
+            lines.append("")
+            lines.append(
+                "Resolve each one THIS cycle: provide the missing piece, get it "
+                "from whoever has it, or escalate up your own chain with the "
+                "ask attached. An ask you sit on becomes your slip, and teaches "
+                "your team that inventing results beats asking."
+            )
         slipping = load["slipping_rows"]
         if slipping:
             lines.append("")
@@ -5911,6 +6148,61 @@ class Fabric:
     # "X is blocked" beliefs the probe guarded against are now disproven by
     # *doing* — when the job needs email, the agent emails, and success kills
     # the false belief without a status board.
+
+    # An observation gap under a normal day/rota cycle is unremarkable; past
+    # this many hours the world has plausibly moved and memory is stale.
+    _STALENESS_GAP_HOURS = 24.0
+
+    def _staleness_context(self, agent: Agent) -> str:
+        """Reality-gap epistemics: when the agent hasn't observed the world
+        for a while (node down, long sleep, freeze), everything it remembers
+        about CURRENT state is that stale — and a confident report written
+        from stale memory is fiction with good posture. The gap is measured
+        from the agent's own JOURNAL (written at clock-out), which only moves
+        when the agent itself completed a working session — NOT from today/
+        (the timesheet is stamped at wake-open, before planning, which would
+        zero the gap in exactly the scenario this guards) and not from
+        deliveries the node dropped into its inbox while it was out."""
+        from datetime import UTC, datetime
+
+        newest = 0.0
+        try:
+            d = agent.directory / "journal"
+            if d.is_dir():
+                for f in d.iterdir():
+                    try:
+                        newest = max(newest, f.stat().st_mtime)
+                    except OSError:
+                        continue
+        except OSError:
+            return ""
+        if newest <= 0.0:
+            return ""  # a fresh agent has no past to be stale about
+        now = datetime.now(UTC)
+        gap_h = (now.timestamp() - newest) / 3600.0
+        if gap_h < self._STALENESS_GAP_HOURS:
+            return ""
+        then = datetime.fromtimestamp(newest, tz=UTC)
+        days = gap_h / 24.0
+        return (
+            "## 🕳️ Reality gap — you have been offline "
+            f"{days:.1f} day(s)\n"
+            f"It is now **{now.strftime('%A %Y-%m-%d %H:%M')} UTC**. Your last "
+            f"observation of the world was **{then.strftime('%A %Y-%m-%d %H:%M')} "
+            "UTC** — the world has moved since and you did not see it move. "
+            "Everything you remember about CURRENT state — metrics, sprint "
+            "status, what's in flight, what's blocked, what's live — is at "
+            "least that stale and is UNVERIFIED.\n"
+            "Before you cite a number, a status, or a cause in anything you "
+            "send: **re-fetch it this session** (a tool you hold, the current "
+            "thread in your inbox), or **say plainly that you don't have "
+            "current data and ask for it**. Do not close out old commitments "
+            "with a write-up from memory — the week you were going to report "
+            "on may simply not have happened the way you remember planning "
+            "it. An honest 'I've been offline; here's what I need to get "
+            "current' is a strong first send-back. A confident diagnostic "
+            "built on pre-gap memory is not."
+        )
 
     def _grounded_work_context(self, agent: Agent) -> str:
         """Domain-work grounding — belief-testing (#93) extended from infra to
@@ -7030,6 +7322,12 @@ class Fabric:
         directive_ctx = self._directive_salience_context(agent)
         if directive_ctx:
             context = context + "\n\n---\n\n" + directive_ctx
+
+        # Reality gap on reassess too — a re-prioritisation reasoned from
+        # stale world-state re-plans the wrong world.
+        stale_ctx = self._staleness_context(agent)
+        if stale_ctx:
+            context = context + "\n\n---\n\n" + stale_ctx
 
         # Ensuring the team delivers stays top-of-mind on reassess too, right
         # below the asks from above and above her own promises (same order as

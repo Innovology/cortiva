@@ -383,3 +383,154 @@ def test_dedup_ignores_due_so_org_chart_registers_once(tmp_path) -> None:
     items = cm.load(tmp_path)
     assert len(items) == 1
     assert items[0].due_at[:10] == "2026-06-20"  # rescheduled to the latest
+
+
+# ---------------------------------------------------------------------------
+# The honest ask: 'blocked_on X, asked blocked_to' relieves pressure ONLY once
+# the ask actually went out — so saying "I need X & Y" pays, and fabricating
+# a result never does. Rejection is the manager's push-back: a delivered
+# claim that doesn't survive scrutiny reopens with the note attached.
+# ---------------------------------------------------------------------------
+
+
+def test_blocked_needs_both_gap_and_person(tmp_path) -> None:
+    c = cm.register(tmp_path, to="alex@x.io", what="W30 diagnostic", due="2026-08-10")
+    g = cm.update(tmp_path, commitment_id=c.id, blocked_on="sprint board data", blocked_to="")
+    assert g.status == "open" and g.claimed_blocked_at == ""  # a shrug changes nothing
+    g = cm.update(tmp_path, commitment_id=c.id, blocked_on="", blocked_to="coo@x.io")
+    assert g.status == "open" and g.claimed_blocked_at == ""
+
+
+def test_blocked_without_sent_ask_keeps_full_pressure(tmp_path) -> None:
+    now = datetime(2026, 8, 4, 9, 0, tzinfo=UTC)
+    due = (now + timedelta(hours=4)).isoformat()
+    c = cm.register(tmp_path, to="alex@x.io", what="W30 diagnostic", due=due, effort_hours=8)
+    g = cm.update(
+        tmp_path,
+        commitment_id=c.id,
+        blocked_on="current sprint board data",
+        blocked_to="coo@x.io",
+        require_evidence=True,
+        now=now,
+    )
+    assert g.status == "open"  # no ask went out → pressure stays ON
+    assert g.claimed_blocked_at != ""
+    assert "pressure stays on" in g.verification.lower()
+    assert cm.required_utilisation(g, now) >= cm.AT_RISK_UTILISATION
+
+
+def test_blocked_with_sent_ask_relieves_pressure(tmp_path) -> None:
+    now = datetime(2026, 8, 4, 9, 0, tzinfo=UTC)
+    due = (now + timedelta(hours=4)).isoformat()
+    c = cm.register(tmp_path, to="alex@x.io", what="W30 diagnostic", due=due, effort_hours=8)
+    _write_sent_email(tmp_path, "coo@x.io", subject="Need current sprint data", when=now)
+    g = cm.update(
+        tmp_path,
+        commitment_id=c.id,
+        blocked_on="current sprint board data",
+        blocked_to="coo@x.io",
+        require_evidence=True,
+        now=now,
+    )
+    assert g.status == "blocked"
+    assert g.blocked_at != "" and g.claimed_blocked_at == ""
+    assert "ask sent" in g.verification.lower()
+    # Blocked carries no deadline pressure — the honest ask IS the relief.
+    assert cm.required_utilisation(g, now) == 0.0
+    assert cm.felt_pressure([x for x in cm.load(tmp_path) if x.status == "open"], now) == 0.0
+
+
+def test_reconcile_blocked_flips_when_send_lands_later(tmp_path) -> None:
+    now = datetime(2026, 8, 4, 9, 0, tzinfo=UTC)
+    c = cm.register(tmp_path, to="alex@x.io", what="W30 diagnostic", due="2026-08-10")
+    g = cm.update(
+        tmp_path,
+        commitment_id=c.id,
+        blocked_on="sprint data",
+        blocked_to="coo@x.io",
+        require_evidence=True,
+        now=now,
+    )
+    assert g.status == "open"  # queued mail not yet in sent/
+    # ... the node moves the ask to sent/ a few minutes later ...
+    _write_sent_email(
+        tmp_path, "coo@x.io", subject="Need sprint data", when=now + timedelta(minutes=3)
+    )
+    items = cm.reconcile_blocked(tmp_path, now=now + timedelta(minutes=10))
+    assert items[0].status == "blocked"
+    assert "ask sent" in items[0].verification.lower()
+
+
+def test_blocked_claim_lapses_without_real_ask(tmp_path) -> None:
+    now = datetime(2026, 8, 4, 9, 0, tzinfo=UTC)
+    c = cm.register(tmp_path, to="alex@x.io", what="W30 diagnostic", due="2026-08-20")
+    cm.update(
+        tmp_path,
+        commitment_id=c.id,
+        blocked_on="sprint data",
+        blocked_to="coo@x.io",
+        require_evidence=True,
+        now=now,
+    )
+    items = cm.reconcile_blocked(tmp_path, now=now + timedelta(days=4))
+    assert items[0].status == "open"
+    assert items[0].claimed_blocked_at == "" and items[0].blocked_on == ""
+    assert "was ever sent" in items[0].verification.lower()
+
+
+def test_work_signal_reopens_blocked(tmp_path) -> None:
+    now = datetime(2026, 8, 4, 9, 0, tzinfo=UTC)
+    c = cm.register(tmp_path, to="alex@x.io", what="W30 diagnostic", due="2026-08-10")
+    _write_sent_email(tmp_path, "coo@x.io", subject="Need sprint data", when=now)
+    g = cm.update(
+        tmp_path,
+        commitment_id=c.id,
+        blocked_on="sprint data",
+        blocked_to="coo@x.io",
+        require_evidence=True,
+        now=now,
+    )
+    assert g.status == "blocked"
+    g = cm.update(tmp_path, commitment_id=c.id, progress=0.4, now=now)
+    assert g.status == "open" and g.blocked_on == ""  # work resumed
+
+
+def test_blocked_age_and_summary_count(tmp_path) -> None:
+    now = datetime(2026, 8, 4, 9, 0, tzinfo=UTC)
+    c = cm.register(tmp_path, to="alex@x.io", what="W30 diagnostic", due="2026-08-10")
+    _write_sent_email(tmp_path, "coo@x.io", when=now)
+    cm.update(
+        tmp_path,
+        commitment_id=c.id,
+        blocked_on="sprint data",
+        blocked_to="coo@x.io",
+        require_evidence=True,
+        now=now,
+    )
+    items = cm.load(tmp_path)
+    assert cm.summarise(items, now)["blocked"] == 1
+    assert cm.blocked_age_days(items[0], now + timedelta(days=6)) > cm.STALE_BLOCKED_DAYS
+
+
+def test_reject_reopens_delivered_with_note(tmp_path) -> None:
+    now = datetime(2026, 8, 4, 9, 0, tzinfo=UTC)
+    c = cm.register(tmp_path, to="coo@x.io", what="W30 diagnostic", due="2026-08-01", now=now)
+    cm.update(tmp_path, commitment_id=c.id, delivered=True)  # legacy close (no evidence gate)
+    g = cm.reject(
+        tmp_path,
+        commitment_id=c.id,
+        by="founder",
+        reason="cites W25's 38% as last sprint; no such automation exists",
+    )
+    assert g is not None and g.status == "open"
+    assert g.delivered_at == "" and g.rejected_by == "founder"
+    assert "rejected" in g.verification.lower()
+    # Reopened past its due date → it is overdue again and carries pressure.
+    later = datetime(2026, 8, 5, 9, 0, tzinfo=UTC)
+    assert cm.is_overdue(g, later)
+
+
+def test_reject_only_touches_delivered(tmp_path) -> None:
+    c = cm.register(tmp_path, to="coo@x.io", what="W30 diagnostic", due="2026-08-10")
+    assert cm.reject(tmp_path, commitment_id=c.id, by="founder", reason="nope") is None
+    assert cm.load(tmp_path)[0].status == "open"  # untouched

@@ -322,6 +322,26 @@ UPDATE_COMMITMENT_TOOL: dict[str, Any] = {
                     "type": "string",
                     "description": "Optional proof of delivery (URL, doc id, commit).",
                 },
+                "blocked_on": {
+                    "type": "string",
+                    "description": (
+                        "The honest-ask path: the SPECIFIC missing input (data / "
+                        "access / decision) without which this commitment cannot "
+                        "be done honestly. Use together with blocked_to, AFTER "
+                        "emailing that person the ask. Never write a result from "
+                        "memory or invention instead — a made-up deliverable is "
+                        "checked against reality and rejected. Once your ask is "
+                        "really in your sent record, the deadline pressure comes "
+                        "off while you wait."
+                    ),
+                },
+                "blocked_to": {
+                    "type": "string",
+                    "description": (
+                        "Who you asked for the missing input (your manager, or "
+                        "whoever can provide it). Required with blocked_on."
+                    ),
+                },
             },
             "required": [],
         },
@@ -343,6 +363,46 @@ DRINK_COFFEE_TOOL: dict[str, Any] = {
             "Use it deliberately when the work genuinely warrants the overtime."
         ),
         "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+REJECT_DELIVERY_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "reject_delivery",
+        "description": (
+            "Push back on a report's claimed delivery that did not survive "
+            "your scrutiny — numbers with no source, statuses that contradict "
+            "what you know, a 'root cause' with no evidence, a policy that "
+            "doesn't exist. Reopens their commitment as owed, with your reason "
+            "attached where they'll see it top-of-mind. Use it WITH an email "
+            "to them naming the specific gap — the ledger records the truth, "
+            "your email carries the relationship. Authority-gated: only "
+            "honoured for agents in the report's management chain. Never "
+            "reject to punish honesty — an 'I need X to do this' is the "
+            "behaviour you want; reject fiction, not asks."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "report": {
+                    "type": "string",
+                    "description": "The report's agent id (e.g. 'coo').",
+                },
+                "commitment_id": {
+                    "type": "string",
+                    "description": "The id of the delivered commitment to reopen.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "The SPECIFIC gap: what you checked, and what didn't "
+                        "hold up. This lands verbatim in front of the report."
+                    ),
+                },
+            },
+            "required": ["report", "commitment_id", "reason"],
+        },
     },
 }
 
@@ -474,6 +534,7 @@ _TOOL_TO_SUFFIX_FIELD = {
     "update_commitment": "update_commitment",
     "drink_coffee": "drink_coffee",
     "refocus_agent": "refocus_agent",
+    "reject_delivery": "reject_delivery",
     "issue_standing_order": "issue_standing_order",
     "lift_standing_order": "lift_standing_order",
 }
@@ -511,6 +572,9 @@ def tools_for_agent(
         # the target, or AR/resourcing/people dept) — a non-authorised caller's
         # refocus is rejected, so offering it broadly is safe.
         REFOCUS_AGENT_TOOL,
+        # Same pattern: the handler only honours it from the report's
+        # management chain, so offering it broadly is safe.
+        REJECT_DELIVERY_TOOL,
     ]
     if agent_id in scheduling_authorised:
         tools.append(OPTIMIZE_SCHEDULE_TOOL)
