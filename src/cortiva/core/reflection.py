@@ -112,9 +112,20 @@ class ReflectionSuffix:
     update_commitment: dict[str, Any] | None = None
     """An update to a tracked commitment: ``{"commitment_id": "<id>"?,
     "progress": <0-1>?, "subtasks_done": [..]?, "effort_hours": <float>?,
-    "delivered": <bool>?, "artifact": "<proof>"?}``. ``delivered=true`` is the
+    "delivered": <bool>?, "artifact": "<proof>"?, "blocked_on": "<missing
+    input>"?, "blocked_to": "<who was asked>"?}``. ``delivered=true`` is the
     only thing that discharges a commitment (and should follow the work
-    actually going out). Omitting the id targets the most pressing open one."""
+    actually going out). ``blocked_on``+``blocked_to`` is the honest-ask path:
+    the deadline pressure comes off once the ask is really in the sent record.
+    Omitting the id targets the most pressing open one."""
+    reject_delivery: dict[str, Any] | None = None
+    """A manager's push-back on a report's claimed delivery: ``{"report":
+    "<agent_id>", "commitment_id": "<id>", "reason": "<the specific gap>"}``.
+    The claim didn't survive scrutiny — the runtime reopens the report's
+    commitment as owed with the rejection note attached (surfaced to them
+    top-of-mind next cycle). Authority-gated: only honoured from the report's
+    management chain. Email the report the gap as well — the ledger records
+    the truth, the email carries the relationship."""
     drink_coffee: dict[str, Any] | None = None
     """A deliberate choice to pull overtime: hold sleep pressure at bay for
     ~45 minutes so the agent can keep working past its normal wind-down. The

@@ -502,3 +502,196 @@ def test_salience_mirror_for_failing_other_owed_deadline(tmp_path) -> None:
     assert "Decide NOW, silently" in out
     assert "nobody needs to know you moved your own deadline" in out
     assert "ONLY if the counterparty set this date" in out
+
+
+# ---------------------------------------------------------------------------
+# Manager verify-and-push-back: a report saying done is a claim, not a fact.
+# The stewardship block hands the manager the receipts; reject_delivery is
+# the push-back that reopens a claim that didn't survive scrutiny.
+# ---------------------------------------------------------------------------
+
+
+def _write_sent(agent_dir, to, subject="ask", when=None):
+    sent = agent_dir / "outbox" / "email" / "sent"
+    sent.mkdir(parents=True, exist_ok=True)
+    payload = {"to": to, "subject": subject, "queued_at": (when or datetime.now(UTC)).isoformat()}
+    (sent / f"{subject.replace(' ', '_')}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_stewardship_surfaces_claims_to_verify(tmp_path) -> None:
+    astrid = _report_dir(tmp_path, "astrid")
+    c = cm.register(astrid, to="maren@x", what="W30 diagnostic", due="2026-08-10")
+    cm.update(astrid, commitment_id=c.id, delivered=True)  # closes (no evidence gate here)
+    out = _mgr_fab({"astrid": astrid})._reports_commitment_context(_ceo(tmp_path))
+    assert "Claims to verify" in out
+    assert "claims DELIVERED" in out and "W30 diagnostic" in out
+    assert "push back" in out.lower() and "reject_delivery" in out
+
+
+def test_stewardship_surfaces_unverified_done_claims(tmp_path) -> None:
+    astrid = _report_dir(tmp_path, "astrid")
+    c = cm.register(astrid, to="maren@x", what="W30 diagnostic", due="2026-08-10")
+    cm.update(astrid, commitment_id=c.id, delivered=True, require_evidence=True)  # stays open
+    out = _mgr_fab({"astrid": astrid})._reports_commitment_context(_ceo(tmp_path))
+    assert "SAID done but no" in out and "challenge this" in out
+
+
+def test_stewardship_surfaces_team_asks_waiting(tmp_path) -> None:
+    now = datetime.now(UTC)
+    astrid = _report_dir(tmp_path, "astrid")
+    c = cm.register(astrid, to="maren@x", what="W30 diagnostic", due="2026-08-10")
+    _write_sent(astrid, "ceo@x", when=now)
+    cm.update(
+        astrid,
+        commitment_id=c.id,
+        blocked_on="current sprint data",
+        blocked_to="ceo@x",
+        require_evidence=True,
+        now=now,
+    )
+    out = _mgr_fab({"astrid": astrid})._reports_commitment_context(_ceo(tmp_path))
+    assert "Honest asks waiting on you" in out
+    assert "current sprint data" in out
+    assert "provide the missing piece" in out.lower()
+
+
+def _chain_fab(tmp_path, manager_of):
+    """Fabric stub with a management chain + agents_dir for reject tests."""
+    fab = Fabric.__new__(Fabric)
+    fab.org = SimpleNamespace(
+        manager_of=lambda aid: manager_of.get(aid),
+        subordinates_of=lambda aid: [k for k, v in manager_of.items() if v == aid],
+    )
+    fab.agents_dir = tmp_path
+    fab._emit = lambda *a, **k: None
+    return fab
+
+
+def test_reject_delivery_reopens_report_commitment(tmp_path) -> None:
+    astrid = _report_dir(tmp_path, "astrid")
+    c = cm.register(astrid, to="maren@x", what="W30 diagnostic", due="2026-08-01")
+    cm.update(astrid, commitment_id=c.id, delivered=True)
+    fab = _chain_fab(tmp_path, {"astrid": "ceo"})
+    fab._handle_reject_delivery(
+        SimpleNamespace(id="ceo", directory=tmp_path / "ceo"),
+        {"report": "astrid", "commitment_id": c.id, "reason": "cites W25 numbers as current"},
+    )
+    got = cm.load(astrid)[0]
+    assert got.status == "open" and got.rejected_by == "ceo"
+    assert "cites W25" in got.verification
+    # ... and the reopened rejection is surfaced to the report, loudly.
+    out = _fab()._commitment_salience_context(SimpleNamespace(id="astrid", directory=astrid))
+    assert "REJECTED by ceo" in out and "owed AGAIN" in out
+
+
+def test_reject_delivery_gated_to_management_chain(tmp_path) -> None:
+    astrid = _report_dir(tmp_path, "astrid")
+    c = cm.register(astrid, to="maren@x", what="W30 diagnostic", due="2026-08-01")
+    cm.update(astrid, commitment_id=c.id, delivered=True)
+    fab = _chain_fab(tmp_path, {"astrid": "ceo", "willow": "ceo"})
+    # A peer (not in astrid's chain) cannot reject.
+    fab._handle_reject_delivery(
+        SimpleNamespace(id="willow", directory=tmp_path / "w"),
+        {"report": "astrid", "commitment_id": c.id, "reason": "no"},
+    )
+    assert cm.load(astrid)[0].status == "delivered"  # untouched
+    # Grandmanager (up the chain) CAN.
+    fab2 = _chain_fab(tmp_path, {"astrid": "cto", "cto": "ceo"})
+    fab2._handle_reject_delivery(
+        SimpleNamespace(id="ceo", directory=tmp_path / "ceo"),
+        {"report": "astrid", "commitment_id": c.id, "reason": "checked the artifact — absent"},
+    )
+    assert cm.load(astrid)[0].status == "open"
+
+
+def test_reject_delivery_requires_specific_reason(tmp_path) -> None:
+    astrid = _report_dir(tmp_path, "astrid")
+    c = cm.register(astrid, to="maren@x", what="W30 diagnostic", due="2026-08-01")
+    cm.update(astrid, commitment_id=c.id, delivered=True)
+    fab = _chain_fab(tmp_path, {"astrid": "ceo"})
+    fab._handle_reject_delivery(
+        SimpleNamespace(id="ceo", directory=tmp_path / "ceo"),
+        {"report": "astrid", "commitment_id": c.id, "reason": ""},
+    )
+    assert cm.load(astrid)[0].status == "delivered"  # a bare 'no' is not a push-back
+
+
+def test_salience_shows_blocked_section_and_stale_chase(tmp_path) -> None:
+    a = _agent(tmp_path)
+    now = datetime.now(UTC)
+    c = cm.register(a.directory, to="maren@x", what="W30 diagnostic", due="2026-08-10")
+    _write_sent(a.directory, "coo@x", when=now)
+    cm.update(
+        a.directory,
+        commitment_id=c.id,
+        blocked_on="sprint data",
+        blocked_to="coo@x",
+        require_evidence=True,
+        now=now,
+    )
+    out = _fab()._commitment_salience_context(a)
+    assert "Blocked — honest asks in flight" in out and "sprint data" in out
+    # Age the block past stale → the chase line appears.
+    items = cm.load(a.directory)
+    items[0].blocked_at = (now - timedelta(days=6)).isoformat()
+    cm.save(a.directory, items)
+    out = _fab()._commitment_salience_context(a)
+    assert "going stale" in out
+
+
+def test_salience_offers_the_honest_ask_path(tmp_path) -> None:
+    a = _agent(tmp_path)
+    cm.register(a.directory, to="maren@x", what="W30 diagnostic", due="2026-08-10")
+    out = _fab()._commitment_salience_context(a)
+    assert "blocked_on" in out and "blocked_to" in out
+    assert "made-up deliverable" in out.lower() or "fiction" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# Staleness epistemics: after a long offline gap, everything the agent
+# remembers about current state is unverified — say so before it reports.
+# ---------------------------------------------------------------------------
+
+
+def test_staleness_block_fires_after_long_gap(tmp_path) -> None:
+    import os
+
+    a = _agent(tmp_path)
+    j = a.directory / "journal"
+    j.mkdir()
+    f = j / "timesheet-2026-07-21.json"
+    f.write_text("{}", encoding="utf-8")
+    old = (datetime.now(UTC) - timedelta(days=14)).timestamp()
+    os.utime(f, (old, old))
+    out = _fab()._staleness_context(a)
+    assert "Reality gap" in out and "14.0 day(s)" in out
+    assert "UNVERIFIED" in out
+
+
+def test_staleness_silent_for_fresh_agent_and_normal_cycle(tmp_path) -> None:
+    a = _agent(tmp_path)
+    # No journal at all → nothing to be stale about.
+    assert _fab()._staleness_context(a) == ""
+    j = a.directory / "journal"
+    j.mkdir()
+    (j / "2026-08-04.md").write_text("today", encoding="utf-8")  # fresh write
+    assert _fab()._staleness_context(a) == ""
+
+
+def test_staleness_ignores_wake_stamped_today_dir(tmp_path) -> None:
+    import os
+
+    a = _agent(tmp_path)
+    j = a.directory / "journal"
+    j.mkdir()
+    f = j / "timesheet-2026-07-21.json"
+    f.write_text("{}", encoding="utf-8")
+    old = (datetime.now(UTC) - timedelta(days=14)).timestamp()
+    os.utime(f, (old, old))
+    # The wake stamps today/timesheet.json BEFORE planning — that must not
+    # zero the gap (it's the very scenario the block guards).
+    t = a.directory / "today"
+    t.mkdir()
+    (t / "timesheet.json").write_text("{}", encoding="utf-8")
+    out = _fab()._staleness_context(a)
+    assert "Reality gap" in out

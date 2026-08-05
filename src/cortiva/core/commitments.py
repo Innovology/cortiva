@@ -97,9 +97,15 @@ class Commitment:
     subtasks: list[dict[str, Any]] = field(default_factory=list)
     """``[{"desc": str, "done": bool}, ...]`` — when present, progress is
     derived from these (objective) rather than the self-reported float."""
-    status: str = "open"  # open | held | delivered | missed | withdrawn
+    status: str = "open"  # open | held | blocked | delivered | missed | withdrawn
     held_order_id: str = ""  # standing order that parked this (status=held)
     held_at: str = ""  # when it was parked
+    blocked_on: str = ""  # the NAMED missing input (data / access / decision)
+    blocked_to: str = ""  # who was asked to provide it
+    blocked_at: str = ""  # when the block was VERIFIED (ask actually sent)
+    claimed_blocked_at: str = ""  # agent SAID blocked but no ask found yet
+    rejected_by: str = ""  # manager who rejected a claimed delivery
+    rejected_at: str = ""  # when it was rejected
     created_at: str = ""
     delivered_at: str = ""
     artifact: str = ""  # optional proof link (URL / doc id / commit)
@@ -122,6 +128,12 @@ class Commitment:
             "status": self.status,
             "held_order_id": self.held_order_id,
             "held_at": self.held_at,
+            "blocked_on": self.blocked_on,
+            "blocked_to": self.blocked_to,
+            "blocked_at": self.blocked_at,
+            "claimed_blocked_at": self.claimed_blocked_at,
+            "rejected_by": self.rejected_by,
+            "rejected_at": self.rejected_at,
             "created_at": self.created_at,
             "delivered_at": self.delivered_at,
             "artifact": self.artifact,
@@ -146,6 +158,12 @@ class Commitment:
             status=str(d.get("status") or "open"),
             held_order_id=str(d.get("held_order_id") or ""),
             held_at=str(d.get("held_at") or ""),
+            blocked_on=str(d.get("blocked_on") or ""),
+            blocked_to=str(d.get("blocked_to") or ""),
+            blocked_at=str(d.get("blocked_at") or ""),
+            claimed_blocked_at=str(d.get("claimed_blocked_at") or ""),
+            rejected_by=str(d.get("rejected_by") or ""),
+            rejected_at=str(d.get("rejected_at") or ""),
             created_at=str(d.get("created_at") or ""),
             delivered_at=str(d.get("delivered_at") or ""),
             artifact=str(d.get("artifact") or ""),
@@ -254,9 +272,10 @@ def _addr(s: str) -> str:
     return m.group(0).lower() if m else (s or "").strip().lower()
 
 
-def _sent_email_evidence(agent_dir: Path, c: Commitment) -> str:
-    """Look for a real sent email to this commitment's counterparty, posted
-    after the commitment was made. Returns a short human description, or ''.
+def _sent_email_to(agent_dir: Path, recipient: str, after: datetime | None) -> str:
+    """Look for a real email in the agent's SENT record addressed to
+    ``recipient``, posted at/after ``after``. Returns a short human
+    description, or ''.
 
     The node moves successfully-sent mail from ``outbox/email/`` to
     ``outbox/email/sent/`` (and failures to ``failed/``). We only count the
@@ -266,14 +285,9 @@ def _sent_email_evidence(agent_dir: Path, c: Commitment) -> str:
     sent = Path(agent_dir) / "outbox" / "email" / "sent"
     if not sent.is_dir():
         return ""
-    to_addr = _addr(c.to)
-    to_name = (c.to or "").strip().lower().split("@")[0].split()[0] if c.to else ""
-    try:
-        made = datetime.fromisoformat(c.created_at) if c.created_at else None
-        if made and made.tzinfo is None:
-            made = made.replace(tzinfo=UTC)
-    except (ValueError, TypeError):
-        made = None
+    to_addr = _addr(recipient)
+    to_name = (recipient or "").strip().lower().split("@")[0].split()[0] if recipient else ""
+    made = after
     for p in sorted(sent.glob("*.json")):
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
@@ -303,8 +317,133 @@ def _sent_email_evidence(agent_dir: Path, c: Commitment) -> str:
         if made and when and when < made:
             continue  # an older email to the same person isn't THIS delivery
         subj = str(d.get("subject") or "").strip()
-        return f"email to {c.to}" + (f' — "{subj[:60]}"' if subj else "")
+        return f"email to {recipient}" + (f' — "{subj[:60]}"' if subj else "")
     return ""
+
+
+def _parse_when(s: str) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(s)
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        return None
+
+
+def _sent_email_evidence(agent_dir: Path, c: Commitment) -> str:
+    """Delivery evidence: a real sent email to the commitment's counterparty,
+    posted after the commitment was made."""
+    return _sent_email_to(agent_dir, c.to, _parse_when(c.created_at))
+
+
+# The ask often goes out in the SAME cycle as the ledger update, and the
+# node's queue→sent move lands minutes later — so the evidence window opens a
+# little BEFORE the claim was stamped, and reconcile_blocked() re-checks on
+# later cycles until the sent record catches up.
+_ASK_WINDOW_HOURS = 2.0
+
+# A blocked claim that never produces a real ask within this long is theatre —
+# the claim is cleared and the commitment goes back to carrying full pressure.
+_ASK_GRACE_DAYS = 3.0
+
+# A verified block older than this is going stale — the salience block tells
+# the owner to chase the ask or re-plan without the missing piece.
+STALE_BLOCKED_DAYS = 5.0
+
+
+def ask_evidence(agent_dir: Path, c: Commitment) -> str:
+    """Test reality for a 'blocked, I asked for X' claim: a real sent email to
+    the person the ask was addressed to, around/after the claim was made.
+    Returns a short description, or ''."""
+    if not c.blocked_to:
+        return ""
+    claimed = _parse_when(c.claimed_blocked_at or c.blocked_at)
+    after = claimed - timedelta(hours=_ASK_WINDOW_HOURS) if claimed else None
+    return _sent_email_to(agent_dir, c.blocked_to, after)
+
+
+def reconcile_blocked(agent_dir: Path, now: datetime | None = None) -> list[Commitment]:
+    """Settle pending 'blocked' claims against reality. Idempotent; called
+    from the salience/stewardship paths each cycle.
+
+    - A claim whose ask actually went out (sent email to ``blocked_to``)
+      VERIFIES: status flips to ``blocked`` and the pressure comes off — the
+      honest 'I need X to do this' has been said to someone who can act.
+    - A claim that never produced a real ask within the grace window is
+      cleared: the commitment keeps carrying full pressure and the salience
+      block says why.
+    """
+    commitments = load(agent_dir)
+    n = _now(now)
+    changed = False
+    for c in commitments:
+        if c.status != "open" or not c.claimed_blocked_at:
+            continue
+        ev = ask_evidence(agent_dir, c)
+        if ev:
+            c.status = "blocked"
+            c.blocked_at = n.isoformat()
+            c.claimed_blocked_at = ""
+            c.verification = f"ask sent: {ev}"
+            changed = True
+            continue
+        claimed = _parse_when(c.claimed_blocked_at)
+        if claimed and (n - claimed) > timedelta(days=_ASK_GRACE_DAYS):
+            c.claimed_blocked_at = ""
+            c.verification = (
+                f"claimed blocked on '{c.blocked_on}' but no ask to "
+                f"{c.blocked_to or 'anyone'} was ever sent — the claim lapsed"
+            )
+            c.blocked_on = ""
+            c.blocked_to = ""
+            changed = True
+    if changed:
+        save(agent_dir, commitments)
+    return commitments
+
+
+def blocked_age_days(c: Commitment, now: datetime | None = None) -> float:
+    """Days since a verified block was raised (0 when not blocked)."""
+    if c.status != "blocked":
+        return 0.0
+    raised = _parse_when(c.blocked_at)
+    if raised is None:
+        return 0.0
+    return max(0.0, (_now(now) - raised).total_seconds() / 86400.0)
+
+
+def reject(
+    agent_dir: Path,
+    *,
+    commitment_id: str,
+    by: str,
+    reason: str,
+    now: datetime | None = None,
+) -> Commitment | None:
+    """A manager's push-back on a claimed delivery: reopen it.
+
+    Only a DELIVERED commitment can be rejected — pushing back on one still
+    open is just an email. The reopened commitment carries the rejection note
+    (surfaced by the owner's salience block) and re-enters the pressure model
+    with its original deadline, so being caught costs what an unkept promise
+    costs. Returns the reopened commitment, or None if no delivered
+    commitment matched."""
+    commitments = load(agent_dir)
+    cid = (commitment_id or "").strip()
+    target = None
+    for c in commitments:
+        if c.status == "delivered" and (c.id == cid or (cid and c.id.startswith(cid))):
+            target = c
+            break
+    if target is None:
+        return None
+    target.status = "open"
+    target.delivered_at = ""
+    target.claimed_delivered_at = ""
+    target.rejected_by = str(by or "").strip()
+    target.rejected_at = _now(now).isoformat()
+    target.verification = f"delivery REJECTED by {target.rejected_by}: {str(reason or '').strip()}"
+    save(agent_dir, commitments)
+    return target
 
 
 def delivery_evidence(agent_dir: Path, c: Commitment) -> tuple[bool, str]:
@@ -451,6 +590,7 @@ def summarise(commitments: list[Commitment], now: datetime | None = None) -> dic
     top = ranked[0] if ranked else None
     return {
         "open": len(opens),
+        "blocked": sum(1 for c in commitments if c.status == "blocked"),
         "at_risk": sum(1 for c in opens if required_utilisation(c, now) >= AT_RISK_UTILISATION),
         "overdue": sum(1 for c in opens if is_overdue(c, now)),
         "pressure": round(felt_pressure(opens, now), 3),
@@ -577,6 +717,8 @@ def update(
     artifact: str = "",
     due: Any = None,
     reschedule_by: str = "owner",
+    blocked_on: str = "",
+    blocked_to: str = "",
     require_evidence: bool = False,
     agent_dir_for_evidence: Path | None = None,
     now: datetime | None = None,
@@ -589,6 +731,14 @@ def update(
       backs the claim (a real artifact reference or a sent email to the
       counterparty). Without evidence it stays OPEN with a ``verification`` note
       so the agent is told "you said done but nothing went out".
+    - ``blocked_on`` + ``blocked_to`` (both required) is the honest 'I can't do
+      this without X' path: name the missing input and who you asked for it.
+      With ``require_evidence`` the pressure only comes off once the ask
+      actually went out (a sent email to ``blocked_to`` — checked now and again
+      by ``reconcile_blocked`` as the send lands); a claim that never produces
+      a real ask lapses and the commitment carries full pressure again. Any
+      later work signal (progress / subtasks / delivered) reopens a blocked
+      commitment — the block is a wait state, not a discharge.
     - ``withdrawn=True`` closes it because the requester pulled it (e.g. "no
       rush, the meeting moved") — a clean, no-penalty close, NOT a failure and
       never an escalation.
@@ -602,6 +752,13 @@ def update(
     target = _resolve(commitments, commitment_id, now)
     if target is None:
         return None
+    # A work signal on a blocked commitment reopens it — the wait is over,
+    # whether the missing piece arrived or the owner found another way.
+    if target.status == "blocked" and (subtasks_done or progress is not None or delivered):
+        target.status = "open"
+        target.blocked_on = ""
+        target.blocked_to = ""
+        target.blocked_at = ""
     if subtasks_done:
         wanted = {s.strip().lower() for s in subtasks_done}
         for st in target.subtasks:
@@ -650,6 +807,28 @@ def update(
             target.verification = (
                 "claimed delivered but NO artifact found — no sent email to "
                 f"{target.to or 'the recipient'} and no document/PR/link attached"
+            )
+    if blocked_on and blocked_to and target.status == "open":
+        # The honest ask: name the missing input and who was asked for it.
+        # Both are required — 'blocked' with no named gap or no named person
+        # is a shrug, not an ask, and changes nothing.
+        target.blocked_on = str(blocked_on).strip()
+        target.blocked_to = str(blocked_to).strip()
+        target.claimed_blocked_at = _now(now).isoformat()
+        ev_dir = agent_dir_for_evidence or agent_dir
+        ev = ask_evidence(ev_dir, target) if require_evidence else "ask accepted"
+        if ev:
+            target.status = "blocked"
+            target.blocked_at = _now(now).isoformat()
+            target.claimed_blocked_at = ""
+            target.verification = f"ask sent: {ev}" if require_evidence else ev
+        else:
+            # No sent ask found YET — the send may still be in flight this
+            # cycle; reconcile_blocked() re-tests until it lands or lapses.
+            target.verification = (
+                f"claimed blocked on '{target.blocked_on}' — pressure stays ON "
+                f"until the ask to {target.blocked_to} is actually in your "
+                "sent record"
             )
     save(agent_dir, commitments)
     return target
