@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from cortiva.core.timesheet import DaySummary, Timesheet, TimesheetManager, WorkEntry
@@ -167,6 +168,92 @@ class TestTimesheet:
         ts = Timesheet(agent_dir)
         result = ts.clock_out()
         assert result is None
+
+
+def _agent_dir(tmp_path: Path) -> Path:
+    agent_dir = tmp_path / "agent-1"
+    (agent_dir / "today").mkdir(parents=True)
+    (agent_dir / "journal").mkdir(parents=True)
+    return agent_dir
+
+
+def _closed(days_ago: int, hours: float) -> WorkEntry:
+    wake = datetime.now(UTC) - timedelta(days=days_ago)
+    return WorkEntry(wake_time=wake, sleep_time=wake + timedelta(hours=hours))
+
+
+class TestLongRunningFabric:
+    """A fabric that runs for weeks never reloads its timesheets."""
+
+    def test_today_excludes_prior_days_without_reload(self, tmp_path: Path) -> None:
+        # 13 days of 7.5h sessions in memory read as 52.7h "today" (amara, 2026-11-04).
+        ts = Timesheet(_agent_dir(tmp_path))
+        ts._today_entries.extend(_closed(d, 7.5) for d in range(13, 0, -1))
+        ts.clock_in()
+        ts.clock_out()
+
+        assert ts.today().total_hours < 1.0
+        assert len(ts.today().entries) == 1
+
+    def test_persist_writes_only_today(self, tmp_path: Path) -> None:
+        agent_dir = _agent_dir(tmp_path)
+        ts = Timesheet(agent_dir)
+        ts._today_entries.append(_closed(3, 7.5))
+        ts.clock_in()
+
+        data = json.loads((agent_dir / "today" / "timesheet.json").read_text())
+        assert len(data["entries"]) == 1
+
+    def test_clock_in_prunes_closed_entries_older_than_yesterday(self, tmp_path: Path) -> None:
+        ts = Timesheet(_agent_dir(tmp_path))
+        ts._today_entries.extend([_closed(5, 7.5), _closed(1, 7.5)])
+        ts.clock_in()
+
+        days_ago = sorted((datetime.now(UTC) - e.wake_time).days for e in ts._today_entries)
+        assert days_ago == [0, 1]
+
+
+class TestSessionCap:
+    def test_wedged_session_clocks_out_capped(self, tmp_path: Path) -> None:
+        # PLANNING trap: awake 16 days, clocked out as one 387h entry (ceo, 2026-11-04).
+        ts = Timesheet(_agent_dir(tmp_path))
+        ts.clock_in()
+        assert ts.current_entry is not None
+        ts.current_entry.wake_time = datetime.now(UTC) - timedelta(days=16)
+
+        entry = ts.clock_out()
+
+        assert entry is not None
+        assert entry.hours == 12.0
+        assert ts.today().total_hours == 0.0
+
+    def test_normal_session_not_capped(self, tmp_path: Path) -> None:
+        ts = Timesheet(_agent_dir(tmp_path))
+        ts.clock_in()
+        assert ts.current_entry is not None
+        ts.current_entry.wake_time = datetime.now(UTC) - timedelta(hours=7.5)
+
+        entry = ts.clock_out()
+
+        assert entry is not None
+        assert 7.4 < entry.hours < 7.6
+
+    def test_overnight_clock_out_keeps_yesterdays_history(self, tmp_path: Path) -> None:
+        agent_dir = _agent_dir(tmp_path)
+        ts = Timesheet(agent_dir)
+        y = datetime.now(UTC) - timedelta(days=1)
+        morning = y.replace(hour=8, minute=0, second=0, microsecond=0)
+        earlier = WorkEntry(wake_time=morning, sleep_time=morning + timedelta(hours=2))
+        ts._today_entries.append(earlier)
+        ts.clock_in()
+        assert ts.current_entry is not None
+        ts.current_entry.wake_time = morning.replace(hour=22)
+
+        ts.clock_out()
+
+        day = earlier.wake_time.strftime("%Y-%m-%d")
+        history = json.loads((agent_dir / "journal" / f"timesheet-{day}.json").read_text())
+        assert len(history["entries"]) == 2
 
 
 class TestTimesheetManager:
