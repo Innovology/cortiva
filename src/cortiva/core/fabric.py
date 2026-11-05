@@ -334,6 +334,11 @@ class Fabric:
         self.daily_consciousness_limit = daily_consciousness_limit
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
+        # One wake+plan at a time per node (see _PLANNING_CONCURRENCY), and the
+        # retry bookkeeping for wakes whose planning call failed.
+        self._planning_sem: asyncio.Semaphore | None = None
+        self._wake_retries: dict[str, int] = {}
+        self._wake_retry_tasks: set[asyncio.Task] = set()
         # Per-agent accumulated familiarity signals for today
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
         self._emotional_states: dict[str, Any] = {}
@@ -551,8 +556,100 @@ class Fabric:
     # otherwise allows when you're woken outside your shift.
     _WAKE_OVERRIDE_MINUTES = 45.0
 
+    # The first plan of the day is the heaviest local-model call an agent makes
+    # (~17k tokens). Several at once on one node's model each take 3+ minutes,
+    # blow the 180s inference timeout, and strand the agent in PLANNING — cto
+    # and yuki on Mini-2, 2026-11-05 (195s = 180s + 15s backstop, both while the
+    # CEO was mid-cycle). Planning is serialised per node; work after planning
+    # stays concurrent (Claude sessions don't touch the local model).
+    _PLANNING_CONCURRENCY = 1
+    # A wake whose planning failed puts the agent back to sleep and retries
+    # after 2, 4, then 8 minutes before giving up (an operator can still wake).
+    _WAKE_RETRY_BASE_S = 120.0
+    _WAKE_RETRY_MAX = 3
+
+    def _planning_gate(self) -> asyncio.Semaphore:
+        if self._planning_sem is None:
+            # Created lazily so it binds to the running event loop.
+            self._planning_sem = asyncio.Semaphore(self._PLANNING_CONCURRENCY)
+        return self._planning_sem
+
     async def wake(self, agent_id: str, *, override_minutes: float = 0.0) -> Agent:
-        """Wake an agent. Loads identity and begins planning.
+        """Wake an agent: serialised planning, recovery if planning fails.
+
+        Before this, a planning call that timed out raised out of the middle of
+        the wake sequence and left the agent in PLANNING forever: re-waking is a
+        no-op for a non-sleeping agent and the heartbeat only cycles EXECUTING
+        agents, so nothing ever retried (the PLANNING trap). Now a failed wake
+        returns the agent to SLEEPING and schedules a retry, then re-raises so
+        the caller still sees the failure.
+        """
+        agent = self.get_agent(agent_id)
+        if agent.state != AgentState.SLEEPING:
+            # Already awake: only the override grace changes — no planning, no gate.
+            return await self._wake_once(agent_id, override_minutes=override_minutes)
+        async with self._planning_gate():
+            try:
+                woken = await self._wake_once(agent_id, override_minutes=override_minutes)
+            except Exception as exc:
+                if agent.state in (AgentState.WAKING, AgentState.PLANNING):
+                    await self._recover_failed_wake(agent, exc, override_minutes)
+                raise
+        self._wake_retries.pop(agent_id, None)
+        return woken
+
+    async def _recover_failed_wake(
+        self, agent: Agent, exc: BaseException, override_minutes: float
+    ) -> None:
+        """Put a half-woken agent back to sleep and schedule a bounded retry."""
+        logger.error(
+            "Wake of %s failed during %s (%s: %s) — returning to sleep",
+            agent.id,
+            agent.state.value,
+            type(exc).__name__,
+            exc,
+        )
+        try:
+            await self.sleep(agent.id)
+        except Exception:
+            logger.exception("Could not return %s to sleep after a failed wake", agent.id)
+            return
+        attempt = self._wake_retries.get(agent.id, 0) + 1
+        if attempt > self._WAKE_RETRY_MAX:
+            self._wake_retries.pop(agent.id, None)
+            logger.error(
+                "Giving up waking %s after %d failed attempts — needs an operator",
+                agent.id,
+                self._WAKE_RETRY_MAX,
+            )
+            return
+        self._wake_retries[agent.id] = attempt
+        delay = self._WAKE_RETRY_BASE_S * (2 ** (attempt - 1))
+        logger.warning(
+            "Retrying wake of %s in %.0fs (attempt %d/%d)",
+            agent.id,
+            delay,
+            attempt,
+            self._WAKE_RETRY_MAX,
+        )
+
+        async def _retry() -> None:
+            await asyncio.sleep(delay)
+            if self.get_agent(agent.id).state != AgentState.SLEEPING:
+                return  # woken (or handled) some other way meanwhile
+            try:
+                await self.wake(agent.id, override_minutes=override_minutes)
+            except Exception:
+                # A planning failure was already logged, slept and rescheduled
+                # by wake(); anything else (agent gone) just ends the chain.
+                logger.debug("wake retry for %s ended", agent.id, exc_info=True)
+
+        task = asyncio.create_task(_retry())
+        self._wake_retry_tasks.add(task)
+        task.add_done_callback(self._wake_retry_tasks.discard)
+
+    async def _wake_once(self, agent_id: str, *, override_minutes: float = 0.0) -> Agent:
+        """One wake attempt. Loads identity and begins planning.
 
         ``override_minutes`` > 0 marks this as a FORCED wake (operator or a
         manager rallying the team): for that long, the heartbeat's
