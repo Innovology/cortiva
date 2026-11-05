@@ -31,6 +31,15 @@ _LOG_CONTEXT_CHARS = 600
 _LOG_REPLY_CHARS = 1500
 _LOG_ROTATE_BYTES = 50 * 1024 * 1024
 
+# Deadline sizing. Conservative figures for a 30-35B MoE on an M-series Mac:
+# prefill is an order of magnitude faster than decode, and a cold throughput
+# gauge must not shrink the budget, so decode is floored at 15 tok/s.
+_CHARS_PER_TOKEN = 4.0
+_PREFILL_TPS = 150.0
+_MIN_DECODE_TPS = 15.0
+_DEADLINE_SLACK_S = 30.0
+_MAX_DEADLINE_S = 900.0
+
 
 class ModelUnavailableError(RuntimeError):
     """Raised fast (without calling the model) while the local-model circuit
@@ -86,6 +95,7 @@ class OpenAICompatibleAdapter:
         breaker_threshold: int = 0,
         breaker_cooldown: float = 0.0,
         prompt_log: str | None = None,
+        client_retries: int = 0,
     ):
         self.model = model
         # Opt-in JSONL record of every local-model call (what each agent asked,
@@ -119,6 +129,13 @@ class OpenAICompatibleAdapter:
         # generous (a 35B at ~40 tok/s can legitimately take >2min on a long
         # generation) so real slow work is never mistaken for a wedge.
         self._request_timeout_s = float(request_timeout or 0) or 180.0
+        # The openai client retries a timed-out request twice by default. On a
+        # saturated local model that is pure harm: the server is still
+        # generating the abandoned answer, and the retry queues a second copy
+        # behind it (Mini-2, 2026-11-05: 63 retried generations, every planning
+        # call timing out, breaker open). The adapter already has its own
+        # deadline + breaker, so the client makes exactly one attempt.
+        self._client_retries = max(0, int(client_retries))
         self._breaker_threshold = int(breaker_threshold or 0) or 4
         self._breaker_cooldown_s = float(breaker_cooldown or 0) or 45.0
         self._breaker_fails = 0
@@ -223,7 +240,10 @@ class OpenAICompatibleAdapter:
                     raise ImportError(
                         "openai is not installed. Install it with: pip install openai"
                     )
-                kwargs: dict[str, Any] = {"api_key": agent_key}
+                kwargs: dict[str, Any] = {
+                    "api_key": agent_key,
+                    "max_retries": self._client_retries,
+                }
                 if self._base_url:
                     kwargs["base_url"] = self._base_url
                 self._clients[agent_id] = OpenAI(**kwargs)
@@ -234,7 +254,10 @@ class OpenAICompatibleAdapter:
                 from openai import OpenAI
             except ImportError:
                 raise ImportError("openai is not installed. Install it with: pip install openai")
-            kwargs2: dict[str, Any] = {"api_key": self._default_key}
+            kwargs2: dict[str, Any] = {
+                "api_key": self._default_key,
+                "max_retries": self._client_retries,
+            }
             if self._base_url:
                 kwargs2["base_url"] = self._base_url
             self._default_client = OpenAI(**kwargs2)
@@ -321,6 +344,27 @@ class OpenAICompatibleAdapter:
         except OSError:
             logger.debug("prompt log write failed", exc_info=True)
 
+    def _deadline_for(self, create_kwargs: dict[str, Any]) -> float:
+        """Per-call deadline sized from the work, never below the configured floor.
+
+        A flat deadline can't fit every call: a daily plan carries ~17k tokens
+        of identity and context and may answer at length, and at ~40 tok/s on a
+        35B local model that alone runs past 180s — so every first plan of the
+        day timed out, was retried, and tripped the breaker (Mini-2,
+        2026-11-05). The estimate is prefill + the full ``max_tokens`` of
+        decode at the measured EWMA throughput (floored so a cold gauge can't
+        shrink it), plus slack. Real slow work gets the time it needs; a wedged
+        server still fails inside a bounded window.
+        """
+        prompt_chars = sum(
+            len(str(m.get("content") or "")) for m in create_kwargs.get("messages", [])
+        )
+        prompt_tokens = prompt_chars / _CHARS_PER_TOKEN
+        max_out = int(create_kwargs.get("max_tokens") or self.max_tokens)
+        decode_tps = max(self._perf_ewma_tps, _MIN_DECODE_TPS)
+        estimate = _DEADLINE_SLACK_S + prompt_tokens / _PREFILL_TPS + max_out / decode_tps
+        return max(self._request_timeout_s, min(estimate, _MAX_DEADLINE_S))
+
     async def _think_call(self, client: Any, create_kwargs: dict[str, Any]) -> ConsciousResponse:
         """Breaker check, admission gate, the HTTP call, and response parsing."""
         # Circuit breaker: if a recent run of calls timed out / failed to
@@ -353,15 +397,14 @@ class OpenAICompatibleAdapter:
         # server can't pin this gate slot forever; the outer wait_for is a
         # belt-and-braces backstop (a cancelled wait_for can't kill the thread,
         # but the client timeout makes the thread return on its own).
+        deadline_s = self._deadline_for(create_kwargs)
         try:
             async with self._inference_slot():
                 response = await asyncio.wait_for(
                     asyncio.to_thread(
-                        lambda: client.chat.completions.create(
-                            timeout=self._request_timeout_s, **create_kwargs
-                        )
+                        lambda: client.chat.completions.create(timeout=deadline_s, **create_kwargs)
                     ),
-                    timeout=self._request_timeout_s + 15.0,
+                    timeout=deadline_s + 15.0,
                 )
         except Exception as exc:
             # Count only model-HEALTH failures (timeout / connection) toward the
