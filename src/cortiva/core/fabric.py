@@ -891,6 +891,7 @@ class Fabric:
 
         # Directives from above / company missions go FIRST — top of mind,
         # above her own plan (the salience she doesn't choose to feel).
+        await self._ground_directives(agent)
         directive_ctx = self._directive_salience_context(agent)
         if directive_ctx:
             context = context + "\n\n---\n\n" + directive_ctx
@@ -4321,6 +4322,11 @@ class Fabric:
                 commitment_id = c.id
             except Exception:
                 logger.debug("directive→commitment register failed", exc_info=True)
+            # Anything the directive points at is resolved before it is ever
+            # planned on (see _ground_directives) — an unreadable link must
+            # surface as "I can't read this", never be filled in from memory.
+            from cortiva.core.grounding import extract_github_refs
+
             existing.append(
                 {
                     "from_addr": frm,
@@ -4328,6 +4334,7 @@ class Fabric:
                     "label": label,
                     "subject": subj,
                     "snippet": (m.get("text") or "").strip().replace("\n", " ")[:240],
+                    "references": extract_github_refs(subj + " " + str(m.get("text") or "")),
                     "rank_weight": self._rank_weight_for(label),
                     "mission": mission,
                     "opened_at": now,
@@ -4455,6 +4462,86 @@ class Fabric:
             or getattr(suffix, "delegate", None)
         )
 
+    async def _ground_directives(self, agent: Agent) -> None:
+        """Resolve every open directive's references that aren't read yet.
+
+        Runs before the salience block is built (wake and reassess), so what
+        the agent plans on is the resource's real content — or an explicit
+        "could not read" it must act on rather than paper over. Unreadable
+        references are retried each time, so a fixed token or granted access
+        shows up on the next wake without anyone re-sending the directive.
+        """
+        import json
+        from pathlib import Path
+
+        from cortiva.core.grounding import agent_github_token, read_github_ref
+
+        path = Path(agent.directory) / "directives.json"
+        if not path.exists():
+            return
+        try:
+            items = json.loads(path.read_text(encoding="utf-8")) or []
+        except (ValueError, OSError):
+            return
+        pending = [
+            (d, r)
+            for d in items
+            if d.get("status") == "open"
+            for r in d.get("references") or []
+            if r.get("status") != "read"
+        ]
+        if not pending:
+            return
+        token = agent_github_token(Path(agent.directory))
+        changed = False
+        for _d, ref in pending[:8]:
+            try:
+                resolved = await asyncio.to_thread(read_github_ref, ref, token)
+            except Exception:
+                logger.debug("grounding failed for %s", ref.get("url"), exc_info=True)
+                continue
+            if resolved != ref:
+                ref.clear()
+                ref.update(resolved)
+                changed = True
+                if resolved.get("status") == "unreadable":
+                    logger.warning(
+                        "Agent %s cannot read %s (%s) — directive stays ungrounded",
+                        agent.id,
+                        ref.get("url"),
+                        resolved.get("reason"),
+                    )
+        if changed:
+            try:
+                path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+            except OSError:
+                logger.debug("could not persist grounded directives", exc_info=True)
+
+    @staticmethod
+    def _render_references(refs: list[dict], originator: str) -> list[str]:
+        out: list[str] = []
+        for r in refs:
+            url = r.get("url", "")
+            if r.get("status") == "read":
+                excerpt = (r.get("excerpt") or "").strip().replace("\n", " ")
+                out.append(
+                    f"  📎 {url} — **{r.get('title') or '(untitled)'}** "
+                    f"({r.get('kind', 'issue')}, {r.get('state', '?')})  \n"
+                    f"    {excerpt[:600] or '(no description)'}"
+                )
+            else:
+                out.append(
+                    f"  ⛔ {url} — you could **NOT** read this "
+                    f"({r.get('reason') or 'not resolved yet'}). "
+                    "You do not know what it says. **Do not guess, infer, or "
+                    "reconstruct its content from memory** — nothing you plan "
+                    "or delegate on it is valid until you have the actual text. "
+                    f"Get it first: ask {originator} to paste it, or ask a "
+                    "colleague with GitHub access to read it to you, or ask "
+                    "the operator for access. That request IS the first step."
+                )
+        return out
+
     def _directive_salience_context(self, agent: Agent) -> str:
         """Top-of-mind block for open directives from above / company missions.
 
@@ -4513,6 +4600,7 @@ class Fabric:
                 f"reply to {originator} with the outcome. It stays open until "
                 f"delivered."
             )
+            lines.extend(self._render_references(d.get("references") or [], originator))
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -7461,6 +7549,7 @@ class Fabric:
             context = context + "\n\n---\n\n" + orders_ctx
 
         # Open directives stay top-of-mind on every reassess, not just at wake.
+        await self._ground_directives(agent)
         directive_ctx = self._directive_salience_context(agent)
         if directive_ctx:
             context = context + "\n\n---\n\n" + directive_ctx
