@@ -201,6 +201,8 @@ def _build_consciousness_adapter(con_section: dict[str, Any]) -> Any:
             con_kwargs["breaker_threshold"] = int(con_section["breaker_threshold"])
         if "breaker_cooldown" in con_section:
             con_kwargs["breaker_cooldown"] = float(con_section["breaker_cooldown"])
+        if con_section.get("prompt_log"):
+            con_kwargs["prompt_log"] = str(con_section["prompt_log"])
     return con_cls(**con_kwargs)
 
 

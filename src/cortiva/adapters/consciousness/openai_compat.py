@@ -16,11 +16,20 @@ import json
 import logging
 import os
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from cortiva.adapters.protocols import ConsciousResponse, Priority
 
 logger = logging.getLogger(__name__)
+
+# Prompt-log record sizes: enough to read what was asked and answered without
+# storing whole identity contexts (~17k tokens) on every call.
+_LOG_PROMPT_CHARS = 4000
+_LOG_CONTEXT_CHARS = 600
+_LOG_REPLY_CHARS = 1500
+_LOG_ROTATE_BYTES = 50 * 1024 * 1024
 
 
 class ModelUnavailableError(RuntimeError):
@@ -76,8 +85,13 @@ class OpenAICompatibleAdapter:
         request_timeout: float = 0.0,
         breaker_threshold: int = 0,
         breaker_cooldown: float = 0.0,
+        prompt_log: str | None = None,
     ):
         self.model = model
+        # Opt-in JSONL record of every local-model call (what each agent asked,
+        # how big, how long, what came back) — the only place this is visible;
+        # the MLX server logs timings, never content.
+        self._prompt_log = Path(prompt_log).expanduser() if prompt_log else None
         self.max_tokens = max_tokens
         self._default_key = api_key or os.environ.get("OPENAI_API_KEY")
         self._base_url = base_url
@@ -266,6 +280,49 @@ class OpenAICompatibleAdapter:
             create_kwargs["tools"] = tools
             create_kwargs["tool_choice"] = "auto"
 
+        _call = {
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "agent": agent_id,
+            "call_type": str((metadata or {}).get("call_type", "")),
+            "context_chars": len(context),
+            "prompt_chars": len(effective_prompt),
+            "prompt": effective_prompt[:_LOG_PROMPT_CHARS],
+            "context_head": context[:_LOG_CONTEXT_CHARS],
+            "tools": [t.get("function", {}).get("name", "") for t in tools or []],
+        }
+        try:
+            response = await self._think_call(client, create_kwargs)
+        except Exception as exc:
+            self._log_call({**_call, "error": f"{type(exc).__name__}: {exc}"[:300]})
+            raise
+        self._log_call(
+            {
+                **_call,
+                "latency_ms": round(response.latency_ms),
+                "tokens_in": response.tokens_in,
+                "tokens_out": response.tokens_out,
+                "reply": response.content[:_LOG_REPLY_CHARS],
+                "tool_calls": [c["name"] for c in response.tool_calls],
+            }
+        )
+        response.metadata.update({"agent_id": agent_id, "priority": priority.value})
+        return response
+
+    def _log_call(self, record: dict[str, Any]) -> None:
+        """Append one call to the prompt log. Never raises."""
+        if self._prompt_log is None:
+            return
+        try:
+            self._prompt_log.parent.mkdir(parents=True, exist_ok=True)
+            if self._prompt_log.exists() and self._prompt_log.stat().st_size > _LOG_ROTATE_BYTES:
+                self._prompt_log.replace(self._prompt_log.with_suffix(".1.jsonl"))
+            with self._prompt_log.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            logger.debug("prompt log write failed", exc_info=True)
+
+    async def _think_call(self, client: Any, create_kwargs: dict[str, Any]) -> ConsciousResponse:
+        """Breaker check, admission gate, the HTTP call, and response parsing."""
         # Circuit breaker: if a recent run of calls timed out / failed to
         # connect, the local model is almost certainly wedged — fail fast
         # instead of joining 16 other agents each waiting out the full deadline
@@ -368,7 +425,7 @@ class OpenAICompatibleAdapter:
             tokens_out=usage.completion_tokens if usage else 0,
             latency_ms=latency_ms,
             model=self.model,
-            metadata={"agent_id": agent_id, "priority": priority.value},
+            metadata={},
             tool_calls=tool_calls,
         )
 
