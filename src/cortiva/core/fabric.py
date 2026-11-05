@@ -4328,26 +4328,38 @@ class Fabric:
             # the agent merely replies. This is what stops a directive being
             # laundered out by an unrelated reply to the same person.
             commitment_id = ""
+            # Anything the directive points at is resolved before it is ever
+            # planned on (see _ground_directives) — an unreadable link must
+            # surface as "I can't read this", never be filled in from memory.
+            from cortiva.core.grounding import extract_github_refs
+
+            refs = extract_github_refs(subj + " " + str(m.get("text") or ""))
             try:
                 from datetime import timedelta
 
                 from cortiva.core import commitments as _cm
 
+                # Name the work, not the mail: a commitment that reads
+                # "Action the directive: <subject>" was delivered by replying
+                # to the subject line (2026-11-05). When the directive points
+                # at GitHub work, the deliverable is that work.
+                what = f"Action the directive: {subj}"
+                if refs:
+                    what += (
+                        " — deliver "
+                        + ", ".join(r["url"] for r in refs)
+                        + (" (closes when the issue/PR is closed; a reply is not delivery)")
+                    )
                 c = _cm.register(
                     agent.directory,
                     to=m.get("from", "") or frm,
-                    what=f"Action the directive: {subj}",
+                    what=what,
                     due=(datetime.now(UTC) + timedelta(days=2)).isoformat(),
                     effort_hours=2.0,
                 )
                 commitment_id = c.id
             except Exception:
                 logger.debug("directive→commitment register failed", exc_info=True)
-            # Anything the directive points at is resolved before it is ever
-            # planned on (see _ground_directives) — an unreadable link must
-            # surface as "I can't read this", never be filled in from memory.
-            from cortiva.core.grounding import extract_github_refs
-
             existing.append(
                 {
                     "from_addr": frm,
@@ -4355,7 +4367,7 @@ class Fabric:
                     "label": label,
                     "subject": subj,
                     "snippet": (m.get("text") or "").strip().replace("\n", " ")[:240],
-                    "references": extract_github_refs(subj + " " + str(m.get("text") or "")),
+                    "references": refs,
                     "rank_weight": self._rank_weight_for(label),
                     "mission": mission,
                     "opened_at": now,
@@ -4393,15 +4405,15 @@ class Fabric:
         except (ValueError, OSError):
             return []
         now = datetime.now(UTC)
-        # A directive is handled only when its linked commitment is delivered/
-        # withdrawn — never on a bare reply.
-        comm_status: dict[str, str] = {}
+        # A directive is handled only when its linked commitment is delivered —
+        # never on a bare reply.
+        comm_by_id: dict[str, Any] = {}
         try:
             from cortiva.core import commitments as _cm
 
-            comm_status = {c.id: c.status for c in _cm.load(agent.directory)}
+            comm_by_id = {c.id: c for c in _cm.load(agent.directory)}
         except Exception:
-            comm_status = {}
+            comm_by_id = {}
         still_open: list[dict] = []
         for d in items:
             if d.get("status") != "open":
@@ -4412,8 +4424,21 @@ class Fabric:
                 opened = now
             if (now - opened).total_seconds() > self._DIRECTIVE_TTL_DAYS * 86400:
                 continue  # expired backstop
+            # A directive that points at GitHub work is handled by the WORLD,
+            # not by the agent's bookkeeping: it stays open while any issue/PR
+            # it references is open, and closes once they are all closed —
+            # whatever the linked commitment says. (2026-11-05: "focus all
+            # attention on #228" was closed by an email reply while #228 sat
+            # untouched.)
+            refs = [r for r in d.get("references") or [] if r.get("status") == "read"]
+            if refs and any(r.get("state") == "open" for r in refs):
+                still_open.append(d)
+                continue
+            if refs and all(r.get("state") in ("closed", "merged") for r in refs):
+                continue  # the thing it pointed at is done → directive handled
             cid = str(d.get("commitment_id") or "")
-            if cid and comm_status.get(cid) == "delivered":
+            c = comm_by_id.get(cid) if cid else None
+            if c is not None and c.status == "delivered" and not self._delivered_by_reply(c, d):
                 continue  # the owed work was delivered → directive handled
             # A withdrawn commitment does NOT close a directive. The node's
             # inbound-mail reconciler can withdraw on a local-model reading of
@@ -4429,6 +4454,48 @@ class Fabric:
             except OSError:
                 pass
         return still_open
+
+    # A directive whose own words ask for a message back ("send me", "reply",
+    # "email me", "let me know") IS delivered by an email to the originator.
+    _DIRECTIVE_ASKS_FOR_REPLY = (
+        "send me",
+        "email me",
+        "reply",
+        "respond",
+        "let me know",
+        "write back",
+        "report back",
+        "update me",
+    )
+
+    @classmethod
+    def _delivered_by_reply(cls, commitment: Any, directive: dict) -> bool:
+        """True when the only 'delivery' of a directive's commitment was an
+        email back to the person who gave it.
+
+        2026-11-05: the CEO's commitment for "Priority Number 1" was verified
+        as 'email to alexander.browne — "Re: Priority Number 1"', went
+        ``delivered``, and the directive was pruned as handled — the reply
+        asked the founder to paste the issue. Asking a question back is not
+        doing the work, unless the directive itself asked for a message.
+        """
+        originator = str(directive.get("from_addr") or "").lower()
+        to = str(getattr(commitment, "to", "") or "").lower()
+        if originator and originator not in to:
+            return False  # delivered to someone else — a real hand-off
+        words = f"{directive.get('subject', '')} {directive.get('snippet', '')}".lower()
+        if any(k in words for k in cls._DIRECTIVE_ASKS_FOR_REPLY):
+            return False  # the directive wanted a message; a message delivers it
+        artifact = str(getattr(commitment, "artifact", "") or "").lower()
+        verification = str(getattr(commitment, "verification", "") or "").lower()
+        if not artifact.strip():
+            return True  # nothing in the world to point at — only the reply
+        return (
+            "outbox/email" in artifact
+            or artifact.endswith(".eml")
+            or artifact.startswith("mailto:")
+            or verification.startswith("email")
+        )
 
     # Verbs that name a deliverable — a side-effect in the world, not just an
     # internal thought. If a task says it, "done" requires the side-effect.
@@ -4520,12 +4587,21 @@ class Fabric:
                     f"{d.get('subject', '')} {d.get('snippet', '')}"
                 )
                 changed = True
+        # Unread references first (a fixed token shows up next wake); then
+        # references already read whose issue/PR is still open, so a directive
+        # closes when the world closes it (see _open_directives), not before.
         pending = [
             (d, r)
             for d in items
             if d.get("status") == "open"
             for r in d.get("references") or []
             if r.get("status") != "read"
+        ] + [
+            (d, r)
+            for d in items
+            if d.get("status") == "open"
+            for r in d.get("references") or []
+            if r.get("status") == "read" and r.get("state") == "open"
         ]
         if not pending:
             if changed:
@@ -4541,6 +4617,8 @@ class Fabric:
             except Exception:
                 logger.debug("grounding failed for %s", ref.get("url"), exc_info=True)
                 continue
+            if ref.get("status") == "read" and resolved.get("status") != "read":
+                continue  # a blip on re-check must not void what was read
             if resolved != ref:
                 ref.clear()
                 ref.update(resolved)
