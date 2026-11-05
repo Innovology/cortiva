@@ -178,3 +178,21 @@ async def test_unreadable_references_are_retried_next_wake(tmp_path: Path, monke
 
     assert calls == [1, 1]
     assert "Now readable" in fabric._directive_salience_context(agent)
+
+
+@pytest.mark.asyncio
+async def test_withdrawn_commitment_does_not_close_a_directive(tmp_path: Path) -> None:
+    # Only delivery closes a directive; a withdrawal (which a classifier can
+    # emit on its reading of a reply) must leave it open.
+    from cortiva.core import commitments as cm
+
+    fabric, agent = _fabric_with_directive(tmp_path)
+    cid = fabric._open_directives(agent)[0]["commitment_id"]
+    cm.update(agent.directory, commitment_id=cid, withdrawn=True)
+    assert len(fabric._open_directives(agent)) == 1
+
+    # Delivery (with evidence off, the pure path) does close it.
+    fabric2, agent2 = _fabric_with_directive(tmp_path / "two")
+    cid2 = fabric2._open_directives(agent2)[0]["commitment_id"]
+    cm.update(agent2.directory, commitment_id=cid2, delivered=True)
+    assert fabric2._open_directives(agent2) == []

@@ -4403,8 +4403,14 @@ class Fabric:
             if (now - opened).total_seconds() > self._DIRECTIVE_TTL_DAYS * 86400:
                 continue  # expired backstop
             cid = str(d.get("commitment_id") or "")
-            if cid and comm_status.get(cid) in ("delivered", "withdrawn"):
+            if cid and comm_status.get(cid) == "delivered":
                 continue  # the owed work was delivered → directive handled
+            # A withdrawn commitment does NOT close a directive. The node's
+            # inbound-mail reconciler can withdraw on a local-model reading of
+            # a reply — the founder's "reset behind the new objective" was read
+            # as cancelling the objective (2026-11-05). Only delivery closes a
+            # directive; a real release must come from the originator in words
+            # the agent acts on, not from a classifier.
             still_open.append(d)
         # Self-clean: rewrite only the open set if we pruned anything.
         if len(still_open) != len([d for d in items if d.get("status") == "open"]):
