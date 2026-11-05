@@ -1379,7 +1379,33 @@ def cmd_start(args: argparse.Namespace) -> None:
         remove_pid(pid_path)
         print("Fabric stopped.")
     finally:
+        _exit_daemon(loop)
+
+
+def _exit_daemon(loop: asyncio.AbstractEventLoop, executor_timeout_s: float = 15.0) -> None:
+    """Leave the process even if executor threads are still busy.
+
+    Model calls run in ``asyncio.to_thread`` and can sit inside a long HTTP
+    request. Those threads are non-daemon, so after "Fabric stopped" the
+    interpreter waited for every one of them to time out — a stopped fabric
+    lived on for ten minutes, still retrying against the model and writing
+    to the log beside its replacement (Mini-2, 2026-11-05 20:37). Give the
+    executor a bounded chance to wind down, then exit without waiting.
+    """
+    import os
+
+    try:
+        loop.run_until_complete(
+            asyncio.wait_for(loop.shutdown_default_executor(), executor_timeout_s)
+        )
+    except Exception:
+        pass
+    try:
         loop.close()
+    except Exception:
+        pass
+    logging.shutdown()
+    os._exit(0)
 
 
 def cmd_stop(args: argparse.Namespace) -> None:
