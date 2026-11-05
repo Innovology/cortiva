@@ -69,3 +69,56 @@ def test_escalation_climbs_past_an_inactive_manager(tmp_path: Path) -> None:
     fabric.load_schedules({"ceo": ROTA, "noor": ROTA, "coo": ROTA})
     mgr, _email = fabric._resolve_manager("noor")
     assert mgr == "coo"
+
+
+def test_team_delivery_load_ignores_off_rota_reports(tmp_path: Path) -> None:
+    from cortiva.core import commitments as _cm
+
+    fabric = _org(tmp_path)
+    # coo promised the ceo something and is overdue — but coo is off the rota.
+    _cm.register(
+        fabric.agents["coo"].directory, to="ceo@x", what="roadmap", due="2020-01-01T00:00:00+00:00"
+    )
+    fabric.load_schedules({"ceo": ROTA, "noor": ROTA})
+    assert fabric._team_delivery_load(fabric.agents["ceo"])["promised"] == 0
+    assert fabric._reports_commitment_context(fabric.agents["ceo"]) == ""
+    fabric.load_schedules({"ceo": ROTA, "noor": ROTA, "coo": ROTA})
+    assert fabric._team_delivery_load(fabric.agents["ceo"])["promised"] >= 1
+
+
+def test_grounding_backfills_references_on_older_directives(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+    import json
+
+    from cortiva.core import grounding
+
+    fabric = _org(tmp_path)
+    ceo = fabric.agents["ceo"]
+    url = "https://github.com/Innovology/innovology.io/issues/228"
+    (ceo.directory / "directives.json").write_text(
+        json.dumps(
+            [
+                {
+                    "from_addr": "alex@x",
+                    "from": "alex@x",
+                    "subject": "Priority Number 1",
+                    "snippet": f"focus on {url}",
+                    "status": "open",
+                    "opened_at": "2026-11-04T18:33:14+00:00",
+                    "rank_weight": 1.0,
+                }
+            ]
+        )
+    )
+    monkeypatch.setattr(
+        grounding,
+        "read_github_ref",
+        lambda ref, token, timeout=8.0: {**ref, "status": "unreadable", "reason": "no creds"},
+    )
+    asyncio.run(fabric._ground_directives(ceo))
+    saved = json.loads((ceo.directory / "directives.json").read_text())
+    assert (
+        saved[0]["references"][0]["url"] == url
+        and saved[0]["references"][0]["status"] == "unreadable"
+    )
+    assert "could **NOT** read" in fabric._directive_salience_context(ceo)

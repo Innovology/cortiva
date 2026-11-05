@@ -4494,6 +4494,16 @@ class Fabric:
             items = json.loads(path.read_text(encoding="utf-8")) or []
         except (ValueError, OSError):
             return
+        from cortiva.core.grounding import extract_github_refs
+
+        changed = False
+        for d in items:
+            if d.get("status") == "open" and "references" not in d:
+                # Recorded before grounding existed — resolve from what we kept.
+                d["references"] = extract_github_refs(
+                    f"{d.get('subject', '')} {d.get('snippet', '')}"
+                )
+                changed = True
         pending = [
             (d, r)
             for d in items
@@ -4502,9 +4512,13 @@ class Fabric:
             if r.get("status") != "read"
         ]
         if not pending:
+            if changed:
+                try:
+                    path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+                except OSError:
+                    pass
             return
         token = agent_github_token(Path(agent.directory))
-        changed = False
         for _d, ref in pending[:8]:
             try:
                 resolved = await asyncio.to_thread(read_github_ref, ref, token)
@@ -5615,7 +5629,10 @@ class Fabric:
         }
         if self.org is None:
             return empty
-        reports = self.org.subordinates_of(agent.id)
+        # An off-rota report's slipping promises are not a delivery problem to
+        # chase — they are not working (see _inactive_agent_ids).
+        inactive = self._inactive_agent_ids()
+        reports = [r for r in self.org.subordinates_of(agent.id) if r not in inactive]
         if not reports:
             return empty
         from datetime import UTC, datetime
@@ -5975,6 +5992,17 @@ class Fabric:
         items = _ex.load(agent.directory)
         now = datetime.now(UTC)
         chasing = [e for e in items if _ex.should_chase(e, now)]
+        # Nothing is owed by someone who is off the rota — chasing them is noise.
+        inactive = self._inactive_agent_ids()
+        if inactive:
+            inactive_addrs = {
+                str(c.get("email") or "").lower()
+                for c in self._load_directory_cards()
+                if c.get("id") in inactive
+            } - {""}
+            chasing = [
+                e for e in chasing if str(getattr(e, "sender", "")).lower() not in inactive_addrs
+            ]
         if not chasing:
             return ""
         chasing.sort(key=lambda e: _ex.hours_to_due(e, now))
