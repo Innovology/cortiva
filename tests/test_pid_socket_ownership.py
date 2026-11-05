@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 from cortiva.core.ipc import FabricServer, read_pid, remove_pid, write_pid
@@ -20,8 +22,10 @@ def test_remove_pid_leaves_a_successors_pid_file(tmp_path: Path) -> None:
     assert not p.exists()
 
 
-def test_stop_leaves_a_successors_socket(tmp_path: Path) -> None:
-    sock = tmp_path / "fabric.sock"
+def test_stop_leaves_a_successors_socket() -> None:
+    # A short path: AF_UNIX paths are capped at ~104 chars on macOS.
+    tmp = Path(tempfile.mkdtemp(prefix="cv-", dir="/tmp"))
+    sock = tmp / "fabric.sock"
 
     async def run() -> None:
         old = FabricServer()
@@ -34,4 +38,7 @@ def test_stop_leaves_a_successors_socket(tmp_path: Path) -> None:
         await new.stop()
         assert not sock.exists()
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
