@@ -11,10 +11,10 @@ set -euo pipefail
 
 PR_BODY="${PR_BODY:-}"
 
-RED='\033[0;31m'
-YEL='\033[1;33m'
-GRN='\033[0;32m'
-NC='\033[0m'
+RED='[0;31m'
+YEL='[1;33m'
+GRN='[0;32m'
+NC='[0m'
 
 fail()  { echo -e "${RED}[AI-DELEG] FAIL: $*${NC}" >&2; exit 1; }
 warn()  { echo -e "${YEL}[AI-DELEG] WARN: $*${NC}"; }
@@ -66,10 +66,17 @@ if echo "$DELEG_VALUE" | grep -qiE '^N/A[[:space:]]*[-—]'; then
   if [[ -z "$REASON" ]]; then
     fail "N/A requires a reason, e.g. 'N/A — live pair session, no agent in the loop'."
   fi
-  # Still require Prompt owner even on N/A changes — someone owns the workflow
   pass "AI Delegation N/A accepted — reason: ${REASON}"
   # Fall through to Prompt owner check
+
+# ── 3b. Non-N/A: require a meaningful description (≥ 20 characters) ──────────
+# Catches drive-by entries like "AI helped" or "Claude" that pass the
+# placeholder check but carry zero information value.
 else
+  DELEG_LEN="${#DELEG_VALUE}"
+  if [[ "$DELEG_LEN" -lt 20 ]]; then
+    fail "AI Delegation description is too short (${DELEG_LEN} chars): '${DELEG_VALUE}'. Describe what was specifically delegated — minimum 20 characters. Example: 'Claude drafted the test suite; I reviewed and adjusted 3 assertions.'"
+  fi
   pass "AI Delegation documented: '${DELEG_VALUE}'"
 fi
 
