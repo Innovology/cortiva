@@ -125,6 +125,7 @@ async def test_unreadable_reference_is_surfaced_not_guessed(tmp_path: Path, monk
 
     assert "could **NOT** read this" in block and "no GitHub credentials" in block
     assert "Do not guess" in block and "alex@innovology.io" in block
+    assert "treat it as void" in block and "do not mark it delivered" in block
     saved = json.loads((agent.directory / "directives.json").read_text())
     assert saved[0]["references"][0]["status"] == "unreadable"
 

@@ -4569,7 +4569,11 @@ class Fabric:
                     "or delegate on it is valid until you have the actual text. "
                     f"Get it first: ask {originator} to paste it, or ask a "
                     "colleague with GitHub access to read it to you, or ask "
-                    "the operator for access. That request IS the first step."
+                    "the operator for access. That request IS the first step. "
+                    "**Anything you previously planned, briefed or delegated "
+                    "about this resource was built on a guess, not its content — "
+                    "treat it as void: tell the people you briefed to stop, and "
+                    "do not mark it delivered.**"
                 )
         return out
 
