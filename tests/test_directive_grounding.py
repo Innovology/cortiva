@@ -197,3 +197,26 @@ async def test_withdrawn_commitment_does_not_close_a_directive(tmp_path: Path) -
     cid2 = fabric2._open_directives(agent2)[0]["commitment_id"]
     cm.update(agent2.directory, commitment_id=cid2, delivered=True)
     assert fabric2._open_directives(agent2) == []
+
+
+@pytest.mark.asyncio
+async def test_execution_context_carries_the_grounded_references(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The executing session must see the same ⛔/📎 lines as the planner.
+    fabric, agent = _fabric_with_directive(tmp_path)
+    monkeypatch.setattr(
+        grounding,
+        "read_github_ref",
+        lambda ref, token, timeout=8.0: {**ref, "status": "unreadable", "reason": "no creds"},
+    )
+    await fabric._ground_directives(agent)
+    block = fabric._directive_references_context(agent)
+    assert (
+        "actually point at" in block
+        and "could **NOT** read" in block
+        and "treat it as void" in block
+    )
+
+    fabric2, agent2 = _fabric_with_directive(tmp_path / "none")
+    assert fabric2._directive_references_context(agent2) != ""  # pending refs still listed

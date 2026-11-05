@@ -1968,6 +1968,16 @@ class Fabric:
         if inbox_ctx:
             context = context + "\n\n---\n\n" + inbox_ctx
 
+        # What the open directives actually point at — the same grounded
+        # references the planner saw. Without this the executing session
+        # (a Claude run with identity + task + recalled memories) re-asserted
+        # the guessed version of an unreadable issue that the plan had just
+        # agreed to ask about (CEO, 2026-11-05 21:51: "#228 (Homeschool
+        # retirement) … Samantha is executing that independently").
+        refs_ctx = self._directive_references_context(agent)
+        if refs_ctx:
+            context = context + "\n\n---\n\n" + refs_ctx
+
         # Plugin-contributed per-task context (e.g. Myelin: inhibition
         # checks, outcome forecasts, emotional conditioning, matched
         # procedures for THIS task). Importance mirrors the memory-store
@@ -4576,6 +4586,18 @@ class Fabric:
                     "do not mark it delivered.**"
                 )
         return out
+
+    def _directive_references_context(self, agent: Agent) -> str:
+        """The grounded references of every open directive, for task execution."""
+        opens = [d for d in self._open_directives(agent) if d.get("references")]
+        if not opens:
+            return ""
+        lines = ["## What the directives from above actually point at\n"]
+        for d in opens:
+            originator = d.get("from") or d.get("from_addr") or d.get("label") or "the originator"
+            lines.append(f"- **{d.get('subject', '(no subject)')}**")
+            lines.extend(self._render_references(d.get("references") or [], originator))
+        return "\n".join(lines)
 
     def _directive_salience_context(self, agent: Agent) -> str:
         """Top-of-mind block for open directives from above / company missions.
