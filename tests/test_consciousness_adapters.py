@@ -281,6 +281,7 @@ class TestOpenAICompatAdapterExtended:
             client = adapter._get_client("agent-1")
             mock_openai.OpenAI.assert_called_once_with(
                 api_key="sk-agent1",
+                max_retries=0,
                 base_url="https://api.example.com/v1",
             )
             assert client is mock_client
@@ -295,7 +296,7 @@ class TestOpenAICompatAdapterExtended:
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
             _client = adapter._get_client("agent-1")
-            mock_openai.OpenAI.assert_called_once_with(api_key="sk-agent1")
+            mock_openai.OpenAI.assert_called_once_with(api_key="sk-agent1", max_retries=0)
 
     def test_get_client_default_with_base_url(self) -> None:
         adapter = self._make_adapter(
@@ -310,6 +311,7 @@ class TestOpenAICompatAdapterExtended:
             _client = adapter._get_client("any-agent")
             mock_openai.OpenAI.assert_called_once_with(
                 api_key="sk-default",
+                max_retries=0,
                 base_url="https://custom.api/v1",
             )
 
@@ -511,10 +513,39 @@ class TestOpenAICompatCircuitBreaker:
         assert adapter.perf_snapshot()["breaker_open"] is False
 
     @pytest.mark.asyncio
-    async def test_per_request_timeout_is_passed_to_client(self) -> None:
+    async def test_configured_timeout_is_the_floor_of_the_deadline(self) -> None:
         adapter = self._adapter(request_timeout=42.0)
         client = MagicMock()
         client.chat.completions.create.return_value = self._ok_response()
         adapter._default_client = client
-        await adapter.think("a", "c", "p")
+        await adapter.think("a", "c", "p", max_tokens=8)
         assert client.chat.completions.create.call_args.kwargs["timeout"] == 42.0
+
+    def test_deadline_grows_with_prompt_and_max_tokens(self) -> None:
+        # A ~19k-token daily plan at 40 tok/s cannot fit a flat 180s (Mini-2,
+        # 2026-11-05): the deadline must scale with the work, bounded above.
+        adapter = self._adapter(request_timeout=180.0)
+        adapter._perf_ewma_tps = 40.0
+        small = adapter._deadline_for({"messages": [{"content": "hi"}], "max_tokens": 64})
+        plan = adapter._deadline_for({"messages": [{"content": "x" * 76_000}], "max_tokens": 4096})
+        assert small == 180.0
+        assert 250.0 < plan < 900.0
+        huge = adapter._deadline_for(
+            {"messages": [{"content": "x" * 10_000_000}], "max_tokens": 4096}
+        )
+        assert huge == 900.0
+
+    def test_cold_throughput_gauge_cannot_shrink_the_deadline(self) -> None:
+        adapter = self._adapter(request_timeout=180.0)
+        assert adapter._perf_ewma_tps == 0.0
+        d = adapter._deadline_for({"messages": [{"content": "x" * 76_000}], "max_tokens": 4096})
+        assert d >= 180.0
+
+    def test_client_retries_are_configurable(self) -> None:
+        # Default: one attempt (a retry just queues a second copy of a timed-out
+        # generation behind the one the saturated server is still producing).
+        adapter = self._adapter(client_retries=2)
+        mock_openai = MagicMock()
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            adapter._get_client()
+        assert mock_openai.OpenAI.call_args.kwargs["max_retries"] == 2
