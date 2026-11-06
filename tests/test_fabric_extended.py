@@ -1679,3 +1679,60 @@ class TestShutdownFiles:
         before = cons.calls
         await fabric.stop(drain_timeout_s=5.0)
         assert cons.calls == before
+
+
+# ---------------------------------------------------------------------------
+# Cycle admission — as many cycles in flight as the model has decode slots
+# ---------------------------------------------------------------------------
+
+
+class TestCycleAdmission:
+    def _rig(self, tmp_path: Path, concurrency: int):
+        import asyncio
+
+        class _Slow(_CountingConsciousness):
+            def __init__(self) -> None:
+                super().__init__(plan_body="")
+                self.served: list[str] = []
+
+            async def think(self, agent_id, context, prompt, **kwargs):
+                self.served.append(agent_id)
+                await asyncio.sleep(0.05)
+                return await super().think(agent_id, context, prompt, **kwargs)
+
+        cons = _Slow()
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=cons,
+            cycle_concurrency=concurrency,
+        )
+        for aid in ("a1", "a2", "a3"):
+            _executing_agent_empty_queue(fabric, aid)  # each cycle = one idle ask
+        return fabric, cons
+
+    @pytest.mark.asyncio
+    async def test_one_slot_means_one_cycle_per_heartbeat_and_nobody_starves(
+        self, tmp_path: Path
+    ) -> None:
+        """Five agents woken together on a one-at-a-time model queued four of
+        them past the cycle guard. With one slot, one cycle runs per heartbeat
+        and the others yield; the longest-waiting agent goes next."""
+        fabric, cons = self._rig(tmp_path, concurrency=1)
+        await fabric.heartbeat()
+        assert len(cons.served) == 1
+        assert set(fabric._cycle_waiting_since) == {"a1", "a2", "a3"} - set(cons.served)
+        await fabric.heartbeat()
+        await fabric.heartbeat()
+        assert sorted(cons.served) == ["a1", "a2", "a3"]  # each served exactly once
+        # With one slot and three agents, two are always waiting — never the
+        # one just served, and the slot is free again between heartbeats.
+        assert len(fabric._cycle_waiting_since) == 2
+        assert cons.served[-1] not in fabric._cycle_waiting_since
+        assert fabric._cycles_in_flight == 0
+
+    @pytest.mark.asyncio
+    async def test_unlimited_is_the_old_behaviour(self, tmp_path: Path) -> None:
+        fabric, cons = self._rig(tmp_path, concurrency=0)
+        await fabric.heartbeat()
+        assert sorted(cons.served) == ["a1", "a2", "a3"]

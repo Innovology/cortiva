@@ -217,6 +217,7 @@ class Fabric:
         channel: ChannelAdapter | None = None,
         terminal: TerminalAgentAdapter | None = None,
         heartbeat_interval: float = 30.0,
+        cycle_concurrency: int = 0,
         daily_consciousness_limit: int = 1000,
         budget_manager: ConsciousnessBudgetManager | None = None,
         isolation: NoIsolation | None = None,
@@ -333,6 +334,16 @@ class Fabric:
         # Runtime state
         self.agents: dict[str, Agent] = {}
         self.heartbeat_interval = heartbeat_interval
+        # How many agent cycles may run at once. A local model decodes one
+        # request at a time: five agents woken together queued four of them
+        # past the 120 s cycle guard, which cancelled the ask after the model
+        # had spent its time on it, and the task came back next heartbeat
+        # (Mini-2, 2026-11-06: 36 cycle timeouts in one hour). 0 = unlimited
+        # (API providers); set to the node's decode concurrency for a local one.
+        self.cycle_concurrency = max(0, int(cycle_concurrency or 0))
+        self._cycles_in_flight = 0
+        self._cycle_waiting_since: dict[str, float] = {}
+        self._cycles_yielded: dict[str, int] = {}
         self.daily_consciousness_limit = daily_consciousness_limit
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
@@ -9126,6 +9137,33 @@ class Fabric:
         self.capacity_tracker.heartbeat_start()
 
         async def _run_cycle(aid: str) -> None:
+            # Admission: no more cycles in flight than the model has decode
+            # slots. Checked and taken synchronously (no await in between) so
+            # the first tasks of the gather below get the slots and the rest
+            # yield this heartbeat instead of queueing on the model until the
+            # cycle guard kills them. The candidate list is ordered by how
+            # long each agent has been waiting, so nobody starves.
+            if self.cycle_concurrency and self._cycles_in_flight >= self.cycle_concurrency:
+                self._cycle_waiting_since.setdefault(aid, time.monotonic())
+                n = self._cycles_yielded.get(aid, 0) + 1
+                self._cycles_yielded[aid] = n
+                if n == 1 or n % 10 == 0:
+                    logger.info(
+                        "Yielding the model: %s waits for a slot (%d in flight, waited %d times)",
+                        aid,
+                        self._cycles_in_flight,
+                        n,
+                    )
+                return
+            self._cycles_in_flight += 1
+            self._cycle_waiting_since.pop(aid, None)
+            self._cycles_yielded.pop(aid, None)
+            try:
+                await _run_cycle_admitted(aid)
+            finally:
+                self._cycles_in_flight -= 1
+
+        async def _run_cycle_admitted(aid: str) -> None:
             # Pre-cycle resource check
             ts = self.timesheet_manager.get(aid)
             hours = ts.today().total_hours
@@ -9163,11 +9201,10 @@ class Fabric:
                     violations=violations,
                 )
 
-        coros = [
-            _run_cycle(agent_id)
-            for agent_id, agent in self.agents.items()
-            if agent.state == AgentState.EXECUTING
-        ]
+        executing = [aid for aid, a in self.agents.items() if a.state == AgentState.EXECUTING]
+        # Longest-waiting first — the gather below starts tasks in this order.
+        executing.sort(key=lambda aid: self._cycle_waiting_since.get(aid, float("inf")))
+        coros = [_run_cycle(agent_id) for agent_id in executing]
         if coros:
             await asyncio.gather(*coros, return_exceptions=True)
         self.capacity_tracker.heartbeat_end()
