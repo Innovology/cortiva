@@ -1393,13 +1393,27 @@ def _exit_daemon(loop: asyncio.AbstractEventLoop, executor_timeout_s: float = 15
     executor a bounded chance to wind down, then exit without waiting.
     """
     import os
+    import sys
 
-    try:
-        loop.run_until_complete(
-            asyncio.wait_for(loop.shutdown_default_executor(), executor_timeout_s)
-        )
-    except Exception:
-        pass
+    if sys.version_info >= (3, 12):
+        # Python 3.12+ shutdown_default_executor honours wait_for cancellation.
+        try:
+            loop.run_until_complete(
+                asyncio.wait_for(loop.shutdown_default_executor(), executor_timeout_s)
+            )
+        except Exception:
+            pass
+    else:
+        # Python ≤ 3.11: shutdown_default_executor spawns a _do_shutdown thread
+        # that calls executor.shutdown(wait=True) and joins it in a finally block,
+        # so wait_for cancellation never propagates before the join completes.
+        # Bypass it and shut the executor down directly without waiting.
+        try:
+            executor = getattr(loop, "_default_executor", None)
+            if executor is not None:
+                executor.shutdown(wait=False)
+        except Exception:
+            pass
     try:
         loop.close()
     except Exception:
