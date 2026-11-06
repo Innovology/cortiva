@@ -1806,3 +1806,102 @@ class TestIdleLadder:
         ctx = fabric._later_this_week_context(agent)
         assert "- [ ] Draft the Q1 narrative" in ctx and "Already done" not in ctx
         assert "due 2099-01-09: Send the hiring plan" in ctx and "Overdue thing" not in ctx
+
+
+class TestDoneLedger:
+    """What an agent completed, by day: filters the week's plan of what is
+    already done, and shows the recurring steps that are the case for a
+    station — data, not a nudge."""
+
+    def _rig(self, tmp_path):
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "led-1")
+        return fabric, agent
+
+    def test_recurring_steps_are_counted_by_stem_and_stations_are_excluded(self, tmp_path):
+        from cortiva.core.agent import Task
+
+        fabric, agent = self._rig(tmp_path)
+        for i in range(3):
+            fabric._record_done(
+                agent,
+                Task(
+                    id=f"t{i}",
+                    description=f"Triage {11 + i} open GitHub feedback threads: delegate merge/sweep",
+                    outcome="done",
+                ),
+            )
+        fabric._record_done(
+            agent, Task(id="w", description="Write the W45 board paper", outcome="done")
+        )
+        fabric._record_done(
+            agent,
+            Task(id="s", description="Send the weekly digest", outcome="[station digest] sent"),
+        )
+        fabric._record_done(
+            agent,
+            Task(id="s2", description="Send the weekly digest", outcome="[station digest] sent"),
+        )
+        ctx = fabric._recurring_steps_context(agent)
+        assert "3× — e.g." in ctx and "open GitHub feedback threads" in ctx
+        assert "board paper" not in ctx  # once is not a pattern
+        assert "weekly digest" not in ctx  # already on the floor
+        assert "build_station" in ctx
+
+    def test_weekly_items_already_done_are_not_offered_to_bring_forward(self, tmp_path):
+        from cortiva.core.agent import Task
+        from cortiva.core.planner import Planner
+
+        fabric, agent = self._rig(tmp_path)
+        Planner(agent.directory).save_weekly(
+            "- [ ] **[HIGH]** Validate PR triage delegation outcomes (#202/#206) against issued AC\n"
+            "- [ ] Execute W25–W39 velocity tracking review\n"
+        )
+        fabric._record_done(
+            agent,
+            Task(
+                id="t",
+                description="Validate PR triage delegation outcomes (#202/#206/#208) against issued AC, reconcile",
+                outcome="done",
+            ),
+        )
+        ctx = fabric._later_this_week_context(agent)
+        assert "velocity tracking review" in ctx
+        assert "Validate PR triage" not in ctx  # done today; the weekly plan just never heard
+
+    @pytest.mark.asyncio
+    async def test_a_completed_task_lands_in_the_ledger(self, tmp_path):
+        import json
+
+        fabric, agent = self._rig(tmp_path)
+        d = agent.directory / "factory" / "ok"
+        d.mkdir(parents=True)
+        (d / "run.py").write_text(
+            'import json,sys; json.load(sys.stdin); print(json.dumps({"ok": True, "summary": "ran"}))\n'
+        )
+        import sys
+
+        import yaml
+
+        (d / "station.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "ok",
+                    "purpose": "p",
+                    "matches": ["sweep"],
+                    "run": [sys.executable, "run.py"],
+                    "ready": True,
+                }
+            )
+        )
+        from cortiva.core.agent import Task, TaskQueue
+
+        agent.task_queue = TaskQueue(tasks=[Task(id="t1", description="Run the daily sweep")])
+        await fabric.cycle("led-1")
+        rows = [json.loads(ln) for ln in (agent.directory / "done.jsonl").read_text().splitlines()]
+        assert (
+            rows
+            and rows[-1]["stem"] == "run daily sweep"
+            and rows[-1]["outcome"].startswith("[station ok]")
+        )

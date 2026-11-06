@@ -30,7 +30,7 @@ from cortiva.adapters.protocols import (
 )
 from cortiva.core import factory as _factory
 from cortiva.core import model_meter as _mm
-from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
+from cortiva.core.agent import Agent, AgentState, Task, TaskQueue, _task_key
 from cortiva.core.approval import ApprovalQueue
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
@@ -2058,6 +2058,7 @@ class Fabric:
                 task.status = "done"
                 task.outcome = routine_assessment.get("result", "Completed procedurally")
                 agent.tasks_completed_today += 1
+                self._record_done(agent, task)
                 return
             # "defer" and "escalate" (and procedural-but-deliverable) all fall
             # through to consciousness — the work gets done, never dropped.
@@ -2272,6 +2273,7 @@ class Fabric:
         else:
             task.status = "done"
             agent.tasks_completed_today += 1
+            self._record_done(agent, task)
 
         # Store as memory
         await self.memory.store(
@@ -4087,6 +4089,7 @@ class Fabric:
         task.status = "done"
         task.outcome = response.content[:500] if response.content else "Completed via terminal"
         agent.tasks_completed_today += 1
+        self._record_done(agent, task)
 
         # Store as memory
         await self.memory.store(
@@ -4340,6 +4343,7 @@ class Fabric:
                 task.status = "done"
                 task.outcome = r.outcome or "Completed via dev session"
                 agent.tasks_completed_today += 1
+                self._record_done(agent, task)
                 note = f"Task: {task.description}. Outcome: {task.outcome[:200]}"
                 if r.critique and r.critique.upper() != "LGTM":
                     note += f" | Reviewer: {r.critique[:150]}"
@@ -4957,6 +4961,7 @@ class Fabric:
             if run.artifact:
                 task.outcome += f" — {run.artifact}"
             agent.tasks_completed_today += 1
+            self._record_done(agent, task)
             logger.info(
                 "Station %s ran for %s in %.1fs: %s",
                 station.name,
@@ -5829,6 +5834,7 @@ class Fabric:
             ]
             for block in (
                 self._team_truth_context(agent),
+                self._recurring_steps_context(agent),
                 self._factory_context(agent),
                 self._model_meter_context(agent),
             ):
@@ -5863,6 +5869,92 @@ class Fabric:
             if agent.state == AgentState.REPLANNING:
                 agent.transition(AgentState.EXECUTING)
 
+    # What each agent actually completed, by day — the framework's own light
+    # ledger (``<agent>/done.jsonl``). It filters the week's plan of things
+    # already done, and it is the factual case for a station: "you have done
+    # this by hand four times this week" is data, not a nudge.
+    _DONE_LEDGER = "done.jsonl"
+    _STEM_STOP = frozenset(
+        "the a an and or of to for in on with by from at as is are be this that "
+        "my our your their it its into via per up out all any new".split()
+    )
+
+    _PRIORITY_TAGS = frozenset({"high", "urgent", "critical", "low", "normal", "p0", "p1", "p2"})
+
+    @classmethod
+    def _stem(cls, description: str) -> str:
+        """Six content words of a task, for recurrence: priority tags, numbers
+        and stopwords dropped so '[HIGH] Triage 11 threads' and 'Triage 19
+        threads' are the same step."""
+        text = re.sub(r"\[[A-Za-z0-9 ]+\]", " ", description or "")
+        words = [
+            w
+            for w in _task_key(text).split()
+            if w not in cls._STEM_STOP
+            and w not in cls._PRIORITY_TAGS
+            and not any(ch.isdigit() for ch in w)
+            and len(w) > 2
+        ]
+        return " ".join(words[:6])
+
+    def _record_done(self, agent: Agent, task: Task) -> None:
+        try:
+            from datetime import date as _date
+
+            row = {
+                "at": time.time(),
+                "day": _date.today().isoformat(),
+                "key": _task_key(task.description),
+                "stem": self._stem(task.description),
+                "description": (task.description or "")[:200],
+                "outcome": (task.outcome or "")[:80],
+            }
+            with (agent.directory / self._DONE_LEDGER).open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+        except Exception:
+            logger.debug("done ledger write failed for %s", agent.id, exc_info=True)
+
+    def _done_recent(self, agent: Agent, *, days: float = 14.0) -> list[dict[str, Any]]:
+        path = agent.directory / self._DONE_LEDGER
+        out: list[dict[str, Any]] = []
+        cutoff = time.time() - days * 86400
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(d, dict) and float(d.get("at") or 0) >= cutoff:
+                    out.append(d)
+        except OSError:
+            pass
+        return out
+
+    def _recurring_steps_context(self, agent: Agent) -> str:
+        """Steps this agent has completed by hand more than once in the last
+        fortnight, with counts — the factual case for a station."""
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for d in self._done_recent(agent):
+            stem = str(d.get("stem") or "")
+            if not stem or str(d.get("outcome") or "").startswith("[station "):
+                continue  # already on the floor
+            groups.setdefault(stem, []).append(d)
+        rep = sorted(
+            ((k, v) for k, v in groups.items() if len(v) >= 2), key=lambda kv: -len(kv[1])
+        )[:6]
+        if not rep:
+            return ""
+        lines = ["## Steps you keep doing by hand (last 14 days)", ""]
+        for stem, rows in rep:
+            last = str(rows[-1].get("description") or "")[:90]
+            lines.append(f'- {len(rows)}× — e.g. "{last}"')
+        lines.append("")
+        lines.append(
+            "Each of these is a station to build: code it once (build_station), and the "
+            "fabric runs the next ones for you while you watch the floor."
+        )
+        return "\n".join(lines)
+
     def _later_this_week_context(self, agent: Agent) -> str:
         """The week's plan items still open and the promises not yet due — the
         pool a clear list is refilled from. '' when there is nothing to bring."""
@@ -5872,10 +5964,13 @@ class Fabric:
         try:
             weekly = Planner(agent.directory).store.current_weekly()
             if weekly is not None:
+                done_stems = {str(d.get("stem") or "") for d in self._done_recent(agent, days=7.0)}
+                done_stems.discard("")
                 open_items = [
                     ln.strip()
                     for ln in str(weekly.content or "").splitlines()
                     if ln.strip().startswith("- [ ]")
+                    and self._stem(ln.strip()[5:]) not in done_stems  # already done this week
                 ][:12]
                 if open_items:
                     lines.append("### This week's plan, still open")
