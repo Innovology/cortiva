@@ -78,17 +78,65 @@ async def test_inbound_mail_or_a_directive_makes_the_next_wake_replan(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_yesterdays_plan_is_not_resumed(tmp_path: Path) -> None:
+async def test_the_standing_plan_carries_across_days(tmp_path: Path) -> None:
+    # A person wakes with the list they had. A new day resets the day's
+    # bookkeeping, not the plan.
     model = _Model()
     f = _fabric(tmp_path, model)
     agent = f.register_agent("cto")
     await f.wake("cto")
     await f.sleep("cto")
-    plan = agent.identity_path("plan")
+    today = agent.directory / "today"
+    (today / "timesheet.json").write_text("{}")
     old = time.time() - 36 * 3600
-    os.utime(plan, (old, old))
+    for p in today.iterdir():
+        os.utime(p, (old, old))
     f._last_plan_ts.pop("cto", None)
-    assert f._resume_plan(agent) is None
+    assert agent.reset_today() is True
+    assert (today / "plan.md").exists() and not (today / "timesheet.json").exists()
+    assert f._resume_plan(agent) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_replan_on_inbound_change_is_a_small_adjustment(tmp_path: Path) -> None:
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    agent = f.register_agent("cto")
+    seen: list[tuple[str, str, str]] = []
+    orig = model.think
+
+    async def _think(agent_id, context, prompt, **kw):
+        seen.append(((kw.get("metadata") or {}).get("call_type"), context, prompt))
+        return await orig(agent_id, context, prompt, **kw)
+
+    model.think = _think
+    await f.wake("cto")
+    plan_ctx = next(c for t, c, _ in seen if t == "plan")
+    inbox = agent.directory / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "m.json").write_text(
+        json.dumps(
+            {"from": "maren@x", "subject": "Lead form", "text": "Please start the lead form today."}
+        )
+    )
+    await f._replan(agent, [])
+    t, ctx, prompt = seen[-1]
+    assert t == "replan"
+    assert "Your current checklist" in ctx and "Lead form" in ctx
+    assert "Adjust the checklist for it and nothing else" in prompt
+    assert "Company directory" not in ctx and "What actually moved" not in ctx
+    assert len(ctx) < len(plan_ctx) / 2, (len(ctx), len(plan_ctx))
+
+
+def test_the_wind_down_floor(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    f = _fabric(tmp_path, _Model())
+    agent = f.register_agent("cto")
+    agent.last_wake = datetime.now(UTC) - timedelta(minutes=5)
+    assert f._awake_long_enough_to_wind_down(agent) is False
+    agent.last_wake = datetime.now(UTC) - timedelta(minutes=25)
+    assert f._awake_long_enough_to_wind_down(agent) is True
 
 
 @pytest.mark.asyncio
@@ -122,4 +170,5 @@ def test_reset_today_keeps_todays_files_and_clears_stale_ones(tmp_path: Path) ->
     for p in today.iterdir():
         os.utime(p, (old, old))
     assert agent.reset_today() is True
-    assert not any(today.iterdir())
+    # The plan carries across days; the day's bookkeeping does not.
+    assert [p.name for p in today.iterdir()] == ["plan.md"]

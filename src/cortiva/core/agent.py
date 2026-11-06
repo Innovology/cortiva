@@ -451,12 +451,19 @@ class Agent:
             newest = 0.0
         if newest and date.fromtimestamp(newest) == date.today():
             return False
+        # A new day resets the day's bookkeeping (timesheet, emotional state,
+        # exceptions) — but the PLAN is not daily. A person wakes with the
+        # list they had; it changes when something changes.
         for path in files:
+            if path.name in self._CARRIED_ACROSS_DAYS:
+                continue
             try:
                 path.unlink()
             except OSError:
                 pass
         return True
+
+    _CARRIED_ACROSS_DAYS = ("plan.md",)
 
     # ----- State transitions -----
 
