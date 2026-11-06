@@ -5230,11 +5230,28 @@ class Fabric:
                 pass
         return False
 
+    @staticmethod
+    def _queue_from_plan_text(text: str) -> Any:
+        """Parse a rendered plan back into a queue, keeping what the render
+        says about each line: a struck or skipped item stays skipped."""
+        from cortiva.core.agent import _parse_plan
+
+        queue = _parse_plan(text)
+        marked = [
+            line.lower()
+            for line in text.splitlines()
+            if "*(struck:" in line or "*(skipped)*" in line
+        ]
+        if marked:
+            for t in queue.tasks:
+                head = t.description.lower()[:40]
+                if t.status == "pending" and head and any(head in m for m in marked):
+                    t.status = "skipped"
+        return queue
+
     def _standing_plan_pending(self, agent: Agent) -> int:
         """Load the standing plan into the queue regardless of inbound
         change; returns how many tasks are pending (0 = no standing plan)."""
-        from cortiva.core.agent import _parse_plan
-
         path = agent.identity_path("plan")
         try:
             if not path.exists():
@@ -5242,13 +5259,12 @@ class Fabric:
             text = path.read_text(encoding="utf-8")
         except OSError:
             return 0
-        pending = [
-            ln for ln in text.splitlines() if re.match(r"\s*- \[ \]", ln) and "struck:" not in ln
-        ]
+        queue = self._queue_from_plan_text(text)
+        pending = sum(1 for t in queue.tasks if t.status == "pending")
         if not pending:
             return 0
-        agent.task_queue = _parse_plan(text)
-        return len(pending)
+        agent.task_queue = queue
+        return pending
 
     def _resume_plan(self, agent: Agent) -> int | None:
         """Pick the standing plan back up if it still has pending work and
@@ -5256,8 +5272,6 @@ class Fabric:
         wake never plans; only an input does. Returns the number of pending
         tasks, or None when a fresh plan is needed (first wake of the
         agent's life, everything done, or something arrived)."""
-        from cortiva.core.agent import _parse_plan
-
         path = agent.identity_path("plan")
         try:
             if not path.exists():
@@ -5266,17 +5280,16 @@ class Fabric:
             text = path.read_text(encoding="utf-8")
         except OSError:
             return None
-        pending = [
-            ln for ln in text.splitlines() if re.match(r"\s*- \[ \]", ln) and "struck:" not in ln
-        ]
+        queue = self._queue_from_plan_text(text)
+        pending = sum(1 for t in queue.tasks if t.status == "pending")
         if not pending:
             return None
         made = self._last_plan_ts.get(agent.id) or st.st_mtime
         if self._inbound_changed_since(agent, made):
             return None
-        agent.task_queue = _parse_plan(text)
+        agent.task_queue = queue
         self._last_plan_ts[agent.id] = made
-        return len(pending)
+        return pending
 
     # The brain decides when to sleep (fragmentation / exhaustion); the rota is
     # the outer bound. This is the inner one: a wake lasts at least this long
@@ -5366,6 +5379,7 @@ class Fabric:
                 agent.spend_consciousness()
             agent.update_plan(response.content)
             self._strike_tasks_for_inactive(agent)
+            self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
         if agent.state == AgentState.REPLANNING:
             agent.transition(AgentState.EXECUTING)
@@ -8753,6 +8767,7 @@ class Fabric:
 
             agent.update_plan(response.content)
             self._strike_tasks_for_inactive(agent)
+            self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
 
         if agent.state == AgentState.REPLANNING:

@@ -91,6 +91,16 @@ class TaskQueue:
         return summary
 
 
+def _task_key(description: str) -> str:
+    """Identity of a task across re-emissions: lowercase, punctuation and
+    markdown stripped, first 80 characters."""
+    import re as _re
+
+    d = _re.sub(r"\*\(struck:.*?\)\*", "", description or "")
+    d = _re.sub(r"[^a-z0-9 ]+", " ", d.lower())
+    return " ".join(d.split())[:80]
+
+
 def _parse_plan(plan_text: str) -> TaskQueue:
     """Parse plan markdown into a TaskQueue.
 
@@ -538,10 +548,25 @@ class Agent:
         return self.task_queue
 
     def update_plan(self, plan_text: str) -> TaskQueue:
-        """Replace the current plan (replan), preserving replan count."""
-        replan_count = self.task_queue.replan_count if self.task_queue else 0
+        """Replace the current plan (replan), preserving replan count — and
+        the statuses of tasks already done or struck. A model re-emitting
+        the whole checklist tends to list finished items as open again
+        ("Land PR #48" completed twice in twelve minutes, 2026-11-06); an
+        adjustment may add, reorder or drop, never resurrect."""
+        previous = self.task_queue
+        replan_count = previous.replan_count if previous else 0
         self.task_queue = _parse_plan(plan_text)
         self.task_queue.replan_count = replan_count + 1
+        if previous is not None:
+            settled = {
+                _task_key(t.description): t.status
+                for t in previous.tasks
+                if t.status in ("done", "skipped")
+            }
+            for t in self.task_queue.tasks:
+                prior = settled.get(_task_key(t.description))
+                if prior and t.status == "pending":
+                    t.status = prior
         self.write_identity("plan", plan_text)
         self.persist_runtime_state()
         return self.task_queue

@@ -206,3 +206,28 @@ async def test_a_wake_with_new_input_adjusts_the_standing_plan_not_rebuilds_it(
     assert [t for t, _, _ in seen if t == "plan"] == ["plan"], "no second full plan"
     assert agent.state == AgentState.EXECUTING
     assert any(t.status == "pending" for t in agent.task_queue.tasks)
+
+
+def test_an_adjustment_cannot_resurrect_a_done_or_struck_task(tmp_path: Path) -> None:
+    # "Land PR #48" completed twice in twelve minutes (2026-11-06 12:09,
+    # 12:21): each adjustment re-listed it as open.
+    f = _fabric(tmp_path, _Model())
+    agent = f.register_agent("cto")
+    agent.set_plan(
+        "- [ ] Land PR #48\n- [ ] Chase COO *(struck: Marcus is not currently working)*\n- [ ] Build the lead form\n"
+    )
+    q = agent.task_queue
+    q.tasks[0].status = "done"
+    q.tasks[1].status = "skipped"
+    agent.update_plan(
+        "- [ ] **[HIGH]** Land PR #48\n- [ ] Chase COO\n- [ ] Build the lead form\n- [ ] Write the pipeline screen\n"
+    )
+    statuses = {t.description.split(" *(")[0]: t.status for t in agent.task_queue.tasks}
+    assert statuses["Land PR #48"] == "done"
+    assert statuses["Chase COO"] == "skipped"
+    assert statuses["Build the lead form"] == "pending"
+    assert statuses["Write the pipeline screen"] == "pending"
+    f._write_plan(agent)
+    plan = (agent.directory / "today" / "plan.md").read_text()
+    assert "- [x] " in plan and "Land PR #48" in plan
+    assert f._resume_plan(agent) == 2  # only the genuinely open items are pending
