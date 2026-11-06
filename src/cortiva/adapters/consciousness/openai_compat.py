@@ -348,6 +348,12 @@ class OpenAICompatibleAdapter:
         if completion_toks <= 0:
             completion_toks = max(1, len(content) // 4)
         self._record_perf(completion_toks, latency_ms)
+        # The same honesty for the prompt side: the fabric's model meter
+        # accounts what each ask carried, and a permanent 0 hides the cost of
+        # thinking. Without usage, ~4 chars/token over what was sent.
+        prompt_toks = (usage.prompt_tokens if usage else 0) or 0
+        if prompt_toks <= 0:
+            prompt_toks = max(1, (len(context or "") + len(prompt or "")) // 4)
 
         tool_calls: list[dict[str, Any]] = []
         raw_calls = getattr(choice.message, "tool_calls", None) or []
@@ -364,8 +370,8 @@ class OpenAICompatibleAdapter:
 
         return ConsciousResponse(
             content=content,
-            tokens_in=usage.prompt_tokens if usage else 0,
-            tokens_out=usage.completion_tokens if usage else 0,
+            tokens_in=prompt_toks,
+            tokens_out=completion_toks,
             latency_ms=latency_ms,
             model=self.model,
             metadata={"agent_id": agent_id, "priority": priority.value},
