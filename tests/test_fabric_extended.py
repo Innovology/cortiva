@@ -1905,3 +1905,35 @@ class TestDoneLedger:
             and rows[-1]["stem"] == "run daily sweep"
             and rows[-1]["outcome"].startswith("[station ok]")
         )
+
+    def test_items_a_standing_order_would_strike_are_not_offered(self, tmp_path):
+        import json
+
+        from cortiva.core.planner import Planner
+
+        fabric, agent = self._rig(tmp_path)
+        (fabric.agents_dir / ".standing_orders.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "order_id": "o1",
+                        "text": "Stop building red tape.",
+                        "kind": "prohibition",
+                        "scope": {"type": "topic", "value": "pr template|playbook|decision record"},
+                        "issued_by": {"name": "Alex Browne", "role": "founder"},
+                        "issued_at": "2026-11-06T18:40:00+00:00",
+                        "status": "active",
+                    }
+                ]
+            )
+        )
+        Planner(agent.directory).save_weekly(
+            "- [ ] Roll out PR template to all repos\n"
+            "- [ ] Publish the incident playbook\n"
+            "- [ ] Fix the lead form 500 on innovology.io\n"
+        )
+        ctx = fabric._later_this_week_context(agent)
+        assert "lead form 500" in ctx
+        assert "PR template" not in ctx and "playbook" not in ctx
+        Planner(agent.directory).save_weekly("- [ ] Roll out PR template to all repos\n")
+        assert fabric._later_this_week_context(agent) == ""  # nothing offerable → no ask

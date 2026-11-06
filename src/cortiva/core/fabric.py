@@ -6101,6 +6101,20 @@ class Fabric:
         from datetime import date as _date
 
         lines: list[str] = []
+        # Never offer what a standing order would strike the moment it was
+        # brought forward — the CTO's W45 plan was five items of red tape and
+        # every idle look spent an ask picking one for the order to strike
+        # (2026-11-06 19:42).
+        try:
+            from cortiva.core import standing_orders as _so
+
+            orders = _so.load(self.agents_dir)
+        except Exception:
+            orders = []
+
+        def _offerable(text: str) -> bool:
+            return not orders or _so.matching_order(orders, text) is None
+
         try:
             weekly = Planner(agent.directory).store.current_weekly()
             if weekly is not None:
@@ -6111,6 +6125,7 @@ class Fabric:
                     for ln in str(weekly.content or "").splitlines()
                     if ln.strip().startswith("- [ ]")
                     and self._stem(ln.strip()[5:]) not in done_stems  # already done this week
+                    and _offerable(ln)
                 ][:12]
                 if open_items:
                     lines.append("### This week's plan, still open")
@@ -6128,6 +6143,8 @@ class Fabric:
                 due = str(getattr(c, "due_at", "") or "")[:10]
                 if due and due <= today:
                     continue  # due today or overdue: already on the list or owed now
+                if not _offerable(c.what):
+                    continue
                 later.append(f"- due {due or 'unset'}: {c.what[:90]} → {c.to[:40]}")
             if later:
                 lines.append("### Promises not yet due")
