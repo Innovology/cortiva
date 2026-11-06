@@ -252,3 +252,44 @@ def test_a_struck_line_does_not_grow_a_marker_per_pass(tmp_path: Path) -> None:
     line = next(ln for ln in agent.read_identity("plan").splitlines() if "Land PR #48" in ln)
     assert line.count("*(skipped)*") == 1
     assert agent.task_queue.tasks[0].status == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_weekly_and_monthly_plans_are_written_against_the_standing_orders_and_what_counts(
+    tmp_path: Path,
+) -> None:
+    """The daily plan saw the founder's red-tape order; the W45 weekly plans
+    were written without it and were five items of process each. The horizon
+    plans now carry the orders and the definition of what counts."""
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    f.register_agent("cto")
+    (f.agents_dir / ".standing_orders.json").write_text(
+        json.dumps(
+            [
+                {
+                    "order_id": "o1",
+                    "text": "Stop building red tape.",
+                    "kind": "prohibition",
+                    "scope": {"type": "topic", "value": "pr template|playbook"},
+                    "issued_by": {"name": "Alex Browne", "role": "founder"},
+                    "issued_at": "2026-11-06T18:40:00+00:00",
+                    "status": "active",
+                }
+            ]
+        )
+    )
+    seen: dict[str, tuple[str, str]] = {}
+    orig = model.think
+
+    async def _think(agent_id, context, prompt, **kw):
+        seen[(kw.get("metadata") or {}).get("call_type", "")] = (context, prompt)
+        return await orig(agent_id, context, prompt, **kw)
+
+    model.think = _think
+    await f.wake("cto")  # first wake of its life: monthly, weekly, daily
+    for horizon in ("plan_monthly", "plan_weekly"):
+        ctx, prompt = seen[horizon]
+        assert "⛔ Standing orders" in ctx and "Stop building red tape" in ctx, horizon
+        assert "## What counts" in ctx and "the world can see" in ctx, horizon
+        assert "the world" in prompt and "standing orders" in prompt.lower(), horizon

@@ -881,6 +881,7 @@ class Fabric:
                 goals_context=self._goals_context(agent_id),
             )
             monthly_ctx = identity_preamble + "\n\n---\n\n" + monthly_ctx
+            monthly_ctx += self._horizon_planning_context(agent)
             await self._conscious_plan(
                 agent,
                 identity,
@@ -901,6 +902,7 @@ class Fabric:
                 delegation_context=delegation_text,
             )
             weekly_ctx = identity_preamble + "\n\n---\n\n" + weekly_ctx
+            weekly_ctx += self._horizon_planning_context(agent)
             await self._conscious_plan(
                 agent,
                 identity,
@@ -5104,6 +5106,28 @@ class Fabric:
                         out.append((rid, tok))
             frontier = nxt
         return out
+
+    def _horizon_planning_context(self, agent: Agent) -> str:
+        """What the monthly and weekly plans must be written against: the
+        standing orders (the daily plan already saw them; the W45 weekly
+        plans were written without the founder's red-tape order and were five
+        items of process each, 2026-11-06) and what pays — the only things
+        the world will count."""
+        parts: list[str] = []
+        orders = self._standing_orders_context(agent)
+        if orders:
+            parts.append(orders)
+        parts.append(
+            "## What counts\n\n"
+            "The company's scoreboard moves only on things the world can see: a "
+            "merged pull request someone else merged, a URL that answers, an issue "
+            "closed, a lead, a human's yes. Templates, playbooks, protocols, decision "
+            "records, dashboards about how we work and rules for yourself are not "
+            "deliverables — they do not score, and a standing order may forbid them. "
+            "Every milestone you write names the artefact the world will see when it "
+            "is done, or the person who will have said yes."
+        )
+        return "\n\n---\n\n" + "\n\n---\n\n".join(parts)
 
     def _shipped_today_context(self, agent: Agent) -> str:
         """What this agent has already put into the world today — sent mail

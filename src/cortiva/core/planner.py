@@ -293,7 +293,10 @@ as a structured list:
   - Key milestone or deliverable
   - How you'll know it's done
 
-Focus on outcomes, not tasks. These will guide your weekly planning.
+Focus on outcomes, not tasks. Each objective is done when the world can \
+see it — a merged PR, a live URL, a closed issue, a lead, a human's yes — \
+never when a document about it exists. Respect the standing orders above. \
+These will guide your weekly planning.
 """
 
 WEEKLY_PROMPT = """\
@@ -304,6 +307,10 @@ Write 3-7 milestones as a structured checklist:
 - [ ] **[HIGH]** Milestone that advances a monthly objective
 - [ ] Milestone or deliverable for this week
 
+Every milestone names what the world will see when it is done (the PR, the \
+URL, the issue, the lead, the person who will have said yes). Process about \
+how you work — templates, playbooks, protocols, decision records, rules for \
+yourself — is not a milestone, and the standing orders above may forbid it. \
 These will guide your daily task planning each morning.
 """
 
