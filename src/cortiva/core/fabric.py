@@ -28,6 +28,7 @@ from cortiva.adapters.protocols import (
     RoutineAdapter,
     TerminalAgentAdapter,
 )
+from cortiva.core import model_meter as _mm
 from cortiva.core.agent import Agent, AgentState, Task
 from cortiva.core.approval import ApprovalQueue
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
@@ -956,6 +957,9 @@ class Fabric:
         held_ctx = self._held_mail_context(agent)
         if held_ctx:
             context = context + "\n\n---\n\n" + held_ctx
+        meter_ctx = self._model_meter_context(agent)
+        if meter_ctx:
+            context = context + "\n\n---\n\n" + meter_ctx
 
         # The org head's periodic consultation with the owner — pull the
         # leadership's strategy/roadmap material, put it in front of the
@@ -1147,6 +1151,7 @@ class Fabric:
                 f"{self._render_mood(emotion)}. Write in the first person; "
                 "keep it brief."
             )
+            self._meter_model_call(agent, "reflect")
             resp = await self.consciousness.think(
                 agent_id=agent.id,
                 context=context,
@@ -2039,6 +2044,9 @@ class Fabric:
         shipped_ctx = self._shipped_today_context(agent)
         if shipped_ctx:
             context = context + "\n\n---\n\n" + shipped_ctx
+        meter_ctx = self._model_meter_context(agent)
+        if meter_ctx:
+            context = context + "\n\n---\n\n" + meter_ctx
 
         # Plugin-contributed per-task context (e.g. Myelin: inhibition
         # checks, outcome forecasts, emotional conditioning, matched
@@ -2127,6 +2135,8 @@ class Fabric:
             performance_authorised=self.performance_authorised,
             standing_order_authorised=self.standing_order_authorised,
         )
+
+        self._meter_model_call(agent, "execute")
 
         response = await self.consciousness.think(
             agent_id=agent.id,
@@ -3878,6 +3888,9 @@ class Fabric:
         shipped = self._shipped_today_context(agent)
         if shipped:
             prompt += "\n\n" + shipped
+        meter = self._model_meter_context(agent)
+        if meter:
+            prompt += "\n\n" + meter
 
         # Use the agent's workspace directory as cwd
         cwd = agent.directory / "workspace"
@@ -4046,6 +4059,9 @@ class Fabric:
         shipped = self._shipped_today_context(agent)
         if shipped:
             prompt += "\n\n" + shipped
+        meter = self._model_meter_context(agent)
+        if meter:
+            prompt += "\n\n" + meter
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
         envelope = self.isolation.prepare_terminal_env(agent_id=agent.id, cmd=[], cwd=cwd)
@@ -4292,6 +4308,8 @@ class Fabric:
 
         if not can_plan:
             return None
+
+        self._meter_model_call(agent, call_type)
 
         response = await self.consciousness.think(
             agent_id=agent.id,
@@ -4787,6 +4805,26 @@ class Fabric:
             when = datetime.fromtimestamp(mtime, UTC).strftime("%H:%M")
             rows.append((mtime, f'- {when} email to {e.get("to", "?")} — "{e.get("subject", "")}"'))
         return [line for _, line in sorted(rows)][-20:]
+
+    def _meter_model_call(self, agent: Agent, call_type: str) -> None:
+        """Count one model ask for this agent today (today/model_calls.json).
+        Every consciousness call funnels through here; the count is shown
+        back to the agent so thinking spent on re-asking what Myelin holds
+        is visible, to her and over IPC."""
+        try:
+            m = _mm.bump(agent.directory, call_type)
+            if int(m.get("count") or 0) == _mm.budget():
+                logger.info(
+                    "Model calls: %s reached today's soft budget (%d)", agent.id, _mm.budget()
+                )
+        except Exception:
+            logger.debug("model meter bump failed for %s", agent.id, exc_info=True)
+
+    def _model_meter_context(self, agent: Agent) -> str:
+        try:
+            return _mm.context_line(agent.directory)
+        except Exception:
+            return ""
 
     def _shipped_today_context(self, agent: Agent) -> str:
         """What this agent has already put into the world today — sent mail
@@ -5364,6 +5402,7 @@ class Fabric:
                 "supersedes. Keep every other item exactly as it is — do not "
                 "re-plan your day. Output ONLY the full updated checklist."
             )
+            self._meter_model_call(agent, "replan")
             response = await self.consciousness.think(
                 agent_id=agent.id,
                 context=context,
@@ -8707,6 +8746,9 @@ class Fabric:
         held_ctx = self._held_mail_context(agent)
         if held_ctx:
             context = context + "\n\n---\n\n" + held_ctx
+        meter_ctx = self._model_meter_context(agent)
+        if meter_ctx:
+            context = context + "\n\n---\n\n" + meter_ctx
 
         # A due founder brief keeps confronting the org head on reassess too —
         # it self-resolves only when the brief is actually sent.
@@ -8799,6 +8841,7 @@ class Fabric:
                     "already cleared.\n\n"
                     "Output ONLY the updated checklist of remaining + new tasks."
                 )
+            self._meter_model_call(agent, "replan")
             response = await self.consciousness.think(
                 agent_id=agent.id,
                 context=context,
