@@ -48,6 +48,7 @@ class FabricServer:
     def __init__(self) -> None:
         self._server: asyncio.AbstractServer | None = None
         self._socket_path: Path | None = None
+        self._socket_ino: int | None = None  # identifies OUR socket file
         self._handlers: dict[str, Callable[..., Awaitable[dict[str, Any]]]] = {}
 
     def register(self, command: str, handler: Callable[..., Awaitable[dict[str, Any]]]) -> None:
@@ -67,6 +68,10 @@ class FabricServer:
         self._server = await asyncio.start_unix_server(self._handle_connection, path=str(path))
         # Make socket readable/writable by owner only
         path.chmod(0o600)
+        try:
+            self._socket_ino = path.stat().st_ino
+        except OSError:
+            self._socket_ino = None
         logger.info("IPC server listening on %s", path)
 
     async def stop(self) -> None:
@@ -75,9 +80,22 @@ class FabricServer:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
+        # Only remove the socket if it is still OURS. A fabric exiting late
+        # (executor threads winding down) used to unlink its successor's
+        # socket, the node watchdog saw no socket and spawned a third fabric —
+        # two fabrics driving the same agents (Mini-2, 2026-11-05 21:34).
         if self._socket_path and self._socket_path.exists():
-            self._socket_path.unlink(missing_ok=True)
-            logger.info("IPC socket removed: %s", self._socket_path)
+            try:
+                mine = self._socket_path.stat().st_ino == self._socket_ino
+            except OSError:
+                mine = False
+            if mine:
+                self._socket_path.unlink(missing_ok=True)
+                logger.info("IPC socket removed: %s", self._socket_path)
+            else:
+                logger.info(
+                    "IPC socket at %s belongs to a newer fabric — left alone", self._socket_path
+                )
 
     async def handle_command(self, command: dict[str, Any]) -> dict[str, Any]:
         """Dispatch a command dict to the registered handler."""
@@ -181,9 +199,17 @@ def read_pid(path: Path | None = None) -> int | None:
         return None
 
 
-def remove_pid(path: Path | None = None) -> None:
-    """Remove the PID file."""
+def remove_pid(path: Path | None = None, *, pid: int | None = None) -> None:
+    """Remove the PID file — only if it still names *pid* (default: this process).
+
+    A fabric exiting late must not delete the pid file its successor has
+    already written; that made the node watchdog spawn a duplicate.
+    """
     p = path or default_pid_path()
+    owner = os.getpid() if pid is None else pid
+    current = read_pid(p)
+    if current is not None and current != owner:
+        return
     p.unlink(missing_ok=True)
 
 
