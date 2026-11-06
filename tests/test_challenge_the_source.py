@@ -64,6 +64,33 @@ def test_check_artifact_verdicts(monkeypatch) -> None:
     )
     out = grounding.check_artifact("t", PR, promised_at="2026-11-05T09:00:00+00:00")
     assert out["ok"] is False and "before this was promised" in out["reason"]
+    # Opened earlier the SAME day (the promise was extracted from her text
+    # after the work started) → holds. A day's grace; the false receipt this
+    # guards against is months old.
+    monkeypatch.setattr(
+        grounding,
+        "read_github_ref",
+        _reader(
+            author="samantha-innovology",
+            state="open",
+            merged=False,
+            created_at="2026-11-05T02:00:00Z",
+        ),
+    )
+    out = grounding.check_artifact("t", PR, promised_at="2026-11-05T21:00:00+00:00")
+    assert out["ok"] is True, out
+    monkeypatch.setattr(
+        grounding,
+        "read_github_ref",
+        _reader(
+            author="samantha-innovology",
+            state="open",
+            merged=False,
+            created_at="2026-11-03T02:00:00Z",
+        ),
+    )
+    out = grounding.check_artifact("t", PR, promised_at="2026-11-05T09:00:00+00:00")
+    assert out["ok"] is False and "before this was promised" in out["reason"]
     # Her own, after the promise, merged → holds.
     monkeypatch.setattr(
         grounding,
