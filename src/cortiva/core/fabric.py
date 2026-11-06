@@ -1096,6 +1096,7 @@ class Fabric:
             call_type="plan",
             on_success=lambda text: agent.set_plan(text),
         )
+        self._strike_non_tasks(agent)
         self._strike_tasks_for_inactive(agent)
         self._strike_phantom_refs(agent)
         self._strike_under_standing_orders(agent)
@@ -5431,6 +5432,41 @@ class Fabric:
         r"instruct|hand (?:to|off to)|loop in)"
     )
 
+    _CARD_LINE_RE = re.compile(r"^\W*\*\*[a-z0-9][a-z0-9_-]*\*\*\s*\(", re.IGNORECASE)
+    _PLACEHOLDER_RE = re.compile(
+        r"\b(none (currently )?assigned|nothing (currently )?assigned|no tasks? assigned|n/a|tbd|placeholder)\b",
+        re.IGNORECASE,
+    )
+
+    def _strike_non_tasks(self, agent: Agent) -> int:
+        """Strike checklist lines that are not tasks: a team-directory card the
+        model echoed from its context ('**ar-scheduler**  (AR Scheduler)',
+        amara 21:18), a placeholder ('[Manager Delegation] None currently
+        assigned', 16:06 — it bought a dev session). Deterministic; the
+        reason stays in the plan. Short lines are left alone: 'Reply to
+        Alex' is a task."""
+        if agent.task_queue is None:
+            return 0
+        struck = 0
+        for t in agent.task_queue.tasks:
+            if t.status != "pending":
+                continue
+            text = (t.description or "").strip()
+            reason = ""
+            if self._CARD_LINE_RE.match(text):
+                reason = "a directory entry, not a task"
+            elif self._PLACEHOLDER_RE.search(text):
+                reason = "a placeholder, not a task"
+            if not reason:
+                continue
+            t.status = "skipped"
+            t.description = f"{text} *(struck: {reason})*"
+            struck += 1
+        if struck:
+            self._write_plan(agent)
+            logger.info("Agent %s: %d planned line(s) struck — not tasks", agent.id, struck)
+        return struck
+
     def _strike_tasks_for_inactive(self, agent: Agent) -> int:
         """Strike, at plan time, any pending task aimed at a colleague who is
         not currently working — by first name, agent id or role title. The
@@ -5964,6 +6000,7 @@ class Fabric:
                 )
                 agent.spend_consciousness()
             agent.update_plan(response.content)
+            self._strike_non_tasks(agent)
             self._strike_tasks_for_inactive(agent)
             self._strike_phantom_refs(agent)
             self._strike_under_standing_orders(agent)
@@ -9643,6 +9680,7 @@ class Fabric:
                 agent.spend_consciousness()
 
             agent.update_plan(response.content)
+            self._strike_non_tasks(agent)
             self._strike_tasks_for_inactive(agent)
             self._strike_phantom_refs(agent)
             self._strike_under_standing_orders(agent)

@@ -249,3 +249,33 @@ def test_a_single_word_station_name_is_not_a_match_phrase(tmp_path) -> None:
     m = yaml.safe_load((agent.directory / "factory" / "founder" / "station.yaml").read_text())
     assert "founder" not in m["matches"]
     assert m["matches"] and all(len(x.split()) >= 2 for x in m["matches"])
+
+
+def test_lines_that_are_not_tasks_are_struck(tmp_path) -> None:
+    """A directory card echoed from context, a placeholder, a stub — none of
+    these should buy an ask or a session."""
+    fabric = Fabric(
+        agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=_Model()
+    )
+    agent = fabric.register_agent("amara")
+    agent.task_queue = TaskQueue(
+        tasks=[
+            Task(id="a", description="**ar-scheduler**  (AR Scheduler)"),
+            Task(id="b", description="**ceo**  (Chief Executive Officer)"),
+            Task(
+                id="c", description="[Manager Delegation] None currently assigned by Samantha (CTO)"
+            ),
+            Task(id="d", description="Review"),
+            Task(
+                id="e",
+                description="Fix the lead form 500 on innovology.io and verify the pipeline screen",
+            ),
+            Task(id="f", description="**[HIGH]** Land PR #301 after review"),
+        ]
+    )
+    assert fabric._strike_non_tasks(agent) == 3
+    by = {t.id: t for t in agent.task_queue.tasks}
+    assert by["a"].status == by["b"].status == by["c"].status == "skipped"
+    assert "directory entry" in by["a"].description and "placeholder" in by["c"].description
+    assert by["d"].status == "pending"  # short, but a task
+    assert by["e"].status == "pending" and by["f"].status == "pending"
