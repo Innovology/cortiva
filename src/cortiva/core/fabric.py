@@ -1095,6 +1095,7 @@ class Fabric:
             on_success=lambda text: agent.set_plan(text),
         )
         self._strike_tasks_for_inactive(agent)
+        self._strike_phantom_refs(agent)
         self._last_plan_ts[agent_id] = time.time()
         logger.info(f"Agent {agent_id} has planned their day")
 
@@ -5412,6 +5413,121 @@ class Fabric:
             )
         return struck
 
+    # "Land PR #48": innovology.io#48 is a September dependabot bump. The
+    # artifact check catches the false receipt at delivery; the TASK itself
+    # survived in the plan and bought a dev session per cycle (2026-11-06
+    # 16:42). Challenge the source at plan time: a task that names a PR or
+    # issue is checked against GitHub with the agent's own token.
+    _TASK_REF_RE = re.compile(
+        r"(?:(?P<repo>[\w.-]+/[\w.-]+)#|(?:\bPR|\bpull request|\bissue|\bMR)\s*#?)(?P<num>\d{1,6})\b",
+        re.IGNORECASE,
+    )
+    _LANDING_VERBS = re.compile(
+        r"\b(land|merge|ship|close|rebase|finish|complete|deliver|get .{0,20}merged)\b",
+        re.IGNORECASE,
+    )
+    _REF_CACHE_TTL_S = 3600.0
+
+    def _strike_phantom_refs(self, agent: Agent) -> int:
+        """Strike, at plan time, a pending task that promises to land, merge
+        or close a PR/issue that is not hers (or does not exist in any repo
+        she can see). Bounded: one GitHub read per distinct reference per
+        hour. Returns how many tasks were struck."""
+        if agent.task_queue is None:
+            return 0
+        from cortiva.core.grounding import (
+            GITHUB_REF_RE,
+            _github_get,
+            agent_github_token,
+            github_login,
+            read_github_ref,
+        )
+
+        token = agent_github_token(agent.directory)
+        if not token:
+            return 0
+        login = github_login(token)
+        if not login:
+            return 0
+        cache: dict[str, tuple[float, dict[str, Any] | None]] = getattr(self, "_ref_cache", {})
+        self._ref_cache = cache
+        now = time.monotonic()
+
+        def _repos() -> list[str]:
+            key = f"repos:{agent.id}"
+            hit = cache.get(key)
+            if hit and now - hit[0] < self._REF_CACHE_TTL_S:
+                return list((hit[1] or {}).get("repos") or [])
+            names: list[str] = []
+            try:
+                data = _github_get(
+                    "https://api.github.com/user/repos?per_page=30&sort=pushed", token, 8.0
+                )
+                names = [str(r.get("full_name")) for r in data if r.get("full_name")][:8]
+            except Exception:
+                names = []
+            cache[key] = (now, {"repos": names})
+            return names
+
+        def _resolve(repo: str, num: str) -> dict[str, Any] | None:
+            key = f"{repo}#{num}"
+            hit = cache.get(key)
+            if hit and now - hit[0] < self._REF_CACHE_TTL_S:
+                return hit[1]
+            owner, name = repo.split("/", 1)
+            ref = read_github_ref({"owner": owner, "repo": name, "number": num}, token)
+            out = ref if ref.get("status") == "read" else None
+            cache[key] = (now, out)
+            return out
+
+        struck = 0
+        for t in agent.task_queue.tasks:
+            if t.status != "pending":
+                continue
+            text = t.description or ""
+            if not self._LANDING_VERBS.search(text):
+                continue
+            refs: list[tuple[str | None, str]] = []
+            for m in GITHUB_REF_RE.finditer(text):
+                refs.append((f"{m.group('owner')}/{m.group('repo')}", m.group("number")))
+            for m in self._TASK_REF_RE.finditer(text):
+                refs.append((m.group("repo"), m.group("num")))
+            if not refs:
+                continue
+            reason = ""
+            for repo, num in refs[:3]:
+                candidates = [repo] if repo else _repos()
+                found = None
+                for r in candidates:
+                    found = _resolve(r, num)
+                    if found:
+                        found = {**found, "repo": r}
+                        break
+                if found is None:
+                    where = repo or "any repo you can see"
+                    reason = f"no PR/issue #{num} in {where}"
+                    break
+                author = str(found.get("author") or "")
+                if author and author.lower() != login.lower():
+                    reason = (
+                        f"{found['repo']}#{num} is {author}'s "
+                        f"'{str(found.get('title') or '')[:50]}', not yours"
+                    )
+                    break
+            if not reason:
+                continue
+            t.status = "skipped"
+            t.description = f"{t.description} *(struck: {reason})*"
+            struck += 1
+        if struck:
+            self._write_plan(agent)
+            logger.info(
+                "Agent %s: %d planned task(s) struck — they name PRs/issues that are not hers",
+                agent.id,
+                struck,
+            )
+        return struck
+
     _HELD_MAIL_WINDOW_S = 24 * 3600
 
     def _held_mail_context(self, agent: Agent) -> str:
@@ -5684,6 +5800,7 @@ class Fabric:
                 agent.spend_consciousness()
             agent.update_plan(response.content)
             self._strike_tasks_for_inactive(agent)
+            self._strike_phantom_refs(agent)
             self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
             queue_tasks = agent.task_queue.tasks if agent.task_queue is not None else []
@@ -9149,6 +9266,7 @@ class Fabric:
 
             agent.update_plan(response.content)
             self._strike_tasks_for_inactive(agent)
+            self._strike_phantom_refs(agent)
             self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
 
