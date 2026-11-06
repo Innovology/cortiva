@@ -71,10 +71,9 @@ def test_a_task_naming_someone_elses_or_a_nonexistent_pr_is_struck(tmp_path, mon
     )
     assert fabric._strike_phantom_refs(agent) == 2
     by_id = {t.id: t for t in agent.task_queue.tasks}
-    assert (
-        by_id["a"].status == "skipped"
-        and "dependabot[bot]'s 'Bump rouge', not yours" in by_id["a"].description
-    )
+    assert by_id["a"].status == "skipped"
+    assert "no PR/issue #48 of yours in any repo you can see" in by_id["a"].description
+    assert "Innovology/innovology.io#48 is dependabot[bot]'s" in by_id["a"].description
     assert by_id["b"].status == "pending"  # hers
     assert (
         by_id["c"].status == "skipped"
@@ -100,3 +99,28 @@ def test_no_token_means_no_verdict(tmp_path, monkeypatch) -> None:
     agent.task_queue = TaskQueue(tasks=[Task(id="a", description="Land PR #48")])
     assert fabric._strike_phantom_refs(agent) == 0
     assert agent.task_queue.tasks[0].status == "pending"
+
+
+def test_a_bare_number_that_is_hers_in_another_repo_is_not_struck(tmp_path, monkeypatch) -> None:
+    """#301 exists in innovology.io as someone else's AND in cortiva as hers:
+    the bare number means hers — keep the task."""
+    fabric, agent, _ = _rig(tmp_path, monkeypatch)
+    orig = grounding.read_github_ref
+
+    def _read(ref, token, timeout=8.0):
+        if (
+            f"{ref['owner']}/{ref['repo']}" == "Innovology/innovology.io"
+            and str(ref["number"]) == "301"
+        ):
+            return {
+                **ref,
+                "status": "read",
+                "kind": "pull request",
+                "author": "someone-else",
+                "title": "x",
+            }
+        return orig(ref, token, timeout)
+
+    monkeypatch.setattr(grounding, "read_github_ref", _read)
+    agent.task_queue = TaskQueue(tasks=[Task(id="a", description="Land PR #301")])
+    assert fabric._strike_phantom_refs(agent) == 0

@@ -5497,23 +5497,32 @@ class Fabric:
             reason = ""
             for repo, num in refs[:3]:
                 candidates = [repo] if repo else _repos()
-                found = None
+                hers = None
+                foreign: list[dict[str, Any]] = []
                 for r in candidates:
                     found = _resolve(r, num)
-                    if found:
-                        found = {**found, "repo": r}
-                        break
-                if found is None:
+                    if not found:
+                        continue
+                    author = str(found.get("author") or "")
+                    if not author or author.lower() == login.lower():
+                        hers = {**found, "repo": r}
+                        break  # a bare number is hers in some repo — that is the one
+                    foreign.append({**found, "repo": r})
+                if hers is not None:
+                    continue
+                if repo and foreign:
+                    f = foreign[0]
+                    reason = (
+                        f"{f['repo']}#{num} is {f['author']}'s "
+                        f"'{str(f.get('title') or '')[:50]}', not yours"
+                    )
+                elif foreign:
+                    others = ", ".join(f"{f['repo']}#{num} is {f['author']}'s" for f in foreign[:2])
+                    reason = f"no PR/issue #{num} of yours in any repo you can see ({others})"
+                else:
                     where = repo or "any repo you can see"
                     reason = f"no PR/issue #{num} in {where}"
-                    break
-                author = str(found.get("author") or "")
-                if author and author.lower() != login.lower():
-                    reason = (
-                        f"{found['repo']}#{num} is {author}'s "
-                        f"'{str(found.get('title') or '')[:50]}', not yours"
-                    )
-                    break
+                break
             if not reason:
                 continue
             t.status = "skipped"
