@@ -5463,7 +5463,8 @@ class Fabric:
                     "supersedes. Keep every other item exactly as it is — do not "
                     "re-plan your day. Output ONLY the full updated checklist."
                 )
-            pending_before = sum(1 for t in agent.task_queue.tasks if t.status == "pending")
+            queue_tasks = agent.task_queue.tasks if agent.task_queue is not None else []
+            pending_before = sum(1 for t in queue_tasks if t.status == "pending")
             self._meter_model_call(agent, "replan")
             response = await self.consciousness.think(
                 agent_id=agent.id,
@@ -5484,7 +5485,8 @@ class Fabric:
             self._strike_tasks_for_inactive(agent)
             self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
-            pending_after = sum(1 for t in agent.task_queue.tasks if t.status == "pending")
+            queue_tasks = agent.task_queue.tasks if agent.task_queue is not None else []
+            pending_after = sum(1 for t in queue_tasks if t.status == "pending")
             if idle:
                 if pending_after > pending_before:
                     agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
