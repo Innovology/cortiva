@@ -124,3 +124,93 @@ def test_a_bare_number_that_is_hers_in_another_repo_is_not_struck(tmp_path, monk
     monkeypatch.setattr(grounding, "read_github_ref", _read)
     agent.task_queue = TaskQueue(tasks=[Task(id="a", description="Land PR #301")])
     assert fabric._strike_phantom_refs(agent) == 0
+
+
+# ---------------------------------------------------------------------------
+# Standing orders strike at plan time; a build_station plan line is the verb
+# ---------------------------------------------------------------------------
+
+
+def _order(text: str, scope_type: str, value: str) -> dict:
+    return {
+        "order_id": "o1",
+        "text": text,
+        "kind": "prohibition",
+        "scope": {"type": scope_type, "value": value},
+        "issued_by": {"name": "Alex Browne", "role": "founder"},
+        "issued_at": "2026-11-06T18:40:00+00:00",
+        "status": "active",
+    }
+
+
+def test_topic_scope_matches_the_class_of_work_not_a_product() -> None:
+    from cortiva.core import standing_orders as so
+
+    orders = [
+        _order(
+            "Stop building red tape — no process artefacts about how we work.",
+            "topic",
+            "pr template|prompt block|playbook|protocol|decision record|decision-log|governance|dependency matrix|adoption dashboard",
+        )
+    ]
+    assert (
+        so.matching_order(orders, "Roll out PR template + agent prompt block to repos") is not None
+    )
+    assert (
+        so.matching_order(orders, "Publish hardened incident post-mortem agent playbook")
+        is not None
+    )
+    assert so.matching_order(orders, "Hand off decision-log PR scope to Willow") is not None
+    assert so.matching_order(orders, "Fix the lead form 500 on innovology.io") is None
+    assert "any work that is pr template, prompt block" in so.context_block(orders)
+
+
+def test_a_plan_item_covered_by_a_standing_order_is_struck(tmp_path, monkeypatch) -> None:
+    import json
+
+    fabric = Fabric(
+        agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=_Model()
+    )
+    agent = fabric.register_agent("cto")
+    (fabric.agents_dir / ".standing_orders.json").write_text(
+        json.dumps(
+            [_order("Stop building red tape.", "topic", "pr template|playbook|decision record")]
+        )
+    )
+    agent.task_queue = TaskQueue(
+        tasks=[
+            Task(id="a", description="Roll out PR template + agent prompt block via GitHub API"),
+            Task(id="b", description="Fix the lead form 500 on innovology.io"),
+        ]
+    )
+    assert fabric._strike_under_standing_orders(agent) == 1
+    by_id = {t.id: t for t in agent.task_queue.tasks}
+    assert (
+        by_id["a"].status == "skipped"
+        and "standing order from Alex Browne" in by_id["a"].description
+    )
+    assert "Stop building red tape" in by_id["a"].description
+    assert by_id["b"].status == "pending"
+
+
+def test_a_build_station_plan_line_is_the_verb(tmp_path) -> None:
+    fabric = Fabric(
+        agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=_Model()
+    )
+    agent = fabric.register_agent("yuki")
+    agent.task_queue = TaskQueue(
+        tasks=[
+            Task(
+                id="a",
+                description="build_station: github_feedback_sweep — codify the PR review/CI-verify/merge/close loop into a repeatable station",
+            ),
+            Task(id="b", description="Triage 11 open GitHub feedback threads"),
+        ]
+    )
+    assert fabric._scaffold_stations_from_plan(agent) == 1
+    d = agent.directory / "factory" / "github-feedback-sweep"
+    assert (d / "STATION.md").is_file() and "codify the PR review" in (d / "STATION.md").read_text()
+    by_id = {t.id: t for t in agent.task_queue.tasks}
+    assert by_id["a"].status == "done" and "scaffolded" in by_id["a"].outcome
+    assert any("station 'github-feedback-sweep'" in t.description for t in agent.task_queue.tasks)
+    assert fabric._scaffold_stations_from_plan(agent) == 0  # idempotent

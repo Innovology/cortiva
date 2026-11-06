@@ -1096,6 +1096,8 @@ class Fabric:
         )
         self._strike_tasks_for_inactive(agent)
         self._strike_phantom_refs(agent)
+        self._strike_under_standing_orders(agent)
+        self._scaffold_stations_from_plan(agent)
         self._last_plan_ts[agent_id] = time.time()
         logger.info(f"Agent {agent_id} has planned their day")
 
@@ -5542,6 +5544,82 @@ class Fabric:
             )
         return struck
 
+    def _strike_under_standing_orders(self, agent: Agent) -> int:
+        """Strike, at plan time, any pending task a standing order covers —
+        product, repo or topic scoped. The order was already in her context;
+        a plan that still carries the work is corrected, not merely warned.
+        2026-11-06: the founder had told the CTO directly to stop building
+        red tape; the ladder brought a PR-template rollout forward because
+        nothing the framework reads held that instruction."""
+        if agent.task_queue is None:
+            return 0
+        try:
+            from cortiva.core import standing_orders as _so
+
+            orders = _so.load(self.agents_dir)
+        except Exception:
+            return 0
+        if not orders:
+            return 0
+        struck = 0
+        for t in agent.task_queue.tasks:
+            if t.status != "pending":
+                continue
+            order = _so.matching_order(orders, t.description or "")
+            if order is None:
+                continue
+            by = (order.get("issued_by") or {}).get("name") or "leadership"
+            t.status = "skipped"
+            t.description = (
+                f"{t.description} *(struck: standing order from {by} — "
+                f'"{str(order.get("text") or "")[:90]}")*'
+            )
+            struck += 1
+        if struck:
+            self._write_plan(agent)
+            logger.info(
+                "Agent %s: %d planned task(s) struck — covered by a standing order",
+                agent.id,
+                struck,
+            )
+        return struck
+
+    _BUILD_LINE_RE = re.compile(
+        r"^\W*build[_ ]station\W+(?P<name>[A-Za-z0-9_-]{2,40})\W*(?P<rest>.*)$", re.IGNORECASE
+    )
+
+    def _scaffold_stations_from_plan(self, agent: Agent) -> int:
+        """A plan line written as ``build_station: <name> — <purpose>`` is the
+        verb, not a task to think about: scaffold the station and queue its
+        build. 2026-11-06 18:31: Yuki's creative rung produced exactly that
+        line and nothing happened, because the contract was a tool call."""
+        if agent.task_queue is None:
+            return 0
+        made = 0
+        for t in list(agent.task_queue.tasks):
+            if t.status != "pending":
+                continue
+            m = self._BUILD_LINE_RE.match((t.description or "").strip())
+            if not m:
+                continue
+            name = m.group("name").lower().replace("_", "-")
+            purpose = re.sub(r"^[\s:—–-]+", "", m.group("rest") or "").strip() or name
+            matches = [name.replace("-", " ")]
+            stem = self._stem(purpose)
+            if stem:
+                matches.append(" ".join(stem.split()[:3]))
+            before = len(agent.task_queue.tasks)
+            self._handle_build_station(
+                agent, {"name": name, "purpose": purpose, "matches": matches, "brief": purpose}
+            )
+            if len(agent.task_queue.tasks) > before:
+                t.status = "done"
+                t.outcome = f"station '{name}' scaffolded — build queued"
+                made += 1
+        if made:
+            self._write_plan(agent)
+        return made
+
     _HELD_MAIL_WINDOW_S = 24 * 3600
 
     def _held_mail_context(self, agent: Agent) -> str:
@@ -5784,6 +5862,8 @@ class Fabric:
             agent.update_plan(response.content)
             self._strike_tasks_for_inactive(agent)
             self._strike_phantom_refs(agent)
+            self._strike_under_standing_orders(agent)
+            self._scaffold_stations_from_plan(agent)
             self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
             queue_tasks = agent.task_queue.tasks if agent.task_queue is not None else []
@@ -9444,6 +9524,8 @@ class Fabric:
             agent.update_plan(response.content)
             self._strike_tasks_for_inactive(agent)
             self._strike_phantom_refs(agent)
+            self._strike_under_standing_orders(agent)
+            self._scaffold_stations_from_plan(agent)
             self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
 
