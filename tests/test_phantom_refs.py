@@ -214,6 +214,13 @@ def test_a_build_station_plan_line_is_the_verb(tmp_path) -> None:
     assert by_id["a"].status == "done" and "scaffolded" in by_id["a"].outcome
     assert any("station 'github-feedback-sweep'" in t.description for t in agent.task_queue.tasks)
     assert fabric._scaffold_stations_from_plan(agent) == 0  # idempotent
+    # The same line re-emitted on a later pass is marked done, not left pending.
+    agent.task_queue.tasks.append(
+        Task(id="c", description="build_station: github_feedback_sweep — codify the loop again")
+    )
+    assert fabric._scaffold_stations_from_plan(agent) == 0
+    c = next(x for x in agent.task_queue.tasks if x.id == "c")
+    assert c.status == "done" and "already on the floor" in c.outcome
 
 
 def test_a_single_word_station_name_is_not_a_match_phrase(tmp_path) -> None:

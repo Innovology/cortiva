@@ -5688,6 +5688,15 @@ class Fabric:
                 continue
             name = m.group("name").lower().replace("_", "-")
             purpose = re.sub(r"^[\s:—–-]+", "", m.group("rest") or "").strip() or name
+            if (_factory.factory_dir(agent.directory) / name).is_dir():
+                # Already on the floor (scaffolded on an earlier pass, or built):
+                # the line is done, not a station to scaffold again. Maren's
+                # 'build_station: Founder Steer…' line came back pending every
+                # pass after the first (20:54).
+                t.status = "done"
+                t.outcome = f"station '{name}' is already on the floor"
+                made += 0
+                continue
             # Match phrases: the purpose's stem, and the name only when it is a
             # multi-word slug. A single generic word as a match ("founder",
             # from Maren's 'build_station: Founder Steer: …' at 20:42) would
