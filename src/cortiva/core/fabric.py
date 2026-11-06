@@ -5438,6 +5438,18 @@ class Fabric:
         re.IGNORECASE,
     )
 
+    @staticmethod
+    def _already_struck(t: Any) -> bool:
+        """A line that already carries a strike marker stays struck: it is not
+        judged, marked or counted again. Belt to the parser's braces — the
+        model echoes struck lines back, and each pass used to append another
+        marker and log another strike (amara, 23:25/23:37/23:56 on 2026-11-06)."""
+        if "*(struck:" in (t.description or ""):
+            if t.status == "pending":
+                t.status = "skipped"
+            return True
+        return False
+
     def _strike_non_tasks(self, agent: Agent) -> int:
         """Strike checklist lines that are not tasks: a team-directory card the
         model echoed from its context ('**ar-scheduler**  (AR Scheduler)',
@@ -5449,7 +5461,7 @@ class Fabric:
             return 0
         struck = 0
         for t in agent.task_queue.tasks:
-            if t.status != "pending":
+            if t.status != "pending" or self._already_struck(t):
                 continue
             text = (t.description or "").strip()
             reason = ""
@@ -5496,7 +5508,7 @@ class Fabric:
                 handles[role] = name
         struck = 0
         for t in agent.task_queue.tasks:
-            if t.status != "pending":
+            if t.status != "pending" or self._already_struck(t):
                 continue
             text = (t.description or "").lower()
             # Directed AT the person — a contact verb within a few words of
@@ -5609,7 +5621,7 @@ class Fabric:
 
         struck = 0
         for t in agent.task_queue.tasks:
-            if t.status != "pending":
+            if t.status != "pending" or self._already_struck(t):
                 continue
             text = t.description or ""
             if not self._LANDING_VERBS.search(text):
@@ -5683,7 +5695,7 @@ class Fabric:
             return 0
         struck = 0
         for t in agent.task_queue.tasks:
-            if t.status != "pending":
+            if t.status != "pending" or self._already_struck(t):
                 continue
             order = _so.matching_order(orders, t.description or "")
             if order is None:

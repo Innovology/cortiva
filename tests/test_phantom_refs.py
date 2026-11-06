@@ -279,3 +279,45 @@ def test_lines_that_are_not_tasks_are_struck(tmp_path) -> None:
     assert "directory entry" in by["a"].description and "placeholder" in by["c"].description
     assert by["d"].status == "pending"  # short, but a task
     assert by["e"].status == "pending" and by["f"].status == "pending"
+
+
+def test_a_struck_line_the_model_echoes_back_stays_struck(tmp_path, monkeypatch) -> None:
+    """amara's plan, 2026-11-06 23:25→23:56: a directory card for Jessica was
+    struck under the MarketMesh order, echoed back by the model's replan as
+    '- [ ] … *(struck: …)* *(skipped)*', parsed as pending, struck again and
+    logged again — six markers by midnight. A marked line is settled."""
+    import json
+
+    from cortiva.core.agent import _parse_plan, _task_key
+
+    fabric = Fabric(
+        agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=_Model()
+    )
+    agent = fabric.register_agent("amara")
+    (fabric.agents_dir / ".standing_orders.json").write_text(
+        json.dumps([_order("All work on MarketMesh is halted.", "topic", "marketmesh")])
+    )
+    agent.task_queue = TaskQueue(
+        tasks=[Task(id="a", description="**jessica**  (Product Owner — MarketMesh)")]
+    )
+    assert fabric._strike_under_standing_orders(agent) == 1
+    fabric._write_plan(agent)
+    rendered = agent.read_identity("plan")
+    assert rendered.count("*(struck:") == 1 and "*(skipped)*" in rendered
+    # The model echoes the rendered plan back verbatim.
+    agent.update_plan(rendered)
+    (t,) = agent.task_queue.tasks
+    assert t.status == "skipped"
+    assert t.description.count("*(struck:") == 1 and "*(skipped)*" not in t.description
+    # Every strike helper leaves it alone and counts nothing.
+    assert fabric._strike_under_standing_orders(agent) == 0
+    assert fabric._strike_non_tasks(agent) == 0
+    assert t.description.count("*(struck:") == 1
+    fabric._write_plan(agent)
+    assert agent.read_identity("plan").count("*(struck:") == 1
+    # A task's identity ignores the markers.
+    assert _task_key("Fix the form *(struck: x)* *(skipped)*") == _task_key("Fix the form")
+    # The bare parser, which update_plan uses, reads a marked line as skipped.
+    q = _parse_plan("- [ ] Ship it *(skipped)*\n- [ ] Do it\n")
+    assert [x.status for x in q.tasks] == ["skipped", "pending"]
+    assert q.tasks[0].description == "Ship it"
