@@ -9919,9 +9919,28 @@ class Fabric:
         for aid in active:
             agent = self.agents.get(aid)
             if agent is not None and agent.state != AgentState.SLEEPING:
+                await self._file_before_forcing(agent)
                 self._force_sleep(agent)
 
         logger.info("Fabric stopped")
+
+    _FORCE_SLEEP_FILE_S = 20.0
+
+    async def _file_before_forcing(self, agent: Agent) -> None:
+        """A straggler that hit the drain deadline was mid-ritual — usually
+        stuck on the reflection ask. The purpose of sleep is the filing, not
+        the note: give the plugins their sleep hook, bounded, so the day's
+        chemistry and learning reach disk before the process dies.
+        2026-11-06: four hot-patch respawns in an hour, every one forcing the
+        stragglers; cognition.json never moved past the morning."""
+        try:
+            await asyncio.wait_for(
+                self.plugin_manager.dispatch_sleep(agent.id), timeout=self._FORCE_SLEEP_FILE_S
+            )
+        except TimeoutError:
+            logger.warning("Filing for %s did not finish before the forced sleep", agent.id)
+        except Exception:
+            logger.debug("filing before forced sleep failed for %s", agent.id, exc_info=True)
 
     def _force_sleep(self, agent: Agent) -> None:
         """Clock an agent off without the reflection ritual (shutdown deadline)."""

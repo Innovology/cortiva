@@ -1626,3 +1626,44 @@ class TestRefocusAgent:
         assert not (fabric.agents_dir / "remote-agent").is_dir()
         relays = list((fabric.agents_dir / "ar-lead" / "outbox" / "refocus").glob("*.json"))
         assert len(relays) == 1
+
+
+# ---------------------------------------------------------------------------
+# Shutdown files before it forces — the purpose of sleep is the filing
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownFiles:
+    @pytest.mark.asyncio
+    async def test_a_straggler_forced_at_the_drain_deadline_still_gets_its_sleep_hook(
+        self, tmp_path: Path
+    ) -> None:
+        """The reflection ask hangs past the drain deadline → the agent is
+        force-slept, but the plugins' sleep hook still runs (bounded) so the
+        day's chemistry and learning reach disk before the process dies."""
+        import asyncio
+
+        from cortiva.core.plugins import FabricPlugin
+
+        class _Hangs(_CountingConsciousness):
+            async def think(self, agent_id, context, prompt, **kwargs):
+                await asyncio.sleep(30)
+                return ConsciousResponse(content="", model="mock")
+
+        class _Filing(FabricPlugin):
+            name = "filing"
+
+            def __init__(self) -> None:
+                self.slept: list[str] = []
+
+            async def on_sleep(self, agent_id: str) -> None:
+                self.slept.append(agent_id)
+
+        fabric = _fabric_with(tmp_path, _Hangs())
+        filing = _Filing()
+        fabric.plugin_manager.register(filing)
+        agent = _executing_agent_empty_queue(fabric, "late-1")
+        fabric._running = True
+        await fabric.stop(drain_timeout_s=0.2)
+        assert agent.state == AgentState.SLEEPING
+        assert filing.slept == ["late-1"]
