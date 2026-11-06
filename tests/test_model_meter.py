@@ -44,12 +44,11 @@ def test_bump_counts_by_type_and_rolls_over_at_midnight(tmp_path: Path) -> None:
     assert mm.bump(d, "replan", today="2026-11-07")["count"] == 1
 
 
-def test_context_line_is_silent_until_the_first_ask_then_shows_the_budget(
-    tmp_path: Path, monkeypatch
+def test_context_line_is_silent_until_the_first_ask_then_informs_never_budgets(
+    tmp_path: Path,
 ) -> None:
     d = tmp_path / "cto"
     assert mm.context_line(d, today="2026-11-06") == ""
-    monkeypatch.setenv("CORTIVA_MODEL_CALL_BUDGET", "4")
     mm.bump(d, "execute", today="2026-11-06")
     mm.bump(d, "replan", today="2026-11-06")
     (d / "today" / "external_calls.json").write_text(
@@ -58,15 +57,11 @@ def test_context_line_is_silent_until_the_first_ask_then_shows_the_budget(
     mm.add_tokens(d, "execute", 18_000, 400, today="2026-11-06")
     mm.add_tokens(d, "replan", 5_000, 300, today="2026-11-06")
     line = mm.context_line(d, today="2026-11-06")
-    assert "2 of a soft budget of 4" in line
-    assert "execute 1, replan 1, ≈23k tokens of context read" in line
-    assert mm.read(d, today="2026-11-06")["tokens_by_type"] == {"execute": 18_000, "replan": 5_000}
+    assert "Model asks today: 2 (execute 1, replan 1, ≈23k tokens of context read)" in line
     assert "1 Claude escalation" in line
-    assert "near" not in line and "over" not in line
-    mm.bump(d, "execute", today="2026-11-06")
-    assert "near today's budget" in mm.context_line(d, today="2026-11-06")
-    mm.bump(d, "execute", today="2026-11-06")
-    assert "over today's budget" in mm.context_line(d, today="2026-11-06")
+    assert "factory floor" in line
+    assert "budget" not in line  # information, never a quota
+    assert mm.read(d, today="2026-11-06")["tokens_by_type"] == {"execute": 18_000, "replan": 5_000}
 
 
 @pytest.mark.asyncio

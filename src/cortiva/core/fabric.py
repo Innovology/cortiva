@@ -4862,11 +4862,7 @@ class Fabric:
         back to the agent so thinking spent on re-asking what Myelin holds
         is visible, to her and over IPC."""
         try:
-            m = _mm.bump(agent.directory, call_type)
-            if int(m.get("count") or 0) == _mm.budget():
-                logger.info(
-                    "Model calls: %s reached today's soft budget (%d)", agent.id, _mm.budget()
-                )
+            _mm.bump(agent.directory, call_type)
         except Exception:
             logger.debug("model meter bump failed for %s", agent.id, exc_info=True)
 

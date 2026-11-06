@@ -9,33 +9,23 @@ build and adjust the persisted knowledge graph" (founder, 2026-11-06).
 The fabric counts every consciousness call per agent per day in
 ``today/model_calls.json`` (``{date, count, by_type}``), by call type —
 plan, replan, execute, reflect — and the count goes into the agent's
-context next to the soft daily budget, so the agent (and the operator over
-IPC) can see when thinking is being spent on re-asking what Myelin already
-holds. Frontier escalations (deep_think) are counted separately in
+context as information — never a quota (founder, 2026-11-06: "I'm not sure
+budgeting the agents is a smart move… the agent's job becomes monitoring
+the factory they have created") — so the agent and the operator over IPC
+can see what thinking cost and what should become a factory step. Frontier escalations (deep_think) are counted separately in
 ``today/external_calls.json`` and shown alongside. Nothing here blocks a
-call: the budget is a felt limit, like a human's attention, not a breaker.
+call.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 METER_FILE = "model_calls.json"
 EXTERNAL_FILE = "external_calls.json"
-DEFAULT_BUDGET = 80
-NEAR_BUDGET = 0.75
-
-
-def budget() -> int:
-    """Soft daily budget of model asks per agent (``CORTIVA_MODEL_CALL_BUDGET``)."""
-    try:
-        return max(1, int(os.environ.get("CORTIVA_MODEL_CALL_BUDGET", DEFAULT_BUDGET)))
-    except ValueError:
-        return DEFAULT_BUDGET
 
 
 def _path(agent_dir: Path) -> Path:
@@ -116,29 +106,22 @@ def external_count(agent_dir: Path, *, today: str | None = None) -> int:
 
 
 def context_line(agent_dir: Path, *, today: str | None = None) -> str:
-    """One line for the agent's context — empty before the first ask."""
+    """One line for the agent's context — what today's thinking cost, as
+    information, never a quota. Empty before the first ask. Recurring work
+    belongs on the agent's factory floor (code it runs and watches), so a
+    rising count is a design signal, not a budget breach."""
     m = read(agent_dir, today=today)
     n = int(m.get("count") or 0)
     if n <= 0:
         return ""
-    b = budget()
     by_type = m.get("by_type") or {}
     parts = ", ".join(f"{k} {v}" for k, v in sorted(by_type.items(), key=lambda kv: -kv[1]))
     ext = external_count(agent_dir, today=today)
     ext_s = f" + {ext} Claude escalation{'s' if ext != 1 else ''}" if ext else ""
     tin = int(m.get("tokens_in") or 0)
     tok_s = f", ≈{_k(tin)} tokens of context read" if tin else ""
-    line = (
-        f"🧮 Model asks today: {n} of a soft budget of {b} ({parts}{tok_s}){ext_s}. "
-        "Myelin holds your plan, your inbox grounding and the team board — a wake, "
-        "a resumed plan or a filed note is not an ask. Spend asks on work the world "
-        "will see."
+    return (
+        f"🧮 Model asks today: {n} ({parts}{tok_s}){ext_s}. An ask is attention. "
+        "Work you find yourself asking about again and again belongs on your factory "
+        "floor — a step written as code that you run and watch, not re-think."
     )
-    if n >= b:
-        line += (
-            " You are over today's budget: finish what is in hand from what you already "
-            "know; do not open new lines of thought until something arrives."
-        )
-    elif n >= NEAR_BUDGET * b:
-        line += " You are near today's budget: prefer doing to re-deciding."
-    return line
