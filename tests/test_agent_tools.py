@@ -29,12 +29,13 @@ class TestToolsForAgent:
             "register_commitment",
             "update_commitment",
             "drink_coffee",
-            # refocus_agent + reject_delivery are offered to everyone but
-            # authority-gated in the handler (a non-AR/non-manager caller's
+            # refocus_agent + reject/accept_delivery are offered to everyone
+            # but authority-gated in the handler (a non-AR/non-manager caller's
             # refocus is rejected; only the report's management chain can
-            # reject a delivery).
+            # reject or accept a delivery).
             "refocus_agent",
             "reject_delivery",
+            "accept_delivery",
         ]
 
     def test_schema_shape_is_valid_openai_function(self) -> None:

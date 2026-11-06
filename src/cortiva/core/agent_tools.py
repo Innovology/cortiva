@@ -417,6 +417,36 @@ REJECT_DELIVERY_TOOL: dict[str, Any] = {
     },
 }
 
+ACCEPT_DELIVERY_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "accept_delivery",
+        "description": (
+            "Accept a report's delivery AFTER you have checked it — the "
+            "artifact itself, the PR, the URL, the document. Your acceptance "
+            "is a reward they will feel; it is only honoured for a delivery "
+            "that carries evidence, never for a bare claim, and only from the "
+            "report's management chain. Say what you checked: that is the "
+            "citation your own report upward will rest on."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "report": {"type": "string", "description": "The report's agent id."},
+                "commitment_id": {
+                    "type": "string",
+                    "description": "The id of the delivered commitment you are accepting.",
+                },
+                "checked": {
+                    "type": "string",
+                    "description": "What you verified, specifically (the artifact, what it shows).",
+                },
+            },
+            "required": ["report", "commitment_id", "checked"],
+        },
+    },
+}
+
 REFOCUS_AGENT_TOOL = {
     "type": "function",
     "function": {
@@ -546,6 +576,7 @@ _TOOL_TO_SUFFIX_FIELD = {
     "drink_coffee": "drink_coffee",
     "refocus_agent": "refocus_agent",
     "reject_delivery": "reject_delivery",
+    "accept_delivery": "accept_delivery",
     "issue_standing_order": "issue_standing_order",
     "lift_standing_order": "lift_standing_order",
 }
@@ -586,6 +617,7 @@ def tools_for_agent(
         # Same pattern: the handler only honours it from the report's
         # management chain, so offering it broadly is safe.
         REJECT_DELIVERY_TOOL,
+        ACCEPT_DELIVERY_TOOL,
     ]
     if agent_id in scheduling_authorised:
         tools.append(OPTIMIZE_SCHEDULE_TOOL)

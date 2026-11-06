@@ -8,6 +8,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from cortiva.core import commitments as cm
 from cortiva.core import expectations as ex
 from cortiva.core.fabric import Fabric
@@ -695,3 +697,60 @@ def test_staleness_ignores_wake_stamped_today_dir(tmp_path) -> None:
     (t / "timesheet.json").write_text("{}", encoding="utf-8")
     out = _fab()._staleness_context(a)
     assert "Reality gap" in out
+
+
+@pytest.mark.asyncio
+async def test_a_leader_can_accept_only_a_delivery_that_carries_evidence(tmp_path) -> None:
+    # The downward reward: acceptance after checking. A bare claim cannot be
+    # rubber-stamped; a rejected artifact cannot be accepted.
+    from cortiva.core import commitments as cm
+    from cortiva.core.agent import Task
+    from cortiva.core.reflection import ReflectionSuffix
+    from tests.test_fabric_extended import _make_fabric, _write_deploy
+
+    fabric = _make_fabric(tmp_path)
+    agents_dir = tmp_path / "agents"
+    _write_deploy(agents_dir, "ceo", name="Maren", department="exec", reports_to="human-founder")
+    _write_deploy(agents_dir, "cto", name="Samantha", department="eng", reports_to="ceo")
+    fabric.discover_agents()
+    cto = fabric.agents["cto"]
+    bare = cm.register(cto.directory, to="maren@x", what="Lead form", due="2026-11-07")
+    cm.update(cto.directory, commitment_id=bare.id, delivered=True)  # pure path, no artifact
+    real = cm.register(cto.directory, to="maren@x", what="Pipeline screen", due="2026-11-07")
+    cm.update(
+        cto.directory,
+        commitment_id=real.id,
+        delivered=True,
+        artifact="https://github.com/Innovology/innovology.io/pull/241",
+    )
+    task = Task(id="t1", description="review Samantha's deliveries", status="done")
+    await fabric._process_reflection(
+        fabric.agents["ceo"],
+        task,
+        ReflectionSuffix(
+            accept_delivery={"report": "cto", "commitment_id": bare.id, "checked": "looked fine"}
+        ),
+    )
+    await fabric._process_reflection(
+        fabric.agents["ceo"],
+        task,
+        ReflectionSuffix(
+            accept_delivery={
+                "report": "cto",
+                "commitment_id": real.id,
+                "checked": "PR #241 is mine to review, diff shows the screen, CI green",
+            }
+        ),
+    )
+    by_id = {c.id: c for c in cm.load(cto.directory)}
+    assert by_id[bare.id].accepted_by == ""
+    assert by_id[real.id].accepted_by == "ceo" and "accepted by ceo" in by_id[real.id].verification
+    # Not in the chain → ignored.
+    await fabric._process_reflection(
+        fabric.agents["cto"],
+        task,
+        ReflectionSuffix(
+            accept_delivery={"report": "ceo", "commitment_id": real.id, "checked": "x"}
+        ),
+    )
+    assert {c.id: c.accepted_by for c in cm.load(cto.directory)}[real.id] == "ceo"

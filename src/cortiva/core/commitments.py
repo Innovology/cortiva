@@ -105,6 +105,8 @@ class Commitment:
     blocked_at: str = ""  # when the block was VERIFIED (ask actually sent)
     claimed_blocked_at: str = ""  # agent SAID blocked but no ask found yet
     rejected_by: str = ""  # manager who rejected a claimed delivery
+    accepted_by: str = ""  # manager who accepted the delivery after checking it
+    accepted_at: str = ""
     rejected_at: str = ""  # when it was rejected
     created_at: str = ""
     delivered_at: str = ""
@@ -135,6 +137,8 @@ class Commitment:
             "blocked_at": self.blocked_at,
             "claimed_blocked_at": self.claimed_blocked_at,
             "rejected_by": self.rejected_by,
+            "accepted_by": self.accepted_by,
+            "accepted_at": self.accepted_at,
             "rejected_at": self.rejected_at,
             "created_at": self.created_at,
             "delivered_at": self.delivered_at,
@@ -169,6 +173,8 @@ class Commitment:
             done_means=str(d.get("done_means") or ""),
             claimed_blocked_at=str(d.get("claimed_blocked_at") or ""),
             rejected_by=str(d.get("rejected_by") or ""),
+            accepted_by=str(d.get("accepted_by") or ""),
+            accepted_at=str(d.get("accepted_at") or ""),
             rejected_at=str(d.get("rejected_at") or ""),
             created_at=str(d.get("created_at") or ""),
             delivered_at=str(d.get("delivered_at") or ""),
@@ -450,6 +456,40 @@ def reject(
     target.verification = f"delivery REJECTED by {target.rejected_by}: {str(reason or '').strip()}"
     save(agent_dir, commitments)
     return target
+
+
+def accept(
+    agent_dir: Path,
+    *,
+    commitment_id: str,
+    by: str,
+    note: str,
+    now: datetime | None = None,
+) -> Commitment | None:
+    """A manager's acceptance of a delivery AFTER checking it — the downward
+    reward. Only a DELIVERED commitment that carries evidence (a checked or
+    real-looking artifact, or a real sent email to the counterparty) can be
+    accepted; a bare claim cannot be rubber-stamped. Returns the commitment,
+    or None when nothing acceptable matched."""
+    commitments = load(agent_dir)
+    cid = (commitment_id or "").strip()
+    for c in commitments:
+        if c.status != "delivered" or not (c.id == cid or (cid and c.id.startswith(cid))):
+            continue
+        if str(c.verification or "").startswith("artifact rejected"):
+            return None
+        has_evidence, _desc = delivery_evidence(agent_dir, c)
+        if not has_evidence and not c.artifact_check:
+            return None
+        c.accepted_by = str(by or "").strip()
+        c.accepted_at = _now(now).isoformat()
+        if note:
+            c.verification = f"{c.verification} — accepted by {c.accepted_by}: {str(note).strip()}"[
+                :400
+            ]
+        save(agent_dir, commitments)
+        return c
+    return None
 
 
 def delivery_evidence(agent_dir: Path, c: Commitment) -> tuple[bool, str]:
