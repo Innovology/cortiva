@@ -214,3 +214,27 @@ def test_a_build_station_plan_line_is_the_verb(tmp_path) -> None:
     assert by_id["a"].status == "done" and "scaffolded" in by_id["a"].outcome
     assert any("station 'github-feedback-sweep'" in t.description for t in agent.task_queue.tasks)
     assert fabric._scaffold_stations_from_plan(agent) == 0  # idempotent
+
+
+def test_a_single_word_station_name_is_not_a_match_phrase(tmp_path) -> None:
+    """'build_station: Founder Steer: Live CI Dashboard — automate delegation
+    tracking' (Maren, 20:42) named the station 'founder'; that word must not
+    become a match phrase or every founder task routes through it once ready."""
+    import yaml
+
+    fabric = Fabric(
+        agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=_Model()
+    )
+    agent = fabric.register_agent("ceo")
+    agent.task_queue = TaskQueue(
+        tasks=[
+            Task(
+                id="a",
+                description="build_station: Founder Steer: Live CI Dashboard — Automate delegation, tracking, and outcome reporting",
+            )
+        ]
+    )
+    assert fabric._scaffold_stations_from_plan(agent) == 1
+    m = yaml.safe_load((agent.directory / "factory" / "founder" / "station.yaml").read_text())
+    assert "founder" not in m["matches"]
+    assert m["matches"] and all(len(x.split()) >= 2 for x in m["matches"])

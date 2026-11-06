@@ -5688,10 +5688,18 @@ class Fabric:
                 continue
             name = m.group("name").lower().replace("_", "-")
             purpose = re.sub(r"^[\s:—–-]+", "", m.group("rest") or "").strip() or name
-            matches = [name.replace("-", " ")]
+            # Match phrases: the purpose's stem, and the name only when it is a
+            # multi-word slug. A single generic word as a match ("founder",
+            # from Maren's 'build_station: Founder Steer: …' at 20:42) would
+            # route every task that mentions it through the station once ready.
+            matches: list[str] = []
             stem = self._stem(purpose)
             if stem:
                 matches.append(" ".join(stem.split()[:3]))
+            if "-" in name:
+                matches.append(name.replace("-", " "))
+            if not matches:
+                matches = [purpose[:40]]
             before = len(agent.task_queue.tasks)
             self._handle_build_station(
                 agent, {"name": name, "purpose": purpose, "matches": matches, "brief": purpose}
