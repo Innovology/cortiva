@@ -1015,9 +1015,11 @@ class _CountingConsciousness:
     def __init__(self, plan_body: str = "") -> None:
         self.calls = 0
         self.plan_body = plan_body
+        self.last_prompt = ""
 
     async def think(self, agent_id, context, prompt, **kwargs):
         self.calls += 1
+        self.last_prompt = prompt
         return ConsciousResponse(
             content=self.plan_body,
             tokens_in=10,
@@ -1084,12 +1086,50 @@ class TestIdleProactiveReassess:
 
         await fabric.cycle("idle-3")
         assert cons.calls == 1
-        # Age the throttle stamp past the interval.
+        # Age the throttle stamp past the (backed-off) interval.
         agent._last_idle_reassess = datetime.now(UTC) - timedelta(
-            seconds=fabric._IDLE_REASSESS_INTERVAL_S + 1
+            seconds=agent._idle_interval_s + 1
         )
         await fabric.cycle("idle-3")
         assert cons.calls == 2  # looked for work again
+
+    @pytest.mark.asyncio
+    async def test_idle_looks_back_off_while_the_answer_is_nothing(self, tmp_path):
+        """An idle look that finds nothing doubles the wait (6→12→24→48 min,
+        capped at an hour); one that finds work, or anything landing, snaps
+        it back. Five idle agents must not buy a replan every six minutes."""
+        from datetime import UTC, datetime, timedelta
+
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-5")
+
+        await fabric.cycle("idle-5")
+        assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S * 2
+        # Not yet due at the old interval…
+        agent._last_idle_reassess = datetime.now(UTC) - timedelta(
+            seconds=fabric._IDLE_REASSESS_INTERVAL_S + 1
+        )
+        assert (await fabric.cycle("idle-5"))["action"] == "idle"
+        assert cons.calls == 1
+        # …due at the doubled one, and it doubles again.
+        agent._last_idle_reassess = datetime.now(UTC) - timedelta(
+            seconds=agent._idle_interval_s + 1
+        )
+        await fabric.cycle("idle-5")
+        assert cons.calls == 2
+        assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S * 4
+        # Finding a real next step resets the cadence.
+        cons.plan_body = "- [ ] **[HIGH]** Open the PR for the lead form\n"
+        agent._last_idle_reassess = datetime.now(UTC) - timedelta(
+            seconds=agent._idle_interval_s + 1
+        )
+        await fabric.cycle("idle-5")
+        assert any("lead form" in t.description for t in agent.task_queue.tasks)
+        assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S
+        # The idle ask is the light one: it asked about promises and the world,
+        # not for a plan of the day.
+        assert "resting is honest" in cons.last_prompt
 
     @pytest.mark.asyncio
     async def test_proactive_reassess_can_pull_in_work(self, tmp_path):

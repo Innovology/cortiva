@@ -5386,7 +5386,14 @@ class Fabric:
     # context for now.
     _LIGHT_REPLAN = True
 
-    async def _replan_light(self, agent: Agent, messages: list[Any]) -> None:
+    # An idle agent (clear list, nothing arrived) looks for work at a cadence
+    # that backs off while the honest answer stays "nothing": 6 min, 12, 24,
+    # 48, then hourly — and snaps back to 6 min the moment something lands or
+    # an idle look finds a real next step. 2026-11-06: five agents on a
+    # 5-minute rota each bought a full 23k-token replan every 6 idle minutes.
+    _IDLE_BACKOFF_MAX_S = 3600.0
+
+    async def _replan_light(self, agent: Agent, messages: list[Any], *, idle: bool = False) -> None:
         identity = agent.read_all_identity()
         parts: list[str] = []
         resp = str(identity.get("responsibilities", "")).strip()
@@ -5394,6 +5401,18 @@ class Fabric:
             parts.append("## Your Responsibilities\n" + resp[:1500])
         plan = agent.read_identity("plan").strip()
         parts.append("## Your current checklist\n" + (plan or "(empty)"))
+        if idle:
+            # The clear list is the signal: what stands open that the world
+            # would notice if it moved? Promises first, then what it has
+            # already confirmed today — so the next item is outcome-shaped.
+            promises = self._commitment_salience_context(agent)
+            if promises:
+                parts.append(promises)
+            confirmed = self._outcomes_today_line(agent)
+            parts.append(
+                "## What the world has confirmed from you today\n"
+                + (confirmed or "nothing yet — nothing merged, live, closed or accepted")
+            )
         # What arrived / what stands over the plan — the only reasons to change it.
         await self._ground_inbox(agent)
         await self._ground_directives(agent)
@@ -5425,13 +5444,26 @@ class Fabric:
         else:
             can_replan = agent.spend_consciousness()
         if can_replan:
-            prompt = (
-                "Something arrived since your checklist was made (above). Adjust "
-                "the checklist for it and nothing else: ADD what it requires, "
-                "REPRIORITISE if it changes what matters most, DROP what it "
-                "supersedes. Keep every other item exactly as it is — do not "
-                "re-plan your day. Output ONLY the full updated checklist."
-            )
+            if idle:
+                prompt = (
+                    "Your checklist is clear and nothing new has arrived. Look at "
+                    "your open promises and what the world has confirmed (above). "
+                    "If one promise has a next concrete step that would produce "
+                    "something the world can see — a PR opened or merged, a URL "
+                    "that answers, an issue closed, a reply a human asked for — "
+                    "add ONLY that one item. If there is genuinely nothing, output "
+                    "the checklist unchanged: resting is honest, inventing work is "
+                    "not. Output ONLY the full checklist."
+                )
+            else:
+                prompt = (
+                    "Something arrived since your checklist was made (above). Adjust "
+                    "the checklist for it and nothing else: ADD what it requires, "
+                    "REPRIORITISE if it changes what matters most, DROP what it "
+                    "supersedes. Keep every other item exactly as it is — do not "
+                    "re-plan your day. Output ONLY the full updated checklist."
+                )
+            pending_before = sum(1 for t in agent.task_queue.tasks if t.status == "pending")
             self._meter_model_call(agent, "replan")
             response = await self.consciousness.think(
                 agent_id=agent.id,
@@ -5452,6 +5484,20 @@ class Fabric:
             self._strike_tasks_for_inactive(agent)
             self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
+            pending_after = sum(1 for t in agent.task_queue.tasks if t.status == "pending")
+            if idle:
+                if pending_after > pending_before:
+                    agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
+                else:
+                    cur = float(getattr(agent, "_idle_interval_s", self._IDLE_REASSESS_INTERVAL_S))
+                    agent._idle_interval_s = min(self._IDLE_BACKOFF_MAX_S, cur * 2)
+                    logger.info(
+                        "Idle: nothing worth doing for %s — next look in %d min",
+                        agent.id,
+                        int(agent._idle_interval_s // 60),
+                    )
+            else:
+                agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S  # something landed
         if agent.state == AgentState.REPLANNING:
             agent.transition(AgentState.EXECUTING)
 
@@ -8642,7 +8688,8 @@ class Fabric:
 
         now = datetime.now(UTC)
         last = getattr(agent, "_last_idle_reassess", None)
-        if last is not None and (now - last).total_seconds() < self._IDLE_REASSESS_INTERVAL_S:
+        interval = float(getattr(agent, "_idle_interval_s", self._IDLE_REASSESS_INTERVAL_S))
+        if last is not None and (now - last).total_seconds() < interval:
             return False
         agent._last_idle_reassess = now
         try:
@@ -8702,8 +8749,12 @@ class Fabric:
         if agent.state == AgentState.EXECUTING:
             agent.transition(AgentState.REPLANNING)
 
-        if not proactive and self._LIGHT_REPLAN:
-            await self._replan_light(agent, messages)
+        if self._LIGHT_REPLAN:
+            # Both reasons to touch the plan are small asks against what Myelin
+            # already holds: something arrived (adjust for it), or the list is
+            # clear (is there ONE next thing that moves the world?). Neither
+            # is a brain dump of the whole day.
+            await self._replan_light(agent, messages, idle=proactive)
             return
 
         identity = agent.read_all_identity()
