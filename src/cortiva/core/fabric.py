@@ -5681,7 +5681,10 @@ class Fabric:
             return 0
         made = 0
         for t in list(agent.task_queue.tasks):
-            if t.status != "pending":
+            # A line that was mid-session when the fabric restarted comes back
+            # in_progress (21:05: Maren's 'build_station:' line relaunched as a
+            # second session); it is settled the same way as a pending one.
+            if t.status not in ("pending", "in_progress"):
                 continue
             m = self._BUILD_LINE_RE.match((t.description or "").strip())
             if not m:

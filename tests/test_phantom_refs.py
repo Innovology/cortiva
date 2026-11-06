@@ -216,7 +216,11 @@ def test_a_build_station_plan_line_is_the_verb(tmp_path) -> None:
     assert fabric._scaffold_stations_from_plan(agent) == 0  # idempotent
     # The same line re-emitted on a later pass is marked done, not left pending.
     agent.task_queue.tasks.append(
-        Task(id="c", description="build_station: github_feedback_sweep — codify the loop again")
+        Task(
+            id="c",
+            description="build_station: github_feedback_sweep — codify the loop again",
+            status="in_progress",  # mid-session when a restart hit
+        )
     )
     assert fabric._scaffold_stations_from_plan(agent) == 0
     c = next(x for x in agent.task_queue.tasks if x.id == "c")
