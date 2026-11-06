@@ -1937,3 +1937,23 @@ class TestDoneLedger:
         assert "PR template" not in ctx and "playbook" not in ctx
         Planner(agent.directory).save_weekly("- [ ] Roll out PR template to all repos\n")
         assert fabric._later_this_week_context(agent) == ""  # nothing offerable → no ask
+
+    @pytest.mark.asyncio
+    async def test_an_idle_rung_keeps_one_new_item_and_strikes_the_rest(self, tmp_path):
+        """The rung asks for exactly one item; a paragraph of status lines in
+        reply (amara 21:58) is cut to the first, the rest struck as not asked for."""
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-10")
+        cons.plan_body = (
+            "- [ ] Fix the lead form 500 on innovology.io\n"
+            "- [ ] Agent messages dispatched to yuki and andre with explicit instructions\n"
+            "- [ ] Commitments tracked in ledger; will mark delivered upon merge\n"
+        )
+        await fabric.cycle("idle-10")
+        tasks = agent.task_queue.tasks
+        pending = [t for t in tasks if t.status == "pending"]
+        struck = [t for t in tasks if t.status == "skipped"]
+        assert [t.description for t in pending] == ["Fix the lead form 500 on innovology.io"]
+        assert len(struck) == 2 and all("one item was asked for" in t.description for t in struck)
+        assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S  # one real item found

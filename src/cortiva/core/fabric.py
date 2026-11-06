@@ -5985,6 +5985,7 @@ class Fabric:
                 return None
             queue_tasks = agent.task_queue.tasks if agent.task_queue is not None else []
             before = sum(1 for t in queue_tasks if t.status == "pending")
+            before_keys = {_task_key(t.description) for t in queue_tasks if t.status == "pending"}
             self._meter_model_call(agent, "replan")
             response = await self.consciousness.think(
                 agent_id=agent.id,
@@ -6000,6 +6001,18 @@ class Fabric:
                 )
                 agent.spend_consciousness()
             agent.update_plan(response.content)
+            if idle:
+                # The rung asked for exactly ONE item. A model that answers with
+                # a paragraph of status lines ('Agent messages dispatched to…',
+                # 'Commitments tracked in ledger…', amara 21:58) gets the first
+                # new line kept and the rest struck as not asked for.
+                extra = 0
+                for t in agent.task_queue.tasks if agent.task_queue is not None else []:
+                    if t.status == "pending" and _task_key(t.description) not in before_keys:
+                        extra += 1
+                        if extra > 1:
+                            t.status = "skipped"
+                            t.description = f"{t.description} *(struck: one item was asked for)*"
             self._strike_non_tasks(agent)
             self._strike_tasks_for_inactive(agent)
             self._strike_phantom_refs(agent)
