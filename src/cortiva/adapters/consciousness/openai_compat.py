@@ -353,7 +353,12 @@ class OpenAICompatibleAdapter:
         # thinking. Without usage, ~4 chars/token over what was sent.
         prompt_toks = (usage.prompt_tokens if usage else 0) or 0
         if prompt_toks <= 0:
-            prompt_toks = max(1, (len(context or "") + len(prompt or "")) // 4)
+            sent = sum(
+                len(str(m.get("content") or ""))
+                for m in (create_kwargs.get("messages") or [])
+                if isinstance(m, dict)
+            )
+            prompt_toks = max(1, sent // 4)
 
         tool_calls: list[dict[str, Any]] = []
         raw_calls = getattr(choice.message, "tool_calls", None) or []
