@@ -5024,6 +5024,13 @@ class Fabric:
         )
         return "\n".join(lines)
 
+    _CONTACT_VERBS = (
+        r"(?<![a-z])(?:chase|chasing|email|e-mail|mail|write to|ask|asking|direct|"
+        r"remind|ping|nudge|follow[- ]?up (?:with|to|on)|request (?:from|that)|"
+        r"escalate to|delegate to|delegating to|wake|message|call|"
+        r"instruct|hand (?:to|off to))"
+    )
+
     def _strike_tasks_for_inactive(self, agent: Agent) -> int:
         """Strike, at plan time, any pending task aimed at a colleague who is
         not currently working — by first name, agent id or role title. The
@@ -5056,11 +5063,21 @@ class Fabric:
             if t.status != "pending":
                 continue
             text = (t.description or "").lower()
+            # Directed AT the person — a contact verb within a few words of
+            # their name — not merely about them. "Assemble the Founder
+            # Brief: consolidate CMO/CFO inputs" and "escalate COO
+            # availability to the founder" are for the founder and stay.
             hit = next(
                 (
                     disp
                     for tok, disp in handles.items()
-                    if re.search(r"(?<![a-z0-9])" + re.escape(tok) + r"(?![a-z0-9])", text)
+                    if re.search(
+                        self._CONTACT_VERBS
+                        + r"\W+(?:[a-z0-9'’-]+\W+){0,4}?"
+                        + re.escape(tok)
+                        + r"(?![a-z0-9])",
+                        text,
+                    )
                 ),
                 None,
             )

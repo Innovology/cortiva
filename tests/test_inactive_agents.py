@@ -149,3 +149,23 @@ def test_planned_tasks_aimed_at_off_rota_colleagues_are_struck(tmp_path: Path) -
     fabric.load_schedules({"ceo": ROTA, "noor": ROTA, "coo": ROTA})
     ceo.set_plan("- [ ] Chase COO again\n")
     assert fabric._strike_tasks_for_inactive(ceo) == 0
+
+
+def test_tasks_about_an_off_rota_colleague_are_not_struck(tmp_path: Path) -> None:
+    # 10:19 2026-11-06: the first strike also hit "Assemble & Route W45 Founder
+    # Brief: consolidate CMO/CFO inputs, COO availability concern…" and "File
+    # Executive Escalations to Founder: document COO availability" — tasks for
+    # the founder that merely mention the people who are off.
+    fabric = _org(tmp_path)
+    fabric.load_schedules({"ceo": ROTA, "noor": ROTA})  # coo (Marcus) off
+    ceo = fabric.agents["ceo"]
+    ceo.set_plan(
+        "- [ ] Assemble & Route W45 Founder Brief: consolidate CMO/CFO inputs, COO availability concern\n"
+        "- [ ] File Executive Escalations to Founder: document COO availability (24+ days dark)\n"
+        "- [ ] Close W44 diagnostic; if COO pre-read is missing, note it\n"
+        "- [ ] Follow-up with Marcus on the W44 pre-read\n"
+        "- [ ] Direct the COO to file the pre-read by EOD\n"
+    )
+    assert fabric._strike_tasks_for_inactive(ceo) == 2
+    statuses = [t.status for t in ceo.task_queue.tasks]
+    assert statuses == ["pending", "pending", "pending", "skipped", "skipped"]
