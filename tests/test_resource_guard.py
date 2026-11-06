@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from cortiva.core import resource_guard as rg
 from cortiva.core.resource_guard import ResourceGuard, ResourceLimits
 
 
@@ -185,3 +186,41 @@ def test_fabric_with_terminal_raises_cycle_timeout():
         )
         # 300 (terminal) + 60 headroom = 360, above the 120 default
         assert fab.resource_guard.limits_for("a").cycle_timeout_s == 360.0
+
+
+class TestDiskMeasurement:
+    def test_managed_repo_clones_not_counted(self, tmp_path: Path) -> None:
+        # cto's 865MB of node-provisioned clones refused every cycle (2026-11-05).
+        guard = ResourceGuard(tmp_path)
+        guard.load({"defaults": {"max_disk_mb": 0.005}})
+        repos = tmp_path / "agent-1" / "workspace" / "repos" / "innovology.io"
+        repos.mkdir(parents=True)
+        (repos / "pack.bin").write_bytes(b"x" * 100_000)
+        (tmp_path / "agent-1" / "notes.md").write_text("small")
+
+        assert guard.pre_cycle_check("agent-1") is None
+
+    def test_other_workspace_files_still_counted(self, tmp_path: Path) -> None:
+        guard = ResourceGuard(tmp_path)
+        guard.load({"defaults": {"max_disk_mb": 0.005}})
+        scratch = tmp_path / "agent-1" / "workspace" / "scratch"
+        scratch.mkdir(parents=True)
+        (scratch / "dump.bin").write_bytes(b"x" * 100_000)
+
+        result = guard.pre_cycle_check("agent-1")
+        assert result is not None
+        assert "disk" in result.lower()
+
+    def test_measurement_cached_within_ttl(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        guard = ResourceGuard(tmp_path)
+        agent_dir = tmp_path / "agent-1"
+        agent_dir.mkdir()
+        assert guard._agent_disk_mb("agent-1") == 0.0
+
+        (agent_dir / "big.bin").write_bytes(b"x" * 1_048_576)
+        assert guard._agent_disk_mb("agent-1") == 0.0  # cached
+
+        monkeypatch.setattr(rg, "_DISK_CACHE_TTL_S", 0.0)
+        assert guard._agent_disk_mb("agent-1") == pytest.approx(1.0)
