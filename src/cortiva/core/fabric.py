@@ -1169,6 +1169,7 @@ class Fabric:
                 max_tokens=1200,
                 metadata={"call_type": "reflect"},
             )
+            self._meter_tokens(agent, "reflect", resp)
             agent.spend_consciousness()  # account for the call (non-blocking)
             return (resp.content or "").strip()
         except Exception:
@@ -2176,6 +2177,7 @@ class Fabric:
             metadata={"call_type": "execute", "task_execution": True},
             tools=agent_tools or None,
         )
+        self._meter_tokens(agent, "execute", response)
 
         # Record in session for continuity across tasks
         self.session_manager.record(
@@ -4348,6 +4350,7 @@ class Fabric:
             priority=Priority.NORMAL,
             metadata={"call_type": call_type},
         )
+        self._meter_tokens(agent, call_type, response)
 
         self.session_manager.record(
             agent.id,
@@ -4849,6 +4852,19 @@ class Fabric:
                 )
         except Exception:
             logger.debug("model meter bump failed for %s", agent.id, exc_info=True)
+
+    def _meter_tokens(self, agent: Agent, call_type: str, response: Any) -> None:
+        """Account what an ask cost (the context it carried, the answer it
+        produced) — sparing use is a token number, not just a count."""
+        try:
+            _mm.add_tokens(
+                agent.directory,
+                call_type,
+                int(getattr(response, "tokens_in", 0) or 0),
+                int(getattr(response, "tokens_out", 0) or 0),
+            )
+        except Exception:
+            logger.debug("model meter token accounting failed for %s", agent.id, exc_info=True)
 
     def _model_meter_context(self, agent: Agent) -> str:
         try:
@@ -5473,6 +5489,7 @@ class Fabric:
                 priority=Priority.HIGH,
                 metadata={"call_type": "replan", "light": True},
             )
+            self._meter_tokens(agent, "replan", response)
             if self.budget_manager and approval and approval.backend:
                 self.budget_manager.record_usage(
                     agent.id,
@@ -8932,6 +8949,7 @@ class Fabric:
                 priority=Priority.HIGH,
                 metadata={"call_type": "replan"},
             )
+            self._meter_tokens(agent, "replan", response)
 
             if self.budget_manager and approval and approval.backend:
                 self.budget_manager.record_usage(

@@ -73,6 +73,36 @@ def bump(agent_dir: Path, call_type: str, *, today: str | None = None) -> dict[s
     return m
 
 
+def add_tokens(
+    agent_dir: Path,
+    call_type: str,
+    tokens_in: int,
+    tokens_out: int,
+    *,
+    today: str | None = None,
+) -> dict[str, Any]:
+    """Account the tokens an ask cost, by call type — the cost of thinking,
+    not just its count. ``tokens_in`` is the context the ask carried."""
+    m = read(agent_dir, today=today)
+    kind = (call_type or "default").strip() or "default"
+    m["tokens_in"] = int(m.get("tokens_in") or 0) + max(0, int(tokens_in or 0))
+    m["tokens_out"] = int(m.get("tokens_out") or 0) + max(0, int(tokens_out or 0))
+    by_tokens = m.get("tokens_by_type") or {}
+    by_tokens[kind] = int(by_tokens.get(kind) or 0) + max(0, int(tokens_in or 0))
+    m["tokens_by_type"] = by_tokens
+    try:
+        p = _path(agent_dir)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(m), encoding="utf-8")
+    except OSError:
+        pass
+    return m
+
+
+def _k(n: int) -> str:
+    return f"{n / 1000:.0f}k" if n >= 1000 else str(n)
+
+
 def external_count(agent_dir: Path, *, today: str | None = None) -> int:
     """Frontier (Claude) escalations today, from the existing external_calls.json."""
     today = today or date.today().isoformat()
@@ -96,8 +126,10 @@ def context_line(agent_dir: Path, *, today: str | None = None) -> str:
     parts = ", ".join(f"{k} {v}" for k, v in sorted(by_type.items(), key=lambda kv: -kv[1]))
     ext = external_count(agent_dir, today=today)
     ext_s = f" + {ext} Claude escalation{'s' if ext != 1 else ''}" if ext else ""
+    tin = int(m.get("tokens_in") or 0)
+    tok_s = f", ≈{_k(tin)} tokens of context read" if tin else ""
     line = (
-        f"🧮 Model asks today: {n} of a soft budget of {b} ({parts}){ext_s}. "
+        f"🧮 Model asks today: {n} of a soft budget of {b} ({parts}{tok_s}){ext_s}. "
         "Myelin holds your plan, your inbox grounding and the team board — a wake, "
         "a resumed plan or a filed note is not an ask. Spend asks on work the world "
         "will see."

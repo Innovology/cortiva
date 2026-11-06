@@ -55,9 +55,12 @@ def test_context_line_is_silent_until_the_first_ask_then_shows_the_budget(
     (d / "today" / "external_calls.json").write_text(
         json.dumps({"date": "2026-11-06", "count": 1, "est_cost_gbp": 0.2})
     )
+    mm.add_tokens(d, "execute", 18_000, 400, today="2026-11-06")
+    mm.add_tokens(d, "replan", 5_000, 300, today="2026-11-06")
     line = mm.context_line(d, today="2026-11-06")
     assert "2 of a soft budget of 4" in line
-    assert "execute 1, replan 1" in line
+    assert "execute 1, replan 1, ≈23k tokens of context read" in line
+    assert mm.read(d, today="2026-11-06")["tokens_by_type"] == {"execute": 18_000, "replan": 5_000}
     assert "1 Claude escalation" in line
     assert "near" not in line and "over" not in line
     mm.bump(d, "execute", today="2026-11-06")
@@ -78,6 +81,7 @@ async def test_a_wake_that_plans_is_metered_and_the_count_reaches_the_next_conte
     m = mm.read(agent.directory)
     assert m["count"] == model.calls, (m, model.calls)
     assert sum(m["by_type"].values()) == model.calls
+    assert m["tokens_in"] == model.calls and m["tokens_out"] == model.calls  # 1+1 per fake call
     assert "Model asks today" in fabric._model_meter_context(agent)
 
 
