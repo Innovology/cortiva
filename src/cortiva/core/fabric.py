@@ -819,6 +819,23 @@ class Fabric:
             self._emit("agent.wake", agent_id=agent_id, state=agent.state.value, resumed=True)
             await self.plugin_manager.dispatch_wake(agent_id, agent)
             return agent
+        # A standing plan with new input: ADJUST it (the light reassessment),
+        # never rebuild the day from the full pack. Only an agent with no plan
+        # at all — the first wake of its life, or everything done — plans.
+        standing = self._standing_plan_pending(agent)
+        if standing and self._LIGHT_REPLAN:
+            logger.info(
+                "Agent %s adjusting the standing plan for what arrived — %d pending",
+                agent_id,
+                standing,
+            )
+            if self.budget_manager:
+                self.budget_manager.reset_agent(agent_id)
+            agent.transition(AgentState.EXECUTING)  # _replan_light moves through REPLANNING
+            await self._replan(agent, messages, proactive=False)
+            self._emit("agent.wake", agent_id=agent_id, state=agent.state.value, adjusted=True)
+            await self.plugin_manager.dispatch_wake(agent_id, agent)
+            return agent
 
         if self.budget_manager:
             self.budget_manager.reset_agent(agent_id)
@@ -5213,12 +5230,32 @@ class Fabric:
                 pass
         return False
 
-    def _resume_plan(self, agent: Agent) -> int | None:
-        """Pick today's standing plan back up if it still has pending work
-        and nothing inbound has changed since it was made. Returns the
-        number of pending tasks, or None when a fresh plan is needed."""
-        from datetime import date
+    def _standing_plan_pending(self, agent: Agent) -> int:
+        """Load the standing plan into the queue regardless of inbound
+        change; returns how many tasks are pending (0 = no standing plan)."""
+        from cortiva.core.agent import _parse_plan
 
+        path = agent.identity_path("plan")
+        try:
+            if not path.exists():
+                return 0
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return 0
+        pending = [
+            ln for ln in text.splitlines() if re.match(r"\s*- \[ \]", ln) and "struck:" not in ln
+        ]
+        if not pending:
+            return 0
+        agent.task_queue = _parse_plan(text)
+        return len(pending)
+
+    def _resume_plan(self, agent: Agent) -> int | None:
+        """Pick the standing plan back up if it still has pending work and
+        nothing inbound has changed since it was made — across days too: a
+        wake never plans; only an input does. Returns the number of pending
+        tasks, or None when a fresh plan is needed (first wake of the
+        agent's life, everything done, or something arrived)."""
         from cortiva.core.agent import _parse_plan
 
         path = agent.identity_path("plan")
@@ -5226,8 +5263,6 @@ class Fabric:
             if not path.exists():
                 return None
             st = path.stat()
-            if date.fromtimestamp(st.st_mtime) != date.today():
-                return None
             text = path.read_text(encoding="utf-8")
         except OSError:
             return None
@@ -5242,6 +5277,98 @@ class Fabric:
         agent.task_queue = _parse_plan(text)
         self._last_plan_ts[agent.id] = made
         return len(pending)
+
+    # The brain decides when to sleep (fragmentation / exhaustion); the rota is
+    # the outer bound. This is the inner one: a wake lasts at least this long
+    # before a wind-down can take it, so the meter cannot thrash an agent
+    # between sleeping and waking.
+    _MIN_AWAKE_BEFORE_WIND_DOWN_S = 20 * 60
+
+    def _awake_long_enough_to_wind_down(self, agent: Agent) -> bool:
+        from datetime import UTC, datetime
+
+        last = getattr(agent, "last_wake", None)
+        if last is None:
+            return True
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - last).total_seconds() >= self._MIN_AWAKE_BEFORE_WIND_DOWN_S
+
+    # A reassessment triggered by an input is a small adjustment to the
+    # standing checklist, not a re-derivation of the day from a 31-block pack.
+    # Context = the checklist + what arrived (+ what stands over it) and
+    # nothing else: ~4k tokens instead of ~14k. "It should be 100s of small
+    # asks that build and adjust the persisted knowledge graph" (founder,
+    # 2026-11-06). The proactive (empty-queue) reassessment keeps the full
+    # context for now.
+    _LIGHT_REPLAN = True
+
+    async def _replan_light(self, agent: Agent, messages: list[Any]) -> None:
+        identity = agent.read_all_identity()
+        parts: list[str] = []
+        resp = str(identity.get("responsibilities", "")).strip()
+        if resp:
+            parts.append("## Your Responsibilities\n" + resp[:1500])
+        plan = agent.read_identity("plan").strip()
+        parts.append("## Your current checklist\n" + (plan or "(empty)"))
+        # What arrived / what stands over the plan — the only reasons to change it.
+        await self._ground_inbox(agent)
+        await self._ground_directives(agent)
+        for block in (
+            self._email_inbox_context(agent),
+            self._directive_salience_context(agent),
+            self._directive_references_context(agent),
+            self._github_feedback_context(agent),
+            self._held_mail_context(agent),
+            self._unverified_context(agent),
+            self._inactive_context(agent),
+        ):
+            if block:
+                parts.append(block)
+        if messages:
+            rendered = "\n".join(
+                f"- {getattr(m, 'content', m)}" for m in messages[-10:] if getattr(m, "content", m)
+            )
+            if rendered:
+                parts.append("## Messages that landed\n" + rendered)
+        context = "\n\n---\n\n".join(parts)
+        self.session_manager.validate_agent(agent.id, context)
+
+        can_replan = False
+        approval = None
+        if self.budget_manager:
+            approval = self.budget_manager.request_budget(agent.id, "high")
+            can_replan = approval.approved
+        else:
+            can_replan = agent.spend_consciousness()
+        if can_replan:
+            prompt = (
+                "Something arrived since your checklist was made (above). Adjust "
+                "the checklist for it and nothing else: ADD what it requires, "
+                "REPRIORITISE if it changes what matters most, DROP what it "
+                "supersedes. Keep every other item exactly as it is — do not "
+                "re-plan your day. Output ONLY the full updated checklist."
+            )
+            response = await self.consciousness.think(
+                agent_id=agent.id,
+                context=context,
+                prompt=prompt,
+                priority=Priority.HIGH,
+                metadata={"call_type": "replan", "light": True},
+            )
+            if self.budget_manager and approval and approval.backend:
+                self.budget_manager.record_usage(
+                    agent.id,
+                    approval.backend,
+                    response.tokens_in,
+                    response.tokens_out,
+                )
+                agent.spend_consciousness()
+            agent.update_plan(response.content)
+            self._strike_tasks_for_inactive(agent)
+            self._last_plan_ts[agent.id] = time.time()
+        if agent.state == AgentState.REPLANNING:
+            agent.transition(AgentState.EXECUTING)
 
     def _active_reports(self, agent: Agent) -> list[str]:
         if self.org is None:
@@ -8441,6 +8568,10 @@ class Fabric:
         if agent.state == AgentState.EXECUTING:
             agent.transition(AgentState.REPLANNING)
 
+        if not proactive and self._LIGHT_REPLAN:
+            await self._replan_light(agent, messages)
+            return
+
         identity = agent.read_all_identity()
         context = await self.context_builder.build_replan_context(agent, identity, messages)
 
@@ -8759,6 +8890,8 @@ class Fabric:
                 continue
             if self._wake_override_active(agent, now):
                 continue  # force-woken for a crisis — let them work it
+            if not self._awake_long_enough_to_wind_down(agent):
+                continue  # the floor: a wake lasts at least this long
             try:
                 if await self.plugin_manager.dispatch_should_wind_down(agent_id):
                     logger.info(

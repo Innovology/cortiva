@@ -215,7 +215,7 @@ class TestRuntimePersistence:
         for p in (agent.directory / "today").iterdir():
             os.utime(p, (old, old))
         assert agent.reset_today() is True
-        assert agent.read_today("plan.md") == ""
+        assert agent.read_today("plan.md") == "# Plan"  # the plan carries across days
         assert agent.read_today("task_queue.json") == ""
         # Directory itself still exists
         assert (agent.directory / "today").is_dir()
