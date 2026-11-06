@@ -33,11 +33,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("cortiva.resource_guard")
+
+# Node-provisioned git clones (per-agent dev env) are a managed cache sized by
+# the repos themselves, not agent output. Counting them put every engineer over
+# the 500MB default (cto 762MB, willow ~3GB) and refused all their cycles.
+_DISK_EXCLUDE: tuple[tuple[str, ...], ...] = (("workspace", "repos"),)
+
+# The quota is checked before every cycle; walking a multi-GB tree each 30s
+# heartbeat is heavy work on the hot path. Disk grows slowly — cache it.
+_DISK_CACHE_TTL_S = 300.0
 
 
 @dataclass
@@ -95,6 +106,7 @@ class ResourceGuard:
         self._defaults = ResourceLimits()
         self._overrides: dict[str, ResourceLimits] = {}
         self._state: dict[str, AgentResourceState] = {}
+        self._disk_cache: dict[str, tuple[float, float]] = {}
 
     def load(self, config: dict[str, Any]) -> None:
         """Load limits from the ``resource_limits`` config section."""
@@ -270,15 +282,29 @@ class ResourceGuard:
     # ------------------------------------------------------------------
 
     def _agent_disk_mb(self, agent_id: str) -> float:
-        """Measure an agent's disk usage in MB."""
-        agent_dir = self._agents_dir / agent_id
+        """Measure an agent's disk usage in MB (cached; managed clones excluded)."""
+        now = time.monotonic()
+        cached = self._disk_cache.get(agent_id)
+        if cached is not None and now - cached[0] < _DISK_CACHE_TTL_S:
+            return cached[1]
+        mb = self._measure_disk_mb(self._agents_dir / agent_id)
+        self._disk_cache[agent_id] = (now, mb)
+        return mb
+
+    @staticmethod
+    def _measure_disk_mb(agent_dir: Path) -> float:
         if not agent_dir.exists():
             return 0.0
-        try:
-            total = sum(f.stat().st_size for f in agent_dir.rglob("*") if f.is_file())
-            return total / (1024 * 1024)
-        except OSError:
-            return 0.0
+        excluded = {agent_dir.joinpath(*parts) for parts in _DISK_EXCLUDE}
+        total = 0
+        for root, dirs, files in os.walk(agent_dir):
+            dirs[:] = [d for d in dirs if Path(root, d) not in excluded]
+            for name in files:
+                try:
+                    total += os.lstat(os.path.join(root, name)).st_size
+                except OSError:
+                    continue
+        return total / (1024 * 1024)
 
     # ------------------------------------------------------------------
     # Status
