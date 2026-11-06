@@ -44,7 +44,7 @@ async def test_a_wake_resumes_todays_plan_when_nothing_inbound_changed(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_inbound_mail_or_a_directive_makes_the_next_wake_replan(tmp_path: Path) -> None:
+async def test_inbound_mail_or_a_directive_makes_the_next_wake_adjust(tmp_path: Path) -> None:
     model = _Model()
     f = _fabric(tmp_path, model)
     agent = f.register_agent("cto")
@@ -64,17 +64,17 @@ async def test_inbound_mail_or_a_directive_makes_the_next_wake_replan(tmp_path: 
         json.dumps({"from": "maren@x", "subject": "Please", "text": "do X"})
     )
     await f.wake("cto")
-    assert calls.count("plan") == 2
+    assert calls.count("plan") == 1 and calls.count("replan") == 1  # adjusted, not rebuilt
 
     await f.sleep("cto")
     await f.wake("cto")
-    assert calls.count("plan") == 2  # the mail was read during that plan; nothing new since
+    assert calls.count("replan") == 1  # the mail was read during that adjustment; nothing new since
 
     await f.sleep("cto")
     time.sleep(0.01)
     (agent.directory / "directives.json").write_text("[]")
     await f.wake("cto")
-    assert calls.count("plan") == 3
+    assert calls.count("plan") == 1 and calls.count("replan") == 2
 
 
 @pytest.mark.asyncio
@@ -172,3 +172,37 @@ def test_reset_today_keeps_todays_files_and_clears_stale_ones(tmp_path: Path) ->
     assert agent.reset_today() is True
     # The plan carries across days; the day's bookkeeping does not.
     assert [p.name for p in today.iterdir()] == ["plan.md"]
+
+
+@pytest.mark.asyncio
+async def test_a_wake_with_new_input_adjusts_the_standing_plan_not_rebuilds_it(
+    tmp_path: Path,
+) -> None:
+    # 12:02 2026-11-06: held mail made the CEO's wake fall through to the full
+    # daily plan — 92k characters of context. A standing plan plus new input
+    # is an adjustment; only an agent with no plan at all builds one.
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    agent = f.register_agent("cto")
+    seen = []
+    orig = model.think
+
+    async def _think(agent_id, context, prompt, **kw):
+        md = kw.get("metadata") or {}
+        seen.append((md.get("call_type"), bool(md.get("light")), len(context)))
+        return await orig(agent_id, context, prompt, **kw)
+
+    model.think = _think
+    await f.wake("cto")  # first wake of its life: a full plan
+    assert [t for t, _, _ in seen if t == "plan"] == ["plan"]
+    await f.sleep("cto")
+    inbox = agent.directory / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "m.json").write_text(
+        json.dumps({"from": "maren@x", "subject": "Lead form", "text": "start it"})
+    )
+    await f.wake("cto")
+    assert seen[-1][0] == "replan" and seen[-1][1] is True, seen
+    assert [t for t, _, _ in seen if t == "plan"] == ["plan"], "no second full plan"
+    assert agent.state == AgentState.EXECUTING
+    assert any(t.status == "pending" for t in agent.task_queue.tasks)

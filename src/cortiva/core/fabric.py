@@ -819,6 +819,23 @@ class Fabric:
             self._emit("agent.wake", agent_id=agent_id, state=agent.state.value, resumed=True)
             await self.plugin_manager.dispatch_wake(agent_id, agent)
             return agent
+        # A standing plan with new input: ADJUST it (the light reassessment),
+        # never rebuild the day from the full pack. Only an agent with no plan
+        # at all — the first wake of its life, or everything done — plans.
+        standing = self._standing_plan_pending(agent)
+        if standing and self._LIGHT_REPLAN:
+            logger.info(
+                "Agent %s adjusting the standing plan for what arrived — %d pending",
+                agent_id,
+                standing,
+            )
+            if self.budget_manager:
+                self.budget_manager.reset_agent(agent_id)
+            agent.transition(AgentState.EXECUTING)  # _replan_light moves through REPLANNING
+            await self._replan(agent, messages, proactive=False)
+            self._emit("agent.wake", agent_id=agent_id, state=agent.state.value, adjusted=True)
+            await self.plugin_manager.dispatch_wake(agent_id, agent)
+            return agent
 
         if self.budget_manager:
             self.budget_manager.reset_agent(agent_id)
@@ -5212,6 +5229,26 @@ class Fabric:
             except OSError:
                 pass
         return False
+
+    def _standing_plan_pending(self, agent: Agent) -> int:
+        """Load the standing plan into the queue regardless of inbound
+        change; returns how many tasks are pending (0 = no standing plan)."""
+        from cortiva.core.agent import _parse_plan
+
+        path = agent.identity_path("plan")
+        try:
+            if not path.exists():
+                return 0
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return 0
+        pending = [
+            ln for ln in text.splitlines() if re.match(r"\s*- \[ \]", ln) and "struck:" not in ln
+        ]
+        if not pending:
+            return 0
+        agent.task_queue = _parse_plan(text)
+        return len(pending)
 
     def _resume_plan(self, agent: Agent) -> int | None:
         """Pick the standing plan back up if it still has pending work and
