@@ -1028,6 +1028,7 @@ class Fabric:
             call_type="plan",
             on_success=lambda text: agent.set_plan(text),
         )
+        self._strike_tasks_for_inactive(agent)
         logger.info(f"Agent {agent_id} has planned their day")
 
         agent.transition(AgentState.EXECUTING)
@@ -5023,6 +5024,60 @@ class Fabric:
         )
         return "\n".join(lines)
 
+    def _strike_tasks_for_inactive(self, agent: Agent) -> int:
+        """Strike, at plan time, any pending task aimed at a colleague who is
+        not currently working — by first name, agent id or role title. The
+        NOT WORKING block steers execution but not planning: on 2026-11-06
+        the CEO planned a chase to the CMO, the CFO and the COO within ten
+        minutes of each other, spent a session on each, and the sender held
+        every mail. Returns how many tasks were struck."""
+        if agent.task_queue is None:
+            return 0
+        try:
+            inactive = self._inactive_agent_ids()
+        except Exception:
+            return 0
+        if not inactive:
+            return 0
+        cards = {c["id"]: c for c in self._load_directory_cards()}
+        handles: dict[str, str] = {}  # lowercase token → display name
+        for aid in inactive:
+            c = cards.get(aid) or {}
+            name = str(c.get("name") or aid)
+            handles[aid.lower()] = name
+            first = name.split(" ")[0].lower()
+            if len(first) >= 3:
+                handles[first] = name
+            role = str(c.get("role") or "").lower().strip()
+            if len(role) >= 3:
+                handles[role] = name
+        struck = 0
+        for t in agent.task_queue.tasks:
+            if t.status != "pending":
+                continue
+            text = (t.description or "").lower()
+            hit = next(
+                (
+                    disp
+                    for tok, disp in handles.items()
+                    if re.search(r"(?<![a-z0-9])" + re.escape(tok) + r"(?![a-z0-9])", text)
+                ),
+                None,
+            )
+            if hit is None:
+                continue
+            t.status = "skipped"
+            t.description = f"{t.description} *(struck: {hit} is not currently working)*"
+            struck += 1
+        if struck:
+            self._write_plan(agent)
+            logger.info(
+                "Agent %s: %d planned task(s) struck — aimed at colleagues who are not working",
+                agent.id,
+                struck,
+            )
+        return struck
+
     def _active_reports(self, agent: Agent) -> list[str]:
         if self.org is None:
             return []
@@ -8391,6 +8446,7 @@ class Fabric:
                 agent.spend_consciousness()
 
             agent.update_plan(response.content)
+            self._strike_tasks_for_inactive(agent)
 
         if agent.state == AgentState.REPLANNING:
             agent.transition(AgentState.EXECUTING)
