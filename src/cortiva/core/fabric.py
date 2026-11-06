@@ -914,6 +914,9 @@ class Fabric:
         unverified_ctx = self._unverified_context(agent)
         if unverified_ctx:
             context = context + "\n\n---\n\n" + unverified_ctx
+        held_ctx = self._held_mail_context(agent)
+        if held_ctx:
+            context = context + "\n\n---\n\n" + held_ctx
 
         # The org head's periodic consultation with the owner — pull the
         # leadership's strategy/roadmap material, put it in front of the
@@ -5095,6 +5098,56 @@ class Fabric:
             )
         return struck
 
+    _HELD_MAIL_WINDOW_S = 24 * 3600
+
+    def _held_mail_context(self, agent: Agent) -> str:
+        """Mail of hers the node did NOT send in the last day, with the
+        reason — so a wrong address or a repeat ask is corrected by her, not
+        quietly parked. 2026-11-06: three mails to samantha@innovology.io
+        (no such mailbox) were held one after another; the reason only ever
+        reached a folder she never reads."""
+        import time as _time
+
+        held_dir = Path(agent.directory) / "outbox" / "email" / "held"
+        if not held_dir.is_dir():
+            return ""
+        cutoff = _time.time() - self._HELD_MAIL_WINDOW_S
+        rows: list[tuple[float, str]] = []
+        for p in held_dir.glob("*.json"):
+            try:
+                t = p.stat().st_mtime
+                if t < cutoff:
+                    continue
+                m = json.loads(p.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                continue
+            if not isinstance(m, dict):
+                continue
+            to = m.get("to")
+            to_s = str(to[0] if isinstance(to, list) and to else to or "")
+            rows.append(
+                (
+                    t,
+                    f'- to **{to_s}** — "{str(m.get("subject", ""))[:80]}": '
+                    f"{str(m.get('held_reason', '')) or 'held'}",
+                )
+            )
+        if not rows:
+            return ""
+        rows.sort()
+        lines = [
+            "## ✋ Mail of yours that was NOT sent",
+            "",
+            "The node held these instead of sending them — each with the reason. "
+            "Nobody received them. Read the reason and fix the cause: a wrong "
+            "address (use the directory above), a repeat that added nothing (say "
+            "something new or wait for their answer), or a colleague who is not "
+            "working (they will not read it). Do not simply resend.",
+            "",
+        ]
+        lines.extend(line for _, line in rows[-8:])
+        return "\n".join(lines)
+
     def _active_reports(self, agent: Agent) -> list[str]:
         if self.org is None:
             return []
@@ -8353,6 +8406,9 @@ class Fabric:
         unverified_ctx = self._unverified_context(agent)
         if unverified_ctx:
             context = context + "\n\n---\n\n" + unverified_ctx
+        held_ctx = self._held_mail_context(agent)
+        if held_ctx:
+            context = context + "\n\n---\n\n" + held_ctx
 
         # A due founder brief keeps confronting the org head on reassess too —
         # it self-resolves only when the brief is actually sent.

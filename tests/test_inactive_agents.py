@@ -169,3 +169,29 @@ def test_tasks_about_an_off_rota_colleague_are_not_struck(tmp_path: Path) -> Non
     assert fabric._strike_tasks_for_inactive(ceo) == 2
     statuses = [t.status for t in ceo.task_queue.tasks]
     assert statuses == ["pending", "pending", "pending", "skipped", "skipped"]
+
+
+def test_held_mail_is_shown_to_the_sender_with_the_reason(tmp_path: Path) -> None:
+    import json as _json
+
+    fabric = _org(tmp_path)
+    ceo = fabric.agents["ceo"]
+    held = ceo.directory / "outbox" / "email" / "held"
+    held.mkdir(parents=True)
+    (held / "held-a.json").write_text(
+        _json.dumps(
+            {
+                "to": "samantha@innovology.io",
+                "subject": "CI/PAT Access Resolution",
+                "held_reason": "nobody called samantha@innovology.io is known at innovology.io — not a listed contact",
+            }
+        )
+    )
+    block = fabric._held_mail_context(ceo)
+    assert (
+        "NOT sent" in block
+        and "samantha@innovology.io" in block
+        and "not a listed contact" in block
+    )
+    assert "Do not simply resend" in block
+    assert fabric._held_mail_context(fabric.agents["coo"]) == ""
