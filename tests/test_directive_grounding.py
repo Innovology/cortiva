@@ -125,6 +125,7 @@ async def test_unreadable_reference_is_surfaced_not_guessed(tmp_path: Path, monk
 
     assert "could **NOT** read this" in block and "no GitHub credentials" in block
     assert "Do not guess" in block and "alex@innovology.io" in block
+    assert "treat it as void" in block and "do not mark it delivered" in block
     saved = json.loads((agent.directory / "directives.json").read_text())
     assert saved[0]["references"][0]["status"] == "unreadable"
 
@@ -178,3 +179,44 @@ async def test_unreadable_references_are_retried_next_wake(tmp_path: Path, monke
 
     assert calls == [1, 1]
     assert "Now readable" in fabric._directive_salience_context(agent)
+
+
+@pytest.mark.asyncio
+async def test_withdrawn_commitment_does_not_close_a_directive(tmp_path: Path) -> None:
+    # Only delivery closes a directive; a withdrawal (which a classifier can
+    # emit on its reading of a reply) must leave it open.
+    from cortiva.core import commitments as cm
+
+    fabric, agent = _fabric_with_directive(tmp_path)
+    cid = fabric._open_directives(agent)[0]["commitment_id"]
+    cm.update(agent.directory, commitment_id=cid, withdrawn=True)
+    assert len(fabric._open_directives(agent)) == 1
+
+    # Delivery (with evidence off, the pure path) does close it.
+    fabric2, agent2 = _fabric_with_directive(tmp_path / "two")
+    cid2 = fabric2._open_directives(agent2)[0]["commitment_id"]
+    cm.update(agent2.directory, commitment_id=cid2, delivered=True)
+    assert fabric2._open_directives(agent2) == []
+
+
+@pytest.mark.asyncio
+async def test_execution_context_carries_the_grounded_references(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The executing session must see the same ⛔/📎 lines as the planner.
+    fabric, agent = _fabric_with_directive(tmp_path)
+    monkeypatch.setattr(
+        grounding,
+        "read_github_ref",
+        lambda ref, token, timeout=8.0: {**ref, "status": "unreadable", "reason": "no creds"},
+    )
+    await fabric._ground_directives(agent)
+    block = fabric._directive_references_context(agent)
+    assert (
+        "actually point at" in block
+        and "could **NOT** read" in block
+        and "treat it as void" in block
+    )
+
+    fabric2, agent2 = _fabric_with_directive(tmp_path / "none")
+    assert fabric2._directive_references_context(agent2) != ""  # pending refs still listed

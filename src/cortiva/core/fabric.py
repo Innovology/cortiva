@@ -933,6 +933,9 @@ class Fabric:
             org_text = self.org.org_context_for(agent_id)
             if org_text:
                 context = context + "\n\n---\n\n" + org_text
+        inactive_ctx = self._inactive_context(agent)
+        if inactive_ctx:
+            context = context + "\n\n---\n\n" + inactive_ctx
 
         cascade = planner.cascade_context()
         if cascade:
@@ -1964,6 +1967,16 @@ class Fabric:
         inbox_ctx = self._email_inbox_context(agent)
         if inbox_ctx:
             context = context + "\n\n---\n\n" + inbox_ctx
+
+        # What the open directives actually point at — the same grounded
+        # references the planner saw. Without this the executing session
+        # (a Claude run with identity + task + recalled memories) re-asserted
+        # the guessed version of an unreadable issue that the plan had just
+        # agreed to ask about (CEO, 2026-11-05 21:51: "#228 (Homeschool
+        # retirement) … Samantha is executing that independently").
+        refs_ctx = self._directive_references_context(agent)
+        if refs_ctx:
+            context = context + "\n\n---\n\n" + refs_ctx
 
         # Plugin-contributed per-task context (e.g. Myelin: inhibition
         # checks, outcome forecasts, emotional conditioning, matched
@@ -3601,9 +3614,17 @@ class Fabric:
             targets = suffix.wake.get("agents") or []
             reason = str(suffix.wake.get("reason") or "").strip()
             reports = set(self.org.subordinates_of(agent.id)) if self.org else set()
+            inactive = self._inactive_agent_ids()
             for raw in targets if isinstance(targets, list) else []:
                 tid = str(raw).strip()
                 if not tid:
+                    continue
+                if tid in inactive:
+                    logger.info(
+                        "Agent %s tried to wake %s but they're off the rota — ignored.",
+                        agent.id,
+                        tid,
+                    )
                     continue
                 if tid not in reports:
                     logger.info(
@@ -4392,8 +4413,14 @@ class Fabric:
             if (now - opened).total_seconds() > self._DIRECTIVE_TTL_DAYS * 86400:
                 continue  # expired backstop
             cid = str(d.get("commitment_id") or "")
-            if cid and comm_status.get(cid) in ("delivered", "withdrawn"):
+            if cid and comm_status.get(cid) == "delivered":
                 continue  # the owed work was delivered → directive handled
+            # A withdrawn commitment does NOT close a directive. The node's
+            # inbound-mail reconciler can withdraw on a local-model reading of
+            # a reply — the founder's "reset behind the new objective" was read
+            # as cancelling the objective (2026-11-05). Only delivery closes a
+            # directive; a real release must come from the originator in words
+            # the agent acts on, not from a classifier.
             still_open.append(d)
         # Self-clean: rewrite only the open set if we pruned anything.
         if len(still_open) != len([d for d in items if d.get("status") == "open"]):
@@ -4483,6 +4510,16 @@ class Fabric:
             items = json.loads(path.read_text(encoding="utf-8")) or []
         except (ValueError, OSError):
             return
+        from cortiva.core.grounding import extract_github_refs
+
+        changed = False
+        for d in items:
+            if d.get("status") == "open" and "references" not in d:
+                # Recorded before grounding existed — resolve from what we kept.
+                d["references"] = extract_github_refs(
+                    f"{d.get('subject', '')} {d.get('snippet', '')}"
+                )
+                changed = True
         pending = [
             (d, r)
             for d in items
@@ -4491,9 +4528,13 @@ class Fabric:
             if r.get("status") != "read"
         ]
         if not pending:
+            if changed:
+                try:
+                    path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+                except OSError:
+                    pass
             return
         token = agent_github_token(Path(agent.directory))
-        changed = False
         for _d, ref in pending[:8]:
             try:
                 resolved = await asyncio.to_thread(read_github_ref, ref, token)
@@ -4538,9 +4579,25 @@ class Fabric:
                     "or delegate on it is valid until you have the actual text. "
                     f"Get it first: ask {originator} to paste it, or ask a "
                     "colleague with GitHub access to read it to you, or ask "
-                    "the operator for access. That request IS the first step."
+                    "the operator for access. That request IS the first step. "
+                    "**Anything you previously planned, briefed or delegated "
+                    "about this resource was built on a guess, not its content — "
+                    "treat it as void: tell the people you briefed to stop, and "
+                    "do not mark it delivered.**"
                 )
         return out
+
+    def _directive_references_context(self, agent: Agent) -> str:
+        """The grounded references of every open directive, for task execution."""
+        opens = [d for d in self._open_directives(agent) if d.get("references")]
+        if not opens:
+            return ""
+        lines = ["## What the directives from above actually point at\n"]
+        for d in opens:
+            originator = d.get("from") or d.get("from_addr") or d.get("label") or "the originator"
+            lines.append(f"- **{d.get('subject', '(no subject)')}**")
+            lines.extend(self._render_references(d.get("references") or [], originator))
+        return "\n".join(lines)
 
     def _directive_salience_context(self, agent: Agent) -> str:
         """Top-of-mind block for open directives from above / company missions.
@@ -5604,7 +5661,10 @@ class Fabric:
         }
         if self.org is None:
             return empty
-        reports = self.org.subordinates_of(agent.id)
+        # An off-rota report's slipping promises are not a delivery problem to
+        # chase — they are not working (see _inactive_agent_ids).
+        inactive = self._inactive_agent_ids()
+        reports = [r for r in self.org.subordinates_of(agent.id) if r not in inactive]
         if not reports:
             return empty
         from datetime import UTC, datetime
@@ -5964,6 +6024,17 @@ class Fabric:
         items = _ex.load(agent.directory)
         now = datetime.now(UTC)
         chasing = [e for e in items if _ex.should_chase(e, now)]
+        # Nothing is owed by someone who is off the rota — chasing them is noise.
+        inactive = self._inactive_agent_ids()
+        if inactive:
+            inactive_addrs = {
+                str(c.get("email") or "").lower()
+                for c in self._load_directory_cards()
+                if c.get("id") in inactive
+            } - {""}
+            chasing = [
+                e for e in chasing if str(getattr(e, "sender", "")).lower() not in inactive_addrs
+            ]
         if not chasing:
             return ""
         chasing.sort(key=lambda e: _ex.hours_to_due(e, now))
@@ -6282,6 +6353,17 @@ class Fabric:
             mgr_id = self.org.manager_of(agent_id) or ""
         if not mgr_id:
             return "", ""
+        # An off-rota manager will never answer — escalate to the next active
+        # person up the chain instead of into silence.
+        inactive = self._inactive_agent_ids()
+        hops = 0
+        while mgr_id in inactive and not mgr_id.startswith("human") and hops < 8:
+            nxt = str((by_id.get(mgr_id) or {}).get("reports_to") or "").strip()
+            if not nxt and self.org is not None:
+                nxt = self.org.manager_of(mgr_id) or ""
+            if not nxt:
+                break
+            mgr_id, hops = nxt, hops + 1
         if mgr_id.startswith("human"):
             return mgr_id, ""
         email = str((by_id.get(mgr_id) or {}).get("email") or "").strip()
@@ -6713,6 +6795,40 @@ class Fabric:
             )
         return cards
 
+    def _inactive_agent_ids(self) -> set[str]:
+        """Local agents who are not currently working: the node has a rota and
+        they are not on it. The org chart is derived from every deploy.yaml on
+        disk, so a paused agent otherwise looks like a working colleague — and
+        gets delegated to, chased and escalated about ("COO dark 24h" filed to
+        the founder the evening the COO was taken off the rota, 2026-11-05).
+        With no rota at all, nothing can be inferred and nobody is inactive."""
+        scheduler = getattr(self, "scheduler", None)
+        scheduled = set(scheduler.agent_ids) if scheduler is not None else set()
+        if not scheduled:
+            return set()
+        return {aid for aid in self.agents if aid not in scheduled}
+
+    def _inactive_context(self, agent: Agent) -> str:
+        inactive = sorted(self._inactive_agent_ids() - {agent.id})
+        if not inactive:
+            return ""
+        cards = {c["id"]: c for c in self._load_directory_cards()}
+
+        def _name(aid: str) -> str:
+            c = cards.get(aid) or {}
+            role = c.get("role") or ""
+            return f"{c.get('name') or aid} ({role})" if role else str(c.get("name") or aid)
+
+        return (
+            "## Not currently working\n\n"
+            + ", ".join(_name(a) for a in inactive)
+            + ".\n\nThese colleagues are off the rota and will not act, reply, or "
+            "deliver. Do **not** delegate to them, chase them, wait on them, or "
+            "escalate that they are silent — their silence is expected. If their "
+            "responsibilities block you, do the work yourself or route it to an "
+            "active colleague or your manager."
+        )
+
     def _directory_context(self, agent: Agent) -> str:
         """Render the company directory (GAL) for the agent's context.
 
@@ -6725,11 +6841,15 @@ class Fabric:
         if len(cards) <= 1:
             return ""
 
+        inactive = self._inactive_agent_ids()
+
         def _fmt(c: dict) -> str:
             bits = [c["name"]]
             meta = ", ".join(x for x in (c.get("role"), c.get("department")) if x)
             if meta:
                 bits.append(f"({meta})")
+            if c.get("id") in inactive:
+                bits.append("— NOT CURRENTLY WORKING, do not contact")
             line = " ".join(bits)
             return f"- {line}" + (f" — {c['email']}" if c.get("email") else "")
 
@@ -7553,6 +7673,9 @@ class Fabric:
         directive_ctx = self._directive_salience_context(agent)
         if directive_ctx:
             context = context + "\n\n---\n\n" + directive_ctx
+        inactive_ctx = self._inactive_context(agent)
+        if inactive_ctx:
+            context = context + "\n\n---\n\n" + inactive_ctx
 
         # Reality gap on reassess too — a re-prioritisation reasoned from
         # stale world-state re-plans the wrong world.
