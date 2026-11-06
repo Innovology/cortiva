@@ -203,7 +203,18 @@ class TestRuntimePersistence:
         agent.write_today("task_queue.json", "{}")
         assert agent.read_today("plan.md") != ""
 
-        agent.reset_today()
+        # Same day: today/ is kept (a wake minutes later is not a new day).
+        assert agent.reset_today() is False
+        assert agent.read_today("plan.md") == "# Plan"
+
+        # Files from a previous day: cleared.
+        import os
+        import time
+
+        old = time.time() - 30 * 3600
+        for p in (agent.directory / "today").iterdir():
+            os.utime(p, (old, old))
+        assert agent.reset_today() is True
         assert agent.read_today("plan.md") == ""
         assert agent.read_today("task_queue.json") == ""
         # Directory itself still exists

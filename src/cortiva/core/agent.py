@@ -427,13 +427,36 @@ class Agent:
         """Write accumulated familiarity signals to today/familiarity_signals.json."""
         self.write_today("familiarity_signals.json", json.dumps(signals, indent=2))
 
-    def reset_today(self) -> None:
-        """Clear the today/ directory for a new day cycle."""
+    def reset_today(self) -> bool:
+        """Clear the today/ directory when a NEW day starts. Returns True
+        when it cleared.
+
+        A wake used to mean a new day, so this cleared unconditionally.
+        With agents waking every few minutes (2026-11-05 onward) that wiped
+        the plan, the task queue, the timesheet and the emotional state
+        every five minutes — amnesia on a timer. today/ is now kept while
+        its files are from today and cleared only once they are stale.
+        """
+        from datetime import date
+
         today_dir = self.directory / "today"
-        if today_dir.is_dir():
-            for path in today_dir.iterdir():
-                if path.is_file():
-                    path.unlink()
+        if not today_dir.is_dir():
+            return False
+        files = [p for p in today_dir.iterdir() if p.is_file()]
+        if not files:
+            return False
+        try:
+            newest = max(p.stat().st_mtime for p in files)
+        except OSError:
+            newest = 0.0
+        if newest and date.fromtimestamp(newest) == date.today():
+            return False
+        for path in files:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        return True
 
     # ----- State transitions -----
 
