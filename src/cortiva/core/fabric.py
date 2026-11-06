@@ -4750,7 +4750,7 @@ class Fabric:
         import json
         from pathlib import Path
 
-        from cortiva.core.grounding import agent_github_token, read_github_ref
+        from cortiva.core.grounding import read_github_ref
 
         path = Path(agent.directory) / "directives.json"
         if not path.exists():
@@ -4792,12 +4792,22 @@ class Fabric:
                 except OSError:
                     pass
             return
-        token = agent_github_token(Path(agent.directory))
+        readers = self._reading_access(agent)
         for _d, ref in pending[:8]:
-            try:
-                resolved = await asyncio.to_thread(read_github_ref, ref, token)
-            except Exception:
-                logger.debug("grounding failed for %s", ref.get("url"), exc_info=True)
+            resolved: dict[str, Any] | None = None
+            for via, token in readers or [(agent.id, "")]:
+                try:
+                    attempt = await asyncio.to_thread(read_github_ref, ref, token)
+                except Exception:
+                    logger.debug("grounding failed for %s", ref.get("url"), exc_info=True)
+                    continue
+                if resolved is None or attempt.get("status") == "read":
+                    resolved = attempt
+                    if attempt.get("status") == "read":
+                        if via != agent.id:
+                            resolved["read_via"] = via
+                        break
+            if resolved is None:
                 continue
             if ref.get("status") == "read" and resolved.get("status") != "read":
                 continue  # a blip on re-check must not void what was read
@@ -4830,6 +4840,8 @@ class Fabric:
                     f"({r.get('kind', 'issue')}, {r.get('state', '?')})  \n"
                     f"    {excerpt[:600] or '(no description)'}"
                 )
+                if r.get("read_via"):
+                    out[-1] += f"  \n    _(read with {r['read_via']}'s access — you have none)_"
             else:
                 out.append(
                     f"  ⛔ {url} — you could **NOT** read this "
@@ -5059,6 +5071,37 @@ class Fabric:
         logger.info("Agent %s is building station '%s': %s", agent.id, name, purpose[:80])
         self._emit("station.scaffolded", agent_id=agent.id, station=name, purpose=purpose[:120])
 
+    def _reading_access(self, agent: Agent) -> list[tuple[str, str]]:
+        """Whose GitHub access can ground a reference for this agent: her own
+        token first, then her reports' (and theirs), in org order. 2026-11-06
+        18:42: the CEO, who has no GitHub credentials, emailed the founder to
+        paste issue #228; the founder: "ask Samantha and find some way to
+        believe her". The way to believe her is GitHub read through her
+        access — the source stays the system, not a colleague's account."""
+        from cortiva.core.grounding import agent_github_token
+
+        out: list[tuple[str, str]] = []
+        own = agent_github_token(Path(agent.directory))
+        if own:
+            out.append((agent.id, own))
+        if self.org is None:
+            return out
+        seen = {agent.id}
+        frontier = [agent.id]
+        while frontier and len(seen) < 16:
+            nxt: list[str] = []
+            for aid in frontier:
+                for rid in self.org.subordinates_of(aid):
+                    if rid in seen:
+                        continue
+                    seen.add(rid)
+                    nxt.append(rid)
+                    tok = agent_github_token(self.agents_dir / rid)
+                    if tok:
+                        out.append((rid, tok))
+            frontier = nxt
+        return out
+
     def _shipped_today_context(self, agent: Agent) -> str:
         """What this agent has already put into the world today — sent mail
         and opened PRs — so a later task session builds on it instead of
@@ -5162,7 +5205,6 @@ class Fabric:
         import time as _time
 
         from cortiva.core.grounding import (
-            agent_github_token,
             extract_github_refs,
             read_github_ref,
         )
@@ -5198,12 +5240,22 @@ class Fabric:
                 todo.append(r)
         if not todo:
             return
-        token = agent_github_token(Path(agent.directory))
+        readers = self._reading_access(agent) or [(agent.id, "")]
         for r in todo[:8]:
-            try:
-                resolved = await asyncio.to_thread(read_github_ref, r, token)
-            except Exception:
-                logger.debug("inbox grounding failed for %s", r.get("url"), exc_info=True)
+            resolved: dict[str, Any] | None = None
+            for via, token in readers:
+                try:
+                    attempt = await asyncio.to_thread(read_github_ref, r, token)
+                except Exception:
+                    logger.debug("inbox grounding failed for %s", r.get("url"), exc_info=True)
+                    continue
+                if resolved is None or attempt.get("status") == "read":
+                    resolved = attempt
+                    if attempt.get("status") == "read":
+                        if via != agent.id:
+                            resolved["read_via"] = via
+                        break
+            if resolved is None:
                 continue
             prev = cache.get(r["url"]) or {}
             if resolved.get("status") != "read" and prev.get("status") == "read":
@@ -5246,6 +5298,8 @@ class Fabric:
                     f"  📎 {tag} ({cur.get('kind', 'issue')}, {state}{by}): "
                     f"{str(cur.get('title', ''))[:120]}"
                 )
+                if cur.get("read_via"):
+                    out[-1] += f" — read with {cur['read_via']}'s access (you have none)"
             else:
                 out.append(f"  ⛔ {tag} — you could NOT read this ({cur.get('reason', '')})")
         return out
