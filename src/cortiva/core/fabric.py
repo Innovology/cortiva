@@ -28,8 +28,9 @@ from cortiva.adapters.protocols import (
     RoutineAdapter,
     TerminalAgentAdapter,
 )
+from cortiva.core import factory as _factory
 from cortiva.core import model_meter as _mm
-from cortiva.core.agent import Agent, AgentState, Task
+from cortiva.core.agent import Agent, AgentState, Task, TaskQueue
 from cortiva.core.approval import ApprovalQueue
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
@@ -971,6 +972,9 @@ class Fabric:
         meter_ctx = self._model_meter_context(agent)
         if meter_ctx:
             context = context + "\n\n---\n\n" + meter_ctx
+        floor_ctx = self._factory_context(agent)
+        if floor_ctx:
+            context = context + "\n\n---\n\n" + floor_ctx
 
         # The org head's periodic consultation with the owner — pull the
         # leadership's strategy/roadmap material, put it in front of the
@@ -1985,6 +1989,12 @@ class Fabric:
         # What she has already put into the world today, refreshed before
         # either execution path builds its prompt.
         await self._refresh_shipped_today(agent)
+        # The factory floor first: work that matches a ready station the agent
+        # wrote goes through its code — no model ask. A failure is an exception
+        # on her pile, not a reason to think the task through by hand.
+        if not _is_sched_action and await self._run_through_station(agent, task):
+            return
+
         if self.terminal and not _is_sched_action and self._is_terminal_task(task.description):
             terminal_result = await self._execute_via_terminal(agent, task)
             if terminal_result is not None:
@@ -2095,6 +2105,9 @@ class Fabric:
         meter_ctx = self._model_meter_context(agent)
         if meter_ctx:
             context = context + "\n\n---\n\n" + meter_ctx
+        floor_ctx = self._factory_context(agent)
+        if floor_ctx:
+            context = context + "\n\n---\n\n" + floor_ctx
 
         # Plugin-contributed per-task context (e.g. Myelin: inhibition
         # checks, outcome forecasts, emotional conditioning, matched
@@ -3605,6 +3618,8 @@ class Fabric:
             self._handle_reject_delivery(agent, suffix.reject_delivery)
         if suffix.accept_delivery and isinstance(suffix.accept_delivery, dict):
             self._handle_accept_delivery(agent, suffix.accept_delivery)
+        if suffix.build_station and isinstance(suffix.build_station, dict):
+            self._handle_build_station(agent, suffix.build_station)
 
         # Re-task another agent — the org's executable lever for a priority
         # change. Authority-gated in the handler.
@@ -3940,6 +3955,9 @@ class Fabric:
         meter = self._model_meter_context(agent)
         if meter:
             prompt += "\n\n" + meter
+        floor = self._factory_context(agent)
+        if floor:
+            prompt += "\n\n" + floor
 
         # Use the agent's workspace directory as cwd
         cwd = agent.directory / "workspace"
@@ -4111,6 +4129,9 @@ class Fabric:
         meter = self._model_meter_context(agent)
         if meter:
             prompt += "\n\n" + meter
+        floor = self._factory_context(agent)
+        if floor:
+            prompt += "\n\n" + floor
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
         envelope = self.isolation.prepare_terminal_env(agent_id=agent.id, cmd=[], cwd=cwd)
@@ -4885,6 +4906,135 @@ class Fabric:
         except Exception:
             return ""
 
+    # ------------------------------------------------------------------
+    # The factory floor. "Build and write the code for those steps and then
+    # process their work across that. The agent's job then becomes just
+    # monitoring the factory they have created, tuning it, expanding it."
+    # (founder, 2026-11-06). See core/factory.py for the station contract.
+    # ------------------------------------------------------------------
+
+    async def _run_through_station(self, agent: Agent, task: Task) -> bool:
+        """Route the task through a ready station when one matches. Returns
+        True when the floor took it (done or exception), False to fall
+        through to the agent's own hands or head."""
+        try:
+            station = _factory.match(
+                _factory.stations(agent.directory, ready_only=True), task.description
+            )
+        except Exception:
+            logger.debug("station lookup failed for %s", agent.id, exc_info=True)
+            return False
+        if station is None:
+            return False
+        run = await _factory.run_station(
+            station,
+            task_id=task.id,
+            description=task.description,
+            agent_id=agent.id,
+            env=self._station_env(agent),
+        )
+        _factory.record_run(agent.directory, run)
+        if run.ok:
+            task.status = "done"
+            task.outcome = f"[station {station.name}] {run.summary or 'ok'}"
+            if run.artifact:
+                task.outcome += f" — {run.artifact}"
+            agent.tasks_completed_today += 1
+            logger.info(
+                "Station %s ran for %s in %.1fs: %s",
+                station.name,
+                agent.id,
+                run.seconds,
+                (run.summary or "ok")[:80],
+            )
+            self._emit(
+                "station.ran",
+                agent_id=agent.id,
+                station=station.name,
+                task_id=task.id,
+                artifact=run.artifact,
+            )
+        else:
+            task.status = "exception"
+            task.error = f"[station {station.name}] {run.error}"
+            logger.warning("Station %s FAILED for %s: %s", station.name, agent.id, run.error[:120])
+            self._emit(
+                "station.failed",
+                agent_id=agent.id,
+                station=station.name,
+                task_id=task.id,
+                error=run.error[:200],
+            )
+        return True
+
+    def _station_env(self, agent: Agent) -> dict[str, str]:
+        """The environment a station runs in: the process env plus the
+        agent's delegated credentials — the same ones her terminal gets."""
+        env = dict(os.environ)
+        creds: dict[str, str] = {}
+        if self.credential_provider is not None:
+            try:
+                creds.update(self.credential_provider.get_env(agent.id))
+            except Exception:
+                logger.debug("credential provider failed for %s", agent.id, exc_info=True)
+        try:
+            creds.update(load_agent_credentials(agent.directory))
+        except Exception:
+            logger.debug("agent credentials unreadable for %s", agent.id, exc_info=True)
+        env.update({k: str(v) for k, v in creds.items() if v is not None})
+        env["CORTIVA_AGENT_DIR"] = str(agent.directory)
+        env["CORTIVA_AGENT_ID"] = agent.id
+        return env
+
+    def _factory_context(self, agent: Agent) -> str:
+        try:
+            return _factory.floor_report(agent.directory)
+        except Exception:
+            return ""
+
+    def _handle_build_station(self, agent: Agent, payload: dict) -> None:
+        """Scaffold a station and queue the build as hands-on work. The code
+        is written in a terminal task; the station takes work once its
+        manifest says ready."""
+        name = str(payload.get("name") or "").strip().lower()
+        purpose = str(payload.get("purpose") or "").strip()
+        brief = str(payload.get("brief") or payload.get("spec") or "").strip()
+        matches = payload.get("matches") or []
+        if isinstance(matches, str):
+            matches = [matches]
+        matches = [str(m).strip() for m in matches if str(m).strip()]
+        if not (name and purpose and brief and matches):
+            logger.info(
+                "build_station from %s ignored — name, purpose, matches and brief are required",
+                agent.id,
+            )
+            return
+        d = _factory.scaffold_station(
+            agent.directory, name=name, purpose=purpose, matches=matches, brief=brief
+        )
+        if d is None:
+            logger.info("build_station from %s: '%s' unusable or already exists", agent.id, name)
+            return
+        import uuid
+
+        if agent.task_queue is None:
+            agent.task_queue = TaskQueue(tasks=[])
+        agent.task_queue.tasks.append(
+            Task(
+                id=uuid.uuid4().hex[:12],
+                description=(
+                    f"Write and test the code for station '{name}' in factory/{name}/run.py "
+                    f"(read STATION.md there first). Purpose: {purpose}. It must read the task "
+                    "JSON on stdin and print {ok, summary, artifact} as the last stdout line. "
+                    "Prove it against one real task, then set ready: true in station.yaml."
+                ),
+                priority=1,
+            )
+        )
+        self._write_plan(agent)
+        logger.info("Agent %s is building station '%s': %s", agent.id, name, purpose[:80])
+        self._emit("station.scaffolded", agent_id=agent.id, station=name, purpose=purpose[:120])
+
     def _shipped_today_context(self, agent: Agent) -> str:
         """What this agent has already put into the world today — sent mail
         and opened PRs — so a later task session builds on it instead of
@@ -5442,6 +5592,9 @@ class Fabric:
                 "## What the world has confirmed from you today\n"
                 + (confirmed or "nothing yet — nothing merged, live, closed or accepted")
             )
+            floor = self._factory_context(agent)
+            if floor:
+                parts.append(floor)
         # What arrived / what stands over the plan — the only reasons to change it.
         await self._ground_inbox(agent)
         await self._ground_directives(agent)
@@ -5476,7 +5629,9 @@ class Fabric:
             if idle:
                 prompt = (
                     "Your checklist is clear and nothing new has arrived. Look at "
-                    "your open promises and what the world has confirmed (above). "
+                    "your factory floor, your open promises and what the world has "
+                    "confirmed (above). A station that failed is the first thing to "
+                    "fix; a step you keep doing by hand is a station to build. "
                     "If one promise has a next concrete step that would produce "
                     "something the world can see — a PR opened or merged, a URL "
                     "that answers, an issue closed, a reply a human asked for — "
@@ -8862,6 +9017,9 @@ class Fabric:
         meter_ctx = self._model_meter_context(agent)
         if meter_ctx:
             context = context + "\n\n---\n\n" + meter_ctx
+        floor_ctx = self._factory_context(agent)
+        if floor_ctx:
+            context = context + "\n\n---\n\n" + floor_ctx
 
         # A due founder brief keeps confronting the org head on reassess too —
         # it self-resolves only when the brief is actually sent.
