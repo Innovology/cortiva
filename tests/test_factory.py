@@ -199,3 +199,13 @@ async def test_build_station_scaffolds_and_queues_the_build_as_hands_on_work(
     assert "build_station" in ReflectionSuffix.__dataclass_fields__
     # Not ready → a matching task is NOT routed through the stub.
     assert fx.match(fx.stations(agent.directory, ready_only=True), "weekly digest") is None
+
+
+def test_a_multi_word_phrase_matches_when_all_its_content_words_appear(tmp_path: Path) -> None:
+    """Yuki's station: 'github feedback sweep' vs her task 'Triage 11 open
+    GitHub feedback threads: delegate merge/sweep'."""
+    _station(tmp_path, "sweep", OK_BODY, matches=["github feedback sweep", "automate review open"])
+    st = fx.stations(tmp_path, ready_only=True)
+    assert fx.match(st, "Triage 11 open GitHub feedback threads: delegate merge/sweep") is not None
+    assert fx.match(st, "Sweep the office") is None  # one word of three is not a match
+    assert fx.match(st, "Write the board paper") is None

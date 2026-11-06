@@ -64,8 +64,14 @@ class Station:
     ready: bool = False
 
     def matches_task(self, description: str) -> bool:
+        """A /regex/ matches as written. A phrase matches as a substring, or —
+        for a multi-word phrase — when all of its content words appear in the
+        task in any order: Yuki's station said "github feedback sweep" and her
+        tasks say "Triage 11 open GitHub feedback threads: delegate merge/sweep"
+        (2026-11-06 21:48)."""
         text = (description or "").strip()
         low = text.lower()
+        words = set(re.findall(r"[a-z0-9]+", low))
         for pat in self.matches:
             p = str(pat or "").strip()
             if not p:
@@ -76,7 +82,11 @@ class Station:
                         return True
                 except re.error:
                     continue
-            elif p.lower() in low:
+                continue
+            if p.lower() in low:
+                return True
+            content = [w for w in re.findall(r"[a-z0-9]+", p.lower()) if len(w) > 2]
+            if len(content) >= 2 and all(w in words for w in content):
                 return True
         return False
 
