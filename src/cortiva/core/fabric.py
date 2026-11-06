@@ -334,6 +334,14 @@ class Fabric:
         self.daily_consciousness_limit = daily_consciousness_limit
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
+        # One wake+plan at a time per node (see _PLANNING_CONCURRENCY), and the
+        # retry bookkeeping for wakes whose planning call failed.
+        self._planning_sem: asyncio.Semaphore | None = None
+        self._wake_retries: dict[str, int] = {}
+        self._wake_retry_tasks: set[asyncio.Task] = set()
+        self._model_down_retries: dict[str, int] = {}
+        # Set by stop(): no new wakes, no retries, drain and exit.
+        self._stopping = False
         # Per-agent accumulated familiarity signals for today
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
         self._emotional_states: dict[str, Any] = {}
@@ -551,8 +559,142 @@ class Fabric:
     # otherwise allows when you're woken outside your shift.
     _WAKE_OVERRIDE_MINUTES = 45.0
 
+    # The first plan of the day is the heaviest local-model call an agent makes
+    # (~17k tokens). Several at once on one node's model each take 3+ minutes,
+    # blow the 180s inference timeout, and strand the agent in PLANNING — cto
+    # and yuki on Mini-2, 2026-11-05 (195s = 180s + 15s backstop, both while the
+    # CEO was mid-cycle). Planning is serialised per node; work after planning
+    # stays concurrent (Claude sessions don't touch the local model).
+    _PLANNING_CONCURRENCY = 1
+    # A wake whose planning failed puts the agent back to sleep and retries
+    # after 2, 4, then 8 minutes before giving up (an operator can still wake).
+    _WAKE_RETRY_BASE_S = 120.0
+    _WAKE_RETRY_MAX = 3
+    # A wake that fails because the model is DOWN (breaker open, connection
+    # refused) says nothing about the agent — it must not consume one of the
+    # agent's three attempts. Those retry on a fixed cadence until the node's
+    # watchdog brings the model back, bounded only so a dead model can't spawn
+    # an endless chain (Mini-2 2026-11-05 19:55: five agents burned all their
+    # attempts in 70 seconds against a server that was being relaunched).
+    _WAKE_RETRY_MODEL_DOWN_S = 90.0
+    _WAKE_RETRY_MODEL_DOWN_MAX = 20
+    # How long stop() lets agents clock off cleanly before forcing them.
+    _STOP_DRAIN_S = 120.0
+
+    def _planning_gate(self) -> asyncio.Semaphore:
+        if self._planning_sem is None:
+            # Created lazily so it binds to the running event loop.
+            self._planning_sem = asyncio.Semaphore(self._PLANNING_CONCURRENCY)
+        return self._planning_sem
+
     async def wake(self, agent_id: str, *, override_minutes: float = 0.0) -> Agent:
-        """Wake an agent. Loads identity and begins planning.
+        """Wake an agent: serialised planning, recovery if planning fails.
+
+        Before this, a planning call that timed out raised out of the middle of
+        the wake sequence and left the agent in PLANNING forever: re-waking is a
+        no-op for a non-sleeping agent and the heartbeat only cycles EXECUTING
+        agents, so nothing ever retried (the PLANNING trap). Now a failed wake
+        returns the agent to SLEEPING and schedules a retry, then re-raises so
+        the caller still sees the failure.
+        """
+        agent = self.get_agent(agent_id)
+        if self._stopping:
+            raise RuntimeError(f"fabric is stopping — not waking {agent_id}")
+        if agent.state != AgentState.SLEEPING:
+            # Already awake: only the override grace changes — no planning, no gate.
+            return await self._wake_once(agent_id, override_minutes=override_minutes)
+        async with self._planning_gate():
+            try:
+                woken = await self._wake_once(agent_id, override_minutes=override_minutes)
+            except Exception as exc:
+                if agent.state in (AgentState.WAKING, AgentState.PLANNING):
+                    await self._recover_failed_wake(agent, exc, override_minutes)
+                raise
+        self._wake_retries.pop(agent_id, None)
+        self._model_down_retries.pop(agent_id, None)
+        return woken
+
+    @staticmethod
+    def _is_model_down(exc: BaseException) -> bool:
+        """The model itself is unavailable (breaker open / can't connect), as
+        opposed to this agent's call being slow or broken. Name-based so the
+        fabric stays adapter-agnostic."""
+        name = type(exc).__name__
+        return name == "ModelUnavailableError" or "Connection" in name
+
+    async def _recover_failed_wake(
+        self, agent: Agent, exc: BaseException, override_minutes: float
+    ) -> None:
+        """Put a half-woken agent back to sleep and schedule a bounded retry."""
+        logger.error(
+            "Wake of %s failed during %s (%s: %s) — returning to sleep",
+            agent.id,
+            agent.state.value,
+            type(exc).__name__,
+            exc,
+        )
+        try:
+            await self.sleep(agent.id)
+        except Exception:
+            logger.exception("Could not return %s to sleep after a failed wake", agent.id)
+            return
+        if self._stopping:
+            return
+        if self._is_model_down(exc):
+            n = self._model_down_retries.get(agent.id, 0) + 1
+            if n > self._WAKE_RETRY_MODEL_DOWN_MAX:
+                self._model_down_retries.pop(agent.id, None)
+                logger.error(
+                    "Giving up waking %s — model still down after %d retries",
+                    agent.id,
+                    self._WAKE_RETRY_MODEL_DOWN_MAX,
+                )
+                return
+            self._model_down_retries[agent.id] = n
+            delay = self._WAKE_RETRY_MODEL_DOWN_S
+            logger.warning(
+                "Model down — retrying wake of %s in %.0fs (attempt not counted; %d so far)",
+                agent.id,
+                delay,
+                n,
+            )
+        else:
+            attempt = self._wake_retries.get(agent.id, 0) + 1
+            if attempt > self._WAKE_RETRY_MAX:
+                self._wake_retries.pop(agent.id, None)
+                logger.error(
+                    "Giving up waking %s after %d failed attempts — needs an operator",
+                    agent.id,
+                    self._WAKE_RETRY_MAX,
+                )
+                return
+            self._wake_retries[agent.id] = attempt
+            delay = self._WAKE_RETRY_BASE_S * (2 ** (attempt - 1))
+            logger.warning(
+                "Retrying wake of %s in %.0fs (attempt %d/%d)",
+                agent.id,
+                delay,
+                attempt,
+                self._WAKE_RETRY_MAX,
+            )
+
+        async def _retry() -> None:
+            await asyncio.sleep(delay)
+            if self._stopping or self.get_agent(agent.id).state != AgentState.SLEEPING:
+                return  # stopping, or woken (or handled) some other way meanwhile
+            try:
+                await self.wake(agent.id, override_minutes=override_minutes)
+            except Exception:
+                # A planning failure was already logged, slept and rescheduled
+                # by wake(); anything else (agent gone) just ends the chain.
+                logger.debug("wake retry for %s ended", agent.id, exc_info=True)
+
+        task = asyncio.create_task(_retry())
+        self._wake_retry_tasks.add(task)
+        task.add_done_callback(self._wake_retry_tasks.discard)
+
+    async def _wake_once(self, agent_id: str, *, override_minutes: float = 0.0) -> Agent:
+        """One wake attempt. Loads identity and begins planning.
 
         ``override_minutes`` > 0 marks this as a FORCED wake (operator or a
         manager rallying the team): for that long, the heartbeat's
@@ -8332,10 +8474,25 @@ class Fabric:
 
         logger.info(f"Fabric running with {len(self.agents)} agents")
 
-    async def stop(self) -> None:
-        """Stop the fabric. Sleep all active agents and close IPC."""
+    async def stop(self, *, drain_timeout_s: float | None = None) -> None:
+        """Stop the fabric: no new wakes, drain agents in parallel under a
+        deadline, force any stragglers to sleep, close IPC.
+
+        A stop used to be a serial pass that awaited each agent's full
+        clock-off (journal + identity regen, minutes each) while the wake
+        retry tasks kept waking agents — the fabric was still waking people
+        two minutes after SIGTERM and needed SIGKILL (Mini-2, 2026-11-05).
+        """
+        if self._stopping:
+            return  # the signal handler and the run loop both call this
+        self._stopping = True
         logger.info("Stopping Cortiva fabric")
         self._running = False
+        retries = list(self._wake_retry_tasks)
+        for task in retries:
+            task.cancel()
+        if retries:
+            await asyncio.gather(*retries, return_exceptions=True)
 
         # Cancel any in-flight detached dev sessions (graceful reload/stop).
         try:
@@ -8355,15 +8512,57 @@ class Fabric:
             await self.ipc_server.stop()
             self.ipc_server = None
 
-        # Sleep all active agents
-        for agent_id, agent in self.agents.items():
-            if agent.state not in (AgentState.SLEEPING, AgentState.ONBOARDING):
-                try:
-                    await self.sleep(agent_id)
-                except Exception as e:
-                    logger.error(f"Error sleeping {agent_id}: {e}")
+        # Drain every active agent concurrently, then force whoever is left.
+        active = [
+            aid
+            for aid, a in self.agents.items()
+            if a.state not in (AgentState.SLEEPING, AgentState.ONBOARDING)
+        ]
+
+        async def _clock_off(aid: str) -> None:
+            try:
+                await self.sleep(aid)
+            except Exception as e:
+                logger.error(f"Error sleeping {aid}: {e}")
+
+        deadline = self._STOP_DRAIN_S if drain_timeout_s is None else drain_timeout_s
+        if active:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(_clock_off(a) for a in active)), timeout=deadline
+                )
+            except TimeoutError:
+                logger.warning("Drain deadline (%.0fs) hit — forcing stragglers to sleep", deadline)
+        for aid in active:
+            agent = self.agents.get(aid)
+            if agent is not None and agent.state != AgentState.SLEEPING:
+                self._force_sleep(agent)
 
         logger.info("Fabric stopped")
+
+    def _force_sleep(self, agent: Agent) -> None:
+        """Clock an agent off without the reflection ritual (shutdown deadline)."""
+        try:
+            agent.persist_runtime_state()
+            agent.clear_plan()
+        except Exception:
+            logger.debug("force-sleep persist failed for %s", agent.id, exc_info=True)
+        try:
+            agent.transition(AgentState.SLEEPING)
+        except ValueError:
+            agent.state = AgentState.SLEEPING
+        self.timesheet_manager.clock_out(
+            agent.id,
+            tasks_completed=agent.tasks_completed_today,
+            tasks_escalated=agent.tasks_escalated_today,
+            consciousness_calls=agent.consciousness_budget_used,
+        )
+        self.session_manager.end(agent.id)
+        try:
+            self.isolation.cleanup(agent.id)
+        except Exception:
+            logger.debug("force-sleep cleanup failed for %s", agent.id, exc_info=True)
+        logger.warning("Forced %s to sleep at shutdown", agent.id)
 
     # ----- Status -----
 
