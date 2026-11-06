@@ -195,3 +195,18 @@ def test_held_mail_is_shown_to_the_sender_with_the_reason(tmp_path: Path) -> Non
     )
     assert "Do not simply resend" in block
     assert fabric._held_mail_context(fabric.agents["coo"]) == ""
+
+
+def test_delegation_phrased_with_the_name_at_the_end_is_struck(tmp_path: Path) -> None:
+    # 11:30 2026-11-06: "Delegate ownership of the Decision-Log PR to Willow"
+    # cost the CTO a session; six words sat between the verb and the name.
+    fabric = _org(tmp_path)
+    fabric.load_schedules({"ceo": ROTA, "noor": ROTA})  # coo (Marcus) off
+    ceo = fabric.agents["ceo"]
+    ceo.set_plan(
+        "- [ ] Delegate ownership of the W44 pre-read reconciliation to Marcus\n"
+        "- [ ] Email the founder about the COO's continued absence\n"
+        "- [ ] Assign the EFD log review to the COO by EOD\n"
+    )
+    assert fabric._strike_tasks_for_inactive(ceo) == 2
+    assert [t.status for t in ceo.task_queue.tasks] == ["skipped", "pending", "skipped"]

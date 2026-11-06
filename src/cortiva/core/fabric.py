@@ -5053,8 +5053,8 @@ class Fabric:
     _CONTACT_VERBS = (
         r"(?<![a-z])(?:chase|chasing|email|e-mail|mail|write to|ask|asking|direct|"
         r"remind|ping|nudge|follow[- ]?up (?:with|to|on)|request (?:from|that)|"
-        r"escalate to|delegate to|delegating to|wake|message|call|"
-        r"instruct|hand (?:to|off to))"
+        r"escalate to|delegate|delegating|assign|assigning|wake|message|call|"
+        r"instruct|hand (?:to|off to)|loop in)"
     )
 
     def _strike_tasks_for_inactive(self, agent: Agent) -> int:
@@ -5099,9 +5099,18 @@ class Fabric:
                     for tok, disp in handles.items()
                     if re.search(
                         self._CONTACT_VERBS
-                        + r"\W+(?:[a-z0-9'’-]+\W+){0,4}?"
+                        + r"\W+(?:[a-z0-9'’-]+\W+){0,2}?"
                         + re.escape(tok)
-                        + r"(?![a-z0-9])",
+                        + r"(?![a-z0-9'’])",
+                        text,
+                    )
+                    # "Delegate ownership of the Decision-Log PR to Willow":
+                    # the verb, then up to eight words, then to/with/for <name>.
+                    or re.search(
+                        self._CONTACT_VERBS
+                        + r"\W+(?:[a-z0-9'’-]+\W+){0,8}?(?:to|with|for)\s+(?:the\s+)?"
+                        + re.escape(tok)
+                        + r"(?![a-z0-9'’])",
                         text,
                     )
                 ),
