@@ -70,7 +70,14 @@ if echo "$DELEG_VALUE" | grep -qiE '^N/A[[:space:]]*[-—]'; then
   pass "AI Delegation N/A accepted — reason: ${REASON}"
   # Fall through to Prompt owner check
 else
-  pass "AI Delegation documented: '${DELEG_VALUE}'"
+  # ── 3a. Minimum description length for non-N/A delegation ─────────────────
+  # Prevents trivially short entries like "AI helped" or "Claude did it" that
+  # pass the placeholder check but document nothing useful. 20-char floor.
+  DELEG_LEN=${#DELEG_VALUE}
+  if [[ "$DELEG_LEN" -lt 20 ]]; then
+    fail "AI Delegation description is too short (${DELEG_LEN} chars). Describe specifically what was delegated — e.g. 'Claude drafted the test suite; I reviewed and adjusted 3 assertions.' Minimum 20 characters."
+  fi
+  pass "AI Delegation documented (${DELEG_LEN} chars): '${DELEG_VALUE}'"
 fi
 
 # ── 4. Extract **Prompt owner:** value ────────────────────────────────────────
