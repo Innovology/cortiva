@@ -236,3 +236,19 @@ def test_an_adjustment_cannot_resurrect_a_done_or_struck_task(tmp_path: Path) ->
     plan = (agent.directory / "today" / "plan.md").read_text()
     assert "- [x] " in plan and "Land PR #48" in plan
     assert f._resume_plan(agent) == 2  # only the genuinely open items are pending
+
+
+def test_a_struck_line_does_not_grow_a_marker_per_pass(tmp_path: Path) -> None:
+    """cto's plan, 19:57: 'Land PR #48 … *(skipped)* *(skipped)* *(skipped)*'."""
+    from cortiva.core.agent import Task, TaskQueue
+
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    agent = f.register_agent("cto")
+    agent.task_queue = TaskQueue(tasks=[Task(id="a", description="Land PR #48", status="skipped")])
+    for _ in range(3):
+        f._write_plan(agent)
+        agent.task_queue = f._queue_from_plan_text(agent.read_identity("plan"))
+    line = next(ln for ln in agent.read_identity("plan").splitlines() if "Land PR #48" in ln)
+    assert line.count("*(skipped)*") == 1
+    assert agent.task_queue.tasks[0].status == "skipped"

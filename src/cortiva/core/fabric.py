@@ -9609,6 +9609,10 @@ class Fabric:
         if agent.state == AgentState.REPLANNING:
             agent.transition(AgentState.EXECUTING)
 
+    _STATUS_MARK_RE = re.compile(
+        r"(?:\s*\*\((?:skipped|acknowledged — not done|exception: [^)]*)\)\*)+\s*$"
+    )
+
     def _write_plan(self, agent: Agent) -> None:
         """Serialize current task_queue back to plan.md."""
         if agent.task_queue is None:
@@ -9629,7 +9633,11 @@ class Fabric:
             elif task.status == "exception":
                 status_suffix = f" *(exception: {task.error})*"
             pad = "  " * indent
-            lines.append(f"{pad}- [{check}] {priority_prefix}{task.description}{status_suffix}")
+            # A description that round-tripped through plan.md already carries
+            # its status marker; strip it so a struck line does not grow one
+            # " *(skipped)*" per pass (cto's plan, 2026-11-06 19:57).
+            desc = self._STATUS_MARK_RE.sub("", task.description or "").rstrip()
+            lines.append(f"{pad}- [{check}] {priority_prefix}{desc}{status_suffix}")
             # Subtasks render indented so they round-trip through _parse_plan.
             for st in getattr(task, "subtasks", []) or []:
                 _render(st, indent + 1)
