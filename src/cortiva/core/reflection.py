@@ -119,6 +119,10 @@ class ReflectionSuffix:
     the deadline pressure comes off once the ask is really in the sent record.
     Omitting the id targets the most pressing open one."""
     reject_delivery: dict[str, Any] | None = None
+    accept_delivery: dict[str, Any] | None = None
+    """A manager's acceptance of a report's delivery after checking it:
+    ``{"report": "<agent_id>", "commitment_id": "<id>", "checked": "<what you
+    verified>"}``. Only a delivery that carries evidence can be accepted."""
     """A manager's push-back on a report's claimed delivery: ``{"report":
     "<agent_id>", "commitment_id": "<id>", "reason": "<the specific gap>"}``.
     The claim didn't survive scrutiny — the runtime reopens the report's
