@@ -42,6 +42,13 @@ logger = logging.getLogger(__name__)
 
 _BINARY = "claude"
 
+# stream-json emits one event per line, and a single event carries a whole
+# tool result (a file read, a diff, command output). asyncio's default 64KiB
+# StreamReader limit made readline() raise "Separator is found, but chunk is
+# longer than limit" on those lines — 329 of 347 failed dev sessions on Mini-2
+# (2026-06-12 → 2026-11-05), including the CEO's founder-directive session.
+_STREAM_LIMIT = 64 * 1024 * 1024
+
 # Tool calls whose inputs look like they mutate the world irreversibly — these
 # are the checkpoints an agent most wants to catch before they land.
 _DESTRUCTIVE_HINTS = (
@@ -167,6 +174,7 @@ class ClaudeSession:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=claude_oauth_env(self._env),
+            limit=_STREAM_LIMIT,
         )
         await self._send(prompt)
 
