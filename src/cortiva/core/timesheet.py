@@ -27,6 +27,16 @@ logger = logging.getLogger("cortiva.timesheet")
 # the max-hours-per-day gate, blocking agents from working entirely.
 _MAX_ORPHAN_HOURS = 12.0
 
+# A live session is bounded the same way at clock-out. An agent wedged awake
+# (the PLANNING trap) for 16 days clocked out as one 387h entry — wall-clock
+# awake, not work — which poisoned the hours history and tripped the
+# max-hours gate on its very next cycle.
+_MAX_SESSION_HOURS = _MAX_ORPHAN_HOURS
+
+
+def _day(ts: datetime) -> str:
+    return ts.strftime("%Y-%m-%d")
+
 
 @dataclass
 class WorkEntry:
@@ -216,18 +226,51 @@ class Timesheet:
                 encoding="utf-8",
             )
 
+    def _entries_for_today(self) -> list[WorkEntry]:
+        """Entries that woke today (UTC).
+
+        The in-memory list spans days in a long-running fabric — rollover only
+        happens on load — so every reader must filter, or yesterday's hours
+        keep counting toward today (52.7h "today" after 13 days of uptime).
+        """
+        today = _day(datetime.now(UTC))
+        return [e for e in self._today_entries if _day(e.wake_time) == today]
+
     def _persist(self) -> None:
-        """Write current entries to disk."""
+        """Write today's entries (plus any open session) to disk.
+
+        Prior-day closed entries are already in their history file (written at
+        clock-out), so persisting them here would only get them re-archived as
+        duplicates on the next load.
+        """
         path = self._today_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        entries = self._entries_for_today()
+        if self._current_entry is not None and self._current_entry not in entries:
+            entries.append(self._current_entry)
         data = {
-            "date": datetime.now(UTC).strftime("%Y-%m-%d"),
-            "entries": [e.to_dict() for e in self._today_entries],
+            "date": _day(datetime.now(UTC)),
+            "entries": [e.to_dict() for e in entries],
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
+    def _prune_closed_history(self) -> None:
+        """Drop closed entries older than yesterday from memory.
+
+        They are already persisted to history. Yesterday's are kept so an
+        overnight session that clocks out today rewrites yesterday's history
+        file complete (``_persist_history`` renders a day from memory).
+        """
+        yesterday = _day(datetime.now(UTC) - timedelta(days=1))
+        self._today_entries = [
+            e
+            for e in self._today_entries
+            if e is self._current_entry or e.sleep_time is None or _day(e.wake_time) >= yesterday
+        ]
+
     def clock_in(self) -> WorkEntry:
         """Record a wake event."""
+        self._prune_closed_history()
         entry = WorkEntry(wake_time=datetime.now(UTC))
         self._current_entry = entry
         self._today_entries.append(entry)
@@ -245,7 +288,17 @@ class Timesheet:
         if self._current_entry is None:
             return None
         entry = self._current_entry
-        entry.sleep_time = datetime.now(UTC)
+        now = datetime.now(UTC)
+        cap = entry.wake_time + timedelta(hours=_MAX_SESSION_HOURS)
+        if now > cap:
+            logger.warning(
+                "Session awake %.1fh (since %s) — recording %.0fh; the rest was "
+                "not work (agent likely wedged awake)",
+                (now - entry.wake_time).total_seconds() / 3600,
+                entry.wake_time.isoformat(),
+                _MAX_SESSION_HOURS,
+            )
+        entry.sleep_time = min(now, cap)
         entry.tasks_completed = tasks_completed
         entry.tasks_escalated = tasks_escalated
         entry.consciousness_calls = consciousness_calls
@@ -284,8 +337,8 @@ class Timesheet:
     def today(self) -> DaySummary:
         """Get today's summary."""
         return DaySummary(
-            date=datetime.now(UTC).strftime("%Y-%m-%d"),
-            entries=list(self._today_entries),
+            date=_day(datetime.now(UTC)),
+            entries=self._entries_for_today(),
             scheduled_hours=self._scheduled_hours,
         )
 
