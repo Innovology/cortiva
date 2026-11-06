@@ -15,6 +15,7 @@ import logging
 import os
 import platform
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -346,6 +347,8 @@ class Fabric:
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
         # Per agent: (monotonic refresh time, PRs opened today or None if unknown).
         self._shipped_today: dict[str, tuple[float, list[dict[str, Any]] | None]] = {}
+        # Per agent: when the standing plan was last made or changed.
+        self._last_plan_ts: dict[str, float] = {}
         # Per agent: (monotonic refresh time, PRs merged in the last 7 days or None).
         self._merged_week: dict[str, tuple[float, int | None]] = {}
         self._emotional_states: dict[str, Any] = {}
@@ -739,8 +742,10 @@ class Fabric:
         # Migrate flat layout if needed
         agent.migrate_flat_layout()
 
-        # Reset today/ for a fresh day cycle
-        agent.reset_today()
+        # Reset today/ only when a new day has actually started; a wake a few
+        # minutes after the last one keeps today's plan, timesheet and state.
+        if agent.reset_today():
+            logger.info("Agent %s: new day — today/ cleared", agent_id)
         self._familiarity_signals[agent_id] = []
 
         # Start a conversation session and clock in for the day
@@ -797,6 +802,23 @@ class Fabric:
         await self._dispatch_stewardship_arousal(agent)
 
         agent.transition(AgentState.PLANNING)
+
+        # A wake is a clock event, not new information. If today's plan is
+        # still standing and nothing inbound has changed since it was made,
+        # pick it up where it was left — no 16k-token re-plan every five
+        # minutes (29 of them by 11:00 on 2026-11-06). "Only inbound change
+        # should change plans."
+        resumed = self._resume_plan(agent)
+        if resumed is not None:
+            logger.info(
+                "Agent %s resumed today's plan — %d pending, nothing inbound since it was made",
+                agent_id,
+                resumed,
+            )
+            agent.transition(AgentState.EXECUTING)
+            self._emit("agent.wake", agent_id=agent_id, state=agent.state.value, resumed=True)
+            await self.plugin_manager.dispatch_wake(agent_id, agent)
+            return agent
 
         if self.budget_manager:
             self.budget_manager.reset_agent(agent_id)
@@ -1032,6 +1054,7 @@ class Fabric:
             on_success=lambda text: agent.set_plan(text),
         )
         self._strike_tasks_for_inactive(agent)
+        self._last_plan_ts[agent_id] = time.time()
         logger.info(f"Agent {agent_id} has planned their day")
 
         agent.transition(AgentState.EXECUTING)
@@ -5148,6 +5171,69 @@ class Fabric:
         lines.extend(line for _, line in rows[-8:])
         return "\n".join(lines)
 
+    # What counts as inbound: mail, a directive, GitHub feedback, a held
+    # mail. The agent's own bookkeeping (commitments, expectations,
+    # timesheet) is not inbound and must not re-trigger planning.
+    _INBOUND_FILES = ("directives.json", "github_feedback.json")
+
+    def _inbound_changed_since(self, agent: Agent, since: float) -> bool:
+        d = Path(agent.directory)
+        inbox = d / "inbox"
+        if inbox.is_dir() and any(inbox.glob("*.json")):
+            return True  # unread mail
+        read = inbox / "read"
+        if read.is_dir():
+            try:
+                if any(p.stat().st_mtime > since for p in read.glob("*.json")):
+                    return True
+            except OSError:
+                pass
+        for name in self._INBOUND_FILES:
+            p = d / name
+            try:
+                if p.exists() and p.stat().st_mtime > since:
+                    return True
+            except OSError:
+                continue
+        held = d / "outbox" / "email" / "held"
+        if held.is_dir():
+            try:
+                if any(p.stat().st_mtime > since for p in held.glob("*.json")):
+                    return True
+            except OSError:
+                pass
+        return False
+
+    def _resume_plan(self, agent: Agent) -> int | None:
+        """Pick today's standing plan back up if it still has pending work
+        and nothing inbound has changed since it was made. Returns the
+        number of pending tasks, or None when a fresh plan is needed."""
+        from datetime import date
+
+        from cortiva.core.agent import _parse_plan
+
+        path = agent.identity_path("plan")
+        try:
+            if not path.exists():
+                return None
+            st = path.stat()
+            if date.fromtimestamp(st.st_mtime) != date.today():
+                return None
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        pending = [
+            ln for ln in text.splitlines() if re.match(r"\s*- \[ \]", ln) and "struck:" not in ln
+        ]
+        if not pending:
+            return None
+        made = self._last_plan_ts.get(agent.id) or st.st_mtime
+        if self._inbound_changed_since(agent, made):
+            return None
+        agent.task_queue = _parse_plan(text)
+        self._last_plan_ts[agent.id] = made
+        return len(pending)
+
     def _active_reports(self, agent: Agent) -> list[str]:
         if self.org is None:
             return []
@@ -8232,8 +8318,15 @@ class Fabric:
         responsible for suppressing reassess on an unchanged world (the cost
         guard), so this stays cheap when nothing has happened.
         """
+        # The agent's own structural triggers (exceptions, an urgent message)
+        # always count. Beyond those, a plan changes only when something
+        # inbound has changed since it was made — never because a cycle
+        # ticked.
         if agent.needs_replan(messages):
             return True
+        last = self._last_plan_ts.get(agent.id)
+        if last and not self._inbound_changed_since(agent, last):
+            return False
         try:
             return await self.plugin_manager.dispatch_should_reassess(agent.id, messages)
         except Exception:
@@ -8520,6 +8613,7 @@ class Fabric:
 
             agent.update_plan(response.content)
             self._strike_tasks_for_inactive(agent)
+            self._last_plan_ts[agent.id] = time.time()
 
         if agent.state == AgentState.REPLANNING:
             agent.transition(AgentState.EXECUTING)
