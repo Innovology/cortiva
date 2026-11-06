@@ -130,3 +130,77 @@ async def test_waking_an_awake_agent_skips_the_gate(tmp_path: Path) -> None:
         agent = await asyncio.wait_for(fabric.wake("ceo", override_minutes=45), timeout=1)
 
     assert agent.state is AgentState.EXECUTING
+
+
+class _DownModel(_Model):
+    """A model that is DOWN (breaker open) rather than slow."""
+
+    async def think(self, agent_id, context, prompt, **kwargs):
+        from cortiva.adapters.consciousness.openai_compat import ModelUnavailableError
+
+        if self.fail_plans and "plan" in str((kwargs.get("metadata") or {}).get("call_type", "")):
+            self.fail_plans -= 1
+            raise ModelUnavailableError("local model circuit breaker open")
+        return await super().think(agent_id, context, prompt, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_model_down_failure_does_not_consume_an_attempt(tmp_path: Path) -> None:
+    # Mini-2 2026-11-05 19:55: five agents burned all three attempts in 70s
+    # against a model that was being relaunched.
+    model = _DownModel()
+    model.fail_plans = 5  # more than _WAKE_RETRY_MAX, fewer than the model-down cap
+    fabric = _fabric(tmp_path, model)
+    fabric._WAKE_RETRY_MODEL_DOWN_S = 0.01  # type: ignore[misc]
+    fabric.register_agent("ceo")
+
+    with pytest.raises(Exception, match="breaker"):
+        await fabric.wake("ceo")
+    for _ in range(300):
+        if fabric.get_agent("ceo").state is AgentState.EXECUTING:
+            break
+        await asyncio.sleep(0.01)
+
+    assert fabric.get_agent("ceo").state is AgentState.EXECUTING
+    assert "ceo" not in fabric._wake_retries
+    assert "ceo" not in fabric._model_down_retries
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_pending_wake_retries_and_refuses_new_wakes(tmp_path: Path) -> None:
+    # The fabric was still waking agents two minutes after SIGTERM.
+    model = _Model()
+    model.fail_plans = 99
+    fabric = _fabric(tmp_path, model)
+    fabric._WAKE_RETRY_BASE_S = 60.0  # type: ignore[misc]  # far in the future
+    fabric.register_agent("ceo")
+    with pytest.raises(TimeoutError):
+        await fabric.wake("ceo")
+    assert fabric._wake_retry_tasks
+
+    await fabric.stop()
+    await asyncio.sleep(0)
+
+    assert not fabric._wake_retry_tasks
+    with pytest.raises(RuntimeError, match="stopping"):
+        await fabric.wake("ceo")
+    await fabric.stop()  # idempotent
+
+
+@pytest.mark.asyncio
+async def test_stop_forces_stragglers_to_sleep_at_the_drain_deadline(tmp_path: Path) -> None:
+    model = _Model()
+    fabric = _fabric(tmp_path, model)
+    for aid in ("ceo", "cto"):
+        fabric.register_agent(aid)
+        await fabric.wake(aid)
+
+    async def _hang(*a, **k):
+        await asyncio.sleep(3600)
+
+    fabric._session_reflection = _hang  # type: ignore[method-assign]  # clock-off never returns
+
+    await asyncio.wait_for(fabric.stop(drain_timeout_s=0.2), timeout=5)
+
+    assert all(fabric.get_agent(a).state is AgentState.SLEEPING for a in ("ceo", "cto"))
+    assert not fabric.timesheet_manager.get("ceo").is_clocked_in
