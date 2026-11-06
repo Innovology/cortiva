@@ -5714,28 +5714,19 @@ class Fabric:
     _IDLE_BACKOFF_MAX_S = 3600.0
 
     async def _replan_light(self, agent: Agent, messages: list[Any], *, idle: bool = False) -> None:
+        """One small ask against what Myelin already holds. Not idle: adjust
+        the standing checklist for what arrived. Idle (the list is clear): the
+        ladder a person climbs when their day's list is done — first bring
+        forward anything not bound to its day, then, if nothing moves, get
+        creative: contribute to the goal or streamline the future (build a
+        station). Back-off only when both rungs come back empty."""
         identity = agent.read_all_identity()
-        parts: list[str] = []
+        base: list[str] = []
         resp = str(identity.get("responsibilities", "")).strip()
         if resp:
-            parts.append("## Your Responsibilities\n" + resp[:1500])
+            base.append("## Your Responsibilities\n" + resp[:1500])
         plan = agent.read_identity("plan").strip()
-        parts.append("## Your current checklist\n" + (plan or "(empty)"))
-        if idle:
-            # The clear list is the signal: what stands open that the world
-            # would notice if it moved? Promises first, then what it has
-            # already confirmed today — so the next item is outcome-shaped.
-            promises = self._commitment_salience_context(agent)
-            if promises:
-                parts.append(promises)
-            confirmed = self._outcomes_today_line(agent)
-            parts.append(
-                "## What the world has confirmed from you today\n"
-                + (confirmed or "nothing yet — nothing merged, live, closed or accepted")
-            )
-            floor = self._factory_context(agent)
-            if floor:
-                parts.append(floor)
+        base.append("## Your current checklist\n" + (plan or "(empty)"))
         # What arrived / what stands over the plan — the only reasons to change it.
         await self._ground_inbox(agent)
         await self._ground_directives(agent)
@@ -5749,62 +5740,40 @@ class Fabric:
             self._inactive_context(agent),
         ):
             if block:
-                parts.append(block)
+                base.append(block)
         if messages:
             rendered = "\n".join(
                 f"- {getattr(m, 'content', m)}" for m in messages[-10:] if getattr(m, "content", m)
             )
             if rendered:
-                parts.append("## Messages that landed\n" + rendered)
-        context = "\n\n---\n\n".join(parts)
-        self.session_manager.validate_agent(agent.id, context)
+                base.append("## Messages that landed\n" + rendered)
 
-        can_replan = False
-        approval = None
-        if self.budget_manager:
-            approval = self.budget_manager.request_budget(agent.id, "high")
-            can_replan = approval.approved
-        else:
-            can_replan = agent.spend_consciousness()
-        if can_replan:
-            if idle:
-                prompt = (
-                    "Your checklist is clear and nothing new has arrived. Look at "
-                    "your factory floor, your open promises and what the world has "
-                    "confirmed (above). A station that failed is the first thing to "
-                    "fix; a step you keep doing by hand is a station to build. "
-                    "If one promise has a next concrete step that would produce "
-                    "something the world can see — a PR opened or merged, a URL "
-                    "that answers, an issue closed, a reply a human asked for — "
-                    "add ONLY that one item. If there is genuinely nothing, output "
-                    "the checklist unchanged: resting is honest, inventing work is "
-                    "not. Output ONLY the full checklist."
-                )
+        async def _ask(parts: list[str], prompt: str) -> int | None:
+            """One ask; returns how many pending tasks it added, None if no budget."""
+            context = "\n\n---\n\n".join(parts)
+            self.session_manager.validate_agent(agent.id, context)
+            approval = None
+            if self.budget_manager:
+                approval = self.budget_manager.request_budget(agent.id, "high")
+                can = approval.approved
             else:
-                prompt = (
-                    "Something arrived since your checklist was made (above). Adjust "
-                    "the checklist for it and nothing else: ADD what it requires, "
-                    "REPRIORITISE if it changes what matters most, DROP what it "
-                    "supersedes. Keep every other item exactly as it is — do not "
-                    "re-plan your day. Output ONLY the full updated checklist."
-                )
+                can = agent.spend_consciousness()
+            if not can:
+                return None
             queue_tasks = agent.task_queue.tasks if agent.task_queue is not None else []
-            pending_before = sum(1 for t in queue_tasks if t.status == "pending")
+            before = sum(1 for t in queue_tasks if t.status == "pending")
             self._meter_model_call(agent, "replan")
             response = await self.consciousness.think(
                 agent_id=agent.id,
                 context=context,
                 prompt=prompt,
                 priority=Priority.HIGH,
-                metadata={"call_type": "replan", "light": True},
+                metadata={"call_type": "replan", "light": True, "idle": idle},
             )
             self._meter_tokens(agent, "replan", response)
             if self.budget_manager and approval and approval.backend:
                 self.budget_manager.record_usage(
-                    agent.id,
-                    approval.backend,
-                    response.tokens_in,
-                    response.tokens_out,
+                    agent.id, approval.backend, response.tokens_in, response.tokens_out
                 )
                 agent.spend_consciousness()
             agent.update_plan(response.content)
@@ -5813,22 +5782,126 @@ class Fabric:
             self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
             queue_tasks = agent.task_queue.tasks if agent.task_queue is not None else []
-            pending_after = sum(1 for t in queue_tasks if t.status == "pending")
-            if idle:
-                if pending_after > pending_before:
-                    agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
-                else:
-                    cur = float(getattr(agent, "_idle_interval_s", self._IDLE_REASSESS_INTERVAL_S))
-                    agent._idle_interval_s = min(self._IDLE_BACKOFF_MAX_S, cur * 2)
-                    logger.info(
-                        "Idle: nothing worth doing for %s — next look in %d min",
-                        agent.id,
-                        int(agent._idle_interval_s // 60),
-                    )
-            else:
+            after = sum(1 for t in queue_tasks if t.status == "pending")
+            return max(0, after - before)
+
+        try:
+            if not idle:
+                await _ask(
+                    base,
+                    "Something arrived since your checklist was made (above). Adjust "
+                    "the checklist for it and nothing else: ADD what it requires, "
+                    "REPRIORITISE if it changes what matters most, DROP what it "
+                    "supersedes. Keep every other item exactly as it is — do not "
+                    "re-plan your day. Output ONLY the full updated checklist.",
+                )
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S  # something landed
-        if agent.state == AgentState.REPLANNING:
-            agent.transition(AgentState.EXECUTING)
+                return
+
+            # Rung 1 — bring forward. Only when there is something to bring.
+            later = self._later_this_week_context(agent)
+            added: int | None = 0
+            if later:
+                added = await _ask(
+                    base + [later],
+                    "Your checklist is clear. Look at what is planned for later this "
+                    "week and at your promises not yet due (above). Bring forward ONE "
+                    "item that is not bound to its day — an outstanding admin task, a "
+                    "draft, a check you can do now. A review, a meeting or anything "
+                    "fixed to a date stays where it is. Add exactly that one item to "
+                    "the checklist. If every remaining item is bound to its day, output "
+                    "the checklist unchanged.",
+                )
+            if added:
+                agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
+                logger.info(
+                    "Idle: %s brought forward %d item(s) from later this week", agent.id, added
+                )
+                return
+
+            # Rung 2 — get creative: contribute to the goal, or streamline the future.
+            creative = base + [
+                "## What the world has confirmed from you today\n"
+                + (
+                    self._outcomes_today_line(agent)
+                    or "nothing yet — nothing merged, live, closed or accepted"
+                )
+            ]
+            for block in (
+                self._team_truth_context(agent),
+                self._factory_context(agent),
+                self._model_meter_context(agent),
+            ):
+                if block:
+                    creative.append(block)
+            added = await _ask(
+                creative,
+                "Your checklist is clear and nothing can be brought forward. This is "
+                "where a person gets creative: contribute to the goal, or streamline the "
+                "future to free up time. Choose ONE and add exactly that item: (a) a "
+                "step you can produce yourself that moves the company's scoreboard — a "
+                "PR, a URL that answers, an issue closed, a lead; for a manager, the "
+                "report whose promise is most at risk and what you will do about it; "
+                "(b) a step you keep doing by hand that belongs on your factory floor — "
+                "name it with build_station so the build goes on the checklist; (c) a "
+                "station that failed — fix it. Output the checklist unchanged only if "
+                "there is genuinely nothing: resting is then honest, inventing work is "
+                "not.",
+            )
+            if added:
+                agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
+                logger.info("Idle: %s found something to contribute or streamline", agent.id)
+                return
+            cur = float(getattr(agent, "_idle_interval_s", self._IDLE_REASSESS_INTERVAL_S))
+            agent._idle_interval_s = min(self._IDLE_BACKOFF_MAX_S, cur * 2)
+            logger.info(
+                "Idle: nothing to bring forward and nothing to build for %s — next look in %d min",
+                agent.id,
+                int(agent._idle_interval_s // 60),
+            )
+        finally:
+            if agent.state == AgentState.REPLANNING:
+                agent.transition(AgentState.EXECUTING)
+
+    def _later_this_week_context(self, agent: Agent) -> str:
+        """The week's plan items still open and the promises not yet due — the
+        pool a clear list is refilled from. '' when there is nothing to bring."""
+        from datetime import date as _date
+
+        lines: list[str] = []
+        try:
+            weekly = Planner(agent.directory).store.current_weekly()
+            if weekly is not None:
+                open_items = [
+                    ln.strip()
+                    for ln in str(weekly.content or "").splitlines()
+                    if ln.strip().startswith("- [ ]")
+                ][:12]
+                if open_items:
+                    lines.append("### This week's plan, still open")
+                    lines.extend(open_items)
+        except Exception:
+            logger.debug("weekly plan unreadable for %s", agent.id, exc_info=True)
+        try:
+            from cortiva.core import commitments as _cm
+
+            today = _date.today().isoformat()
+            later = []
+            for c in _cm.load(agent.directory):
+                if c.status not in ("open", "held"):
+                    continue
+                due = str(getattr(c, "due_at", "") or "")[:10]
+                if due and due <= today:
+                    continue  # due today or overdue: already on the list or owed now
+                later.append(f"- due {due or 'unset'}: {c.what[:90]} → {c.to[:40]}")
+            if later:
+                lines.append("### Promises not yet due")
+                lines.extend(later[:12])
+        except Exception:
+            logger.debug("commitments unreadable for %s", agent.id, exc_info=True)
+        if not lines:
+            return ""
+        return "## Later this week — what could be brought forward\n" + "\n".join(lines)
 
     def _active_reports(self, agent: Agent) -> list[str]:
         if self.org is None:

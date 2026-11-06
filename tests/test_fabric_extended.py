@@ -1016,10 +1016,12 @@ class _CountingConsciousness:
         self.calls = 0
         self.plan_body = plan_body
         self.last_prompt = ""
+        self.last_context = ""
 
     async def think(self, agent_id, context, prompt, **kwargs):
         self.calls += 1
         self.last_prompt = prompt
+        self.last_context = context
         return ConsciousResponse(
             content=self.plan_body,
             tokens_in=10,
@@ -1127,9 +1129,11 @@ class TestIdleProactiveReassess:
         await fabric.cycle("idle-5")
         assert any("lead form" in t.description for t in agent.task_queue.tasks)
         assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S
-        # The idle ask is the light one: it asked about promises and the world,
-        # not for a plan of the day.
-        assert "resting is honest" in cons.last_prompt
+        # With nothing to bring forward the idle look goes straight to the
+        # creative rung — one ask about contributing or streamlining, never a
+        # plan of the day.
+        assert "gets creative" in cons.last_prompt
+        assert "resting is then honest" in cons.last_prompt
 
     @pytest.mark.asyncio
     async def test_proactive_reassess_can_pull_in_work(self, tmp_path):
@@ -1736,3 +1740,69 @@ class TestCycleAdmission:
         fabric, cons = self._rig(tmp_path, concurrency=0)
         await fabric.heartbeat()
         assert sorted(cons.served) == ["a1", "a2", "a3"]
+
+
+class TestIdleLadder:
+    """When the list is done, a person first brings forward what is not bound
+    to its day; only if nothing moves do they get creative. Each rung is one
+    small ask; the first rung is skipped without an ask when there is nothing
+    to bring."""
+
+    def _weekly(self, agent, items: list[str]) -> None:
+        from cortiva.core.planner import Planner
+
+        Planner(agent.directory).save_weekly("\n".join(items))
+
+    @pytest.mark.asyncio
+    async def test_bring_forward_is_the_first_rung_and_resets_the_cadence(self, tmp_path):
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-7")
+        self._weekly(
+            agent,
+            ["- [x] done thing", "- [ ] Tidy the decision log (admin)", "- [ ] Friday review"],
+        )
+        # Rung 1 asks about the week's open items; the model brings one forward.
+        cons.plan_body = "- [ ] Tidy the decision log (admin)\n"
+        await fabric.cycle("idle-7")
+        assert cons.calls == 1 and "Bring forward ONE item" in cons.last_prompt
+        assert "Tidy the decision log" in cons.last_context and "Friday review" in cons.last_context
+        assert any("decision log" in t.description for t in agent.task_queue.tasks)
+        assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S  # found work: no back-off
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_bring_forward_falls_to_the_creative_rung(self, tmp_path):
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-8")
+        self._weekly(agent, ["- [ ] Friday review"])
+        prompts: list[str] = []
+        orig = cons.think
+
+        async def _think(agent_id, context, prompt, **kw):
+            prompts.append(prompt)
+            return await orig(agent_id, context, prompt, **kw)
+
+        cons.think = _think
+        await fabric.cycle("idle-8")
+        # Rung 1 (bring forward) came back unchanged → rung 2 (get creative) was asked.
+        assert len(prompts) == 2
+        assert "Bring forward ONE item" in prompts[0] and "gets creative" in prompts[1]
+        assert "build_station" in prompts[1]
+        assert (
+            agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S * 2
+        )  # both empty: back off
+
+    def test_later_this_week_lists_open_week_items_and_promises_not_yet_due(self, tmp_path):
+        from cortiva.core import commitments as cm
+
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-9")
+        assert fabric._later_this_week_context(agent) == ""
+        self._weekly(agent, ["- [ ] Draft the Q1 narrative", "- [x] Already done"])
+        cm.register(agent.directory, to="maren@x", what="Send the hiring plan", due="2099-01-09")
+        cm.register(agent.directory, to="maren@x", what="Overdue thing", due="2020-01-01")
+        ctx = fabric._later_this_week_context(agent)
+        assert "- [ ] Draft the Q1 narrative" in ctx and "Already done" not in ctx
+        assert "due 2099-01-09: Send the hiring plan" in ctx and "Overdue thing" not in ctx
