@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from pathlib import Path
 
 from cortiva.adapters.terminal.claude_session import (
@@ -76,3 +78,26 @@ def test_classify_tool_result():
         {"type": "user", "message": {"content": [{"type": "tool_result", "is_error": False}]}}
     )[0]
     assert ev.checkpoint is Checkpoint.TOOL_RESULT
+
+
+def test_events_survive_lines_longer_than_asyncio_default_limit(tmp_path: Path) -> None:
+    # A 200KB tool-result line used to kill the session (asyncio's 64KiB limit).
+    script = tmp_path / "fake_claude.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.readline()\n"
+        "big = {'type': 'user', 'message': {'content': [{'type': 'tool_result', "
+        "'content': 'x' * 200_000}]}}\n"
+        "print(json.dumps(big), flush=True)\n"
+        "print(json.dumps({'type': 'result', 'result': 'ok', 'session_id': 's1'}), flush=True)\n"
+    )
+    s = ClaudeSession(cwd=tmp_path)
+    s._build_cmd = lambda: [sys.executable, str(script)]  # type: ignore[method-assign]
+
+    async def run() -> list[Checkpoint]:
+        await s.start("go")
+        seen = [ev.checkpoint async for ev in s.events()]
+        await s.close()
+        return seen
+
+    assert asyncio.run(run())[-1] is Checkpoint.DONE
