@@ -1142,6 +1142,12 @@ class Fabric:
         back to bare stats). It's a single cheap call per sleep; usage is
         still accounted. Best-effort — returns '' only on real failure (the
         journal then still records felt state + the stats summary)."""
+        if not self._running:
+            # The fabric is stopping (hot-patch, reload): this is not the end
+            # of anyone's day. The filing happens; the note does not — five
+            # 'my session has ended' asks per restart were the single largest
+            # line on the meter today (2026-11-06: reflect 4 of cto's 8 asks).
+            return ""
         try:
             context = _identity_to_context(agent.read_all_identity())
             outcomes = self._outcomes_today_line(agent)

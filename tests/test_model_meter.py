@@ -116,6 +116,7 @@ async def test_the_session_reflection_asks_what_the_world_got_not_what_was_done(
     )
     mm.bump(agent.directory, "execute")
     mm.bump(agent.directory, "execute")
+    fabric._running = True  # a running fabric — a stopping one writes no note
     await fabric._session_reflection(agent, "did things", {})
     assert "pr merged: feat: lead form" in model.prompt
     assert "rejected — claim rejected: RFC-005 done" in model.prompt

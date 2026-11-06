@@ -1667,3 +1667,15 @@ class TestShutdownFiles:
         await fabric.stop(drain_timeout_s=0.2)
         assert agent.state == AgentState.SLEEPING
         assert filing.slept == ["late-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_stop_does_not_buy_a_reflection_per_agent(self, tmp_path: Path) -> None:
+        """A hot-patch restart is not the end of anyone's day: the sleep at
+        shutdown files but writes no note — zero model asks."""
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        _executing_agent_empty_queue(fabric, "late-2")
+        fabric._running = True
+        before = cons.calls
+        await fabric.stop(drain_timeout_s=5.0)
+        assert cons.calls == before
