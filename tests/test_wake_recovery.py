@@ -204,3 +204,22 @@ async def test_stop_forces_stragglers_to_sleep_at_the_drain_deadline(tmp_path: P
 
     assert all(fabric.get_agent(a).state is AgentState.SLEEPING for a in ("ceo", "cto"))
     assert not fabric.timesheet_manager.get("ceo").is_clocked_in
+
+
+@pytest.mark.asyncio
+async def test_failed_replan_leaves_the_agent_executing(tmp_path: Path) -> None:
+    # 2026-11-05 23:32 Mini-2: the model server was relaunched mid-replan,
+    # think() raised, and all five working agents sat in REPLANNING for half
+    # an hour — the rota's wakes no-op on an agent that isn't asleep.
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    agent = f.register_agent("cto")
+    await f.wake("cto")
+    assert agent.state == AgentState.EXECUTING
+
+    model.fail_plans = 1  # the reassessment call raises
+    await f._replan(agent, [])
+    assert agent.state == AgentState.EXECUTING, "a failed replan must not strand the agent"
+
+    await f._replan(agent, [])  # the next cycle reassesses normally
+    assert agent.state == AgentState.EXECUTING

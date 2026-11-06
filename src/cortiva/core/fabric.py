@@ -7795,6 +7795,34 @@ class Fabric:
     ) -> None:
         """Trigger a replan: EXECUTING -> REPLANNING, build new plan, -> EXECUTING.
 
+        A reassessment that fails (the model bounced, the request timed out)
+        must leave the agent EXECUTING so the next cycle reassesses again.
+        2026-11-05 23:32 Mini-2: the model server was relaunched mid-replan,
+        ``think`` raised, and all five working agents sat in REPLANNING for
+        half an hour — the rota's wakes no-op on an agent that isn't asleep,
+        and the cycle does nothing for an agent that is "already replanning".
+        The PLANNING trap (#116), one state later.
+        """
+        try:
+            await self._replan_inner(agent, messages, proactive=proactive)
+        except Exception:
+            if agent.state == AgentState.REPLANNING:
+                agent.transition(AgentState.EXECUTING)
+            logger.warning(
+                "Replan failed for %s — back to executing; reassessing next cycle",
+                agent.id,
+                exc_info=True,
+            )
+
+    async def _replan_inner(
+        self,
+        agent: Agent,
+        messages: list[Any],
+        *,
+        proactive: bool = False,
+    ) -> None:
+        """The reassessment itself — see ``_replan`` for the recovery contract.
+
         ``proactive=True`` is the empty-queue case: the agent has cleared its
         list and is looking for the next valuable thing to do, rather than
         reacting to something that just landed.
