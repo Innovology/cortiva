@@ -844,8 +844,13 @@ class Fabric:
             )
             if self.budget_manager:
                 self.budget_manager.reset_agent(agent_id)
-            agent.transition(AgentState.EXECUTING)  # _replan_light moves through REPLANNING
-            await self._replan(agent, messages, proactive=False)
+            agent.transition(AgentState.EXECUTING)
+            # The adjustment is a model ask. A wake runs inside the heartbeat,
+            # so awaiting it here froze every agent on the node behind one
+            # queued request (Mini-2, 15:18–15:26 2026-11-06: yuki's wake-time
+            # adjustment sat behind orphaned requests for 480 s and nothing
+            # cycled). The first admitted cycle does it, under the cycle guard.
+            agent._adjust_pending = list(messages or [])
             self._emit("agent.wake", agent_id=agent_id, state=agent.state.value, adjusted=True)
             await self.plugin_manager.dispatch_wake(agent_id, agent)
             return agent
@@ -1508,6 +1513,17 @@ class Fabric:
         messages: list[Any] = []
         if self.channel:
             messages = await self.channel.receive(agent_id)
+
+        # A wake with new input deferred its adjustment to here: the one
+        # model ask it needs, admitted like any cycle and bounded by the
+        # cycle guard, never inside the heartbeat.
+        pending = getattr(agent, "_adjust_pending", None)
+        if pending is not None:
+            agent._adjust_pending = None
+            await self._replan(agent, list(pending) + list(messages or []))
+            result["action"] = "adjusted"
+            result["conscious_call"] = True
+            return result
 
         # Check replan triggers
         if await self._should_replan(agent, messages):

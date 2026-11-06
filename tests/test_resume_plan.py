@@ -64,16 +64,20 @@ async def test_inbound_mail_or_a_directive_makes_the_next_wake_adjust(tmp_path: 
         json.dumps({"from": "maren@x", "subject": "Please", "text": "do X"})
     )
     await f.wake("cto")
+    assert calls.count("replan") == 0  # the wake itself asks nothing — it runs in the heartbeat
+    assert (await f.cycle("cto"))["action"] == "adjusted"
     assert calls.count("plan") == 1 and calls.count("replan") == 1  # adjusted, not rebuilt
 
     await f.sleep("cto")
     await f.wake("cto")
-    assert calls.count("replan") == 1  # the mail was read during that adjustment; nothing new since
+    assert getattr(agent, "_adjust_pending", None) is None  # nothing new since: resumed, no ask
+    assert calls.count("replan") == 1  # the mail was read during that adjustment
 
     await f.sleep("cto")
     time.sleep(0.01)
     (agent.directory / "directives.json").write_text("[]")
     await f.wake("cto")
+    assert (await f.cycle("cto"))["action"] == "adjusted"
     assert calls.count("plan") == 1 and calls.count("replan") == 2
 
 
@@ -202,6 +206,7 @@ async def test_a_wake_with_new_input_adjusts_the_standing_plan_not_rebuilds_it(
         json.dumps({"from": "maren@x", "subject": "Lead form", "text": "start it"})
     )
     await f.wake("cto")
+    await f.cycle("cto")  # the adjustment is the first cycle's one ask
     assert seen[-1][0] == "replan" and seen[-1][1] is True, seen
     assert [t for t, _, _ in seen if t == "plan"] == ["plan"], "no second full plan"
     assert agent.state == AgentState.EXECUTING
