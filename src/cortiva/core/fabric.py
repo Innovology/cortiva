@@ -1144,14 +1144,19 @@ class Fabric:
         journal then still records felt state + the stats summary)."""
         try:
             context = _identity_to_context(agent.read_all_identity())
+            outcomes = self._outcomes_today_line(agent)
+            self._meter_model_call(agent, "reflect")
+            asks = _mm.read(agent.directory).get("count") or 0
             prompt = (
                 "Your work session has ended. In 2-4 short sentences, reflect "
-                "personally and honestly: what you did this session, how it "
-                "went, and how you feel about it. Your current felt state is: "
-                f"{self._render_mood(emotion)}. Write in the first person; "
-                "keep it brief."
+                "personally and honestly — not on what you did, but on what the "
+                f"world got from you: {outcomes or 'nothing confirmed by the world yet'}. "
+                "What did you only claim, chase or file? What would have moved the "
+                "company's scoreboard? "
+                + (f"It took {asks} model asks today. " if asks else "")
+                + f"Your current felt state is: {self._render_mood(emotion)}. Write in "
+                "the first person; keep it brief."
             )
-            self._meter_model_call(agent, "reflect")
             resp = await self.consciousness.think(
                 agent_id=agent.id,
                 context=context,
@@ -1169,6 +1174,31 @@ class Fabric:
         except Exception:
             logger.debug("session reflection failed for %s", agent.id, exc_info=True)
             return ""
+
+    def _outcomes_today_line(self, agent: Agent) -> str:
+        """What the world confirmed from this agent in the last day, from the
+        node's outcome ledger (``<agent>/outcomes.json``: kind / title / ref /
+        at, written by the node, never by the agent) — '' when none. The
+        reflection is asked against this, not against the agent's own account."""
+        try:
+            raw = json.loads((agent.directory / "outcomes.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        cutoff = time.time() - 86400
+        got: list[str] = []
+        lost: list[str] = []
+        for e in raw if isinstance(raw, list) else []:
+            if not isinstance(e, dict) or float(e.get("at") or 0) < cutoff:
+                continue
+            kind = str(e.get("kind") or "")
+            what = str(e.get("title") or e.get("ref") or "")[:60]
+            (lost if "rejected" in kind else got).append(f"{kind.replace('_', ' ')}: {what}")
+        parts = []
+        if got:
+            parts.append("confirmed — " + "; ".join(got[:5]))
+        if lost:
+            parts.append("rejected — " + "; ".join(lost[:3]))
+        return ". ".join(parts)
 
     def _write_session_journal(
         self,

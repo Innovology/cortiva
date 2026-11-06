@@ -79,3 +79,42 @@ async def test_a_wake_that_plans_is_metered_and_the_count_reaches_the_next_conte
     assert m["count"] == model.calls, (m, model.calls)
     assert sum(m["by_type"].values()) == model.calls
     assert "Model asks today" in fabric._model_meter_context(agent)
+
+
+@pytest.mark.asyncio
+async def test_the_session_reflection_asks_what_the_world_got_not_what_was_done(
+    tmp_path: Path,
+) -> None:
+    """The pre-sleep note is written against the node's outcome ledger and
+    the day's ask count — not the agent's own account of the day."""
+    import time
+
+    class _Capture(_Model):
+        def __init__(self) -> None:
+            super().__init__()
+            self.prompt = ""
+
+        async def think(self, agent_id, context, prompt, **kwargs):
+            self.prompt = prompt
+            return await super().think(agent_id, context, prompt, **kwargs)
+
+    model = _Capture()
+    fabric = Fabric(agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=model)
+    agent = fabric.register_agent("amara")
+    (agent.directory / "outcomes.json").write_text(
+        json.dumps(
+            [
+                {"kind": "pr_merged", "title": "feat: lead form", "ref": "u1", "at": time.time()},
+                {"kind": "claim_rejected", "title": "RFC-005 done", "ref": "c1", "at": time.time()},
+                {"kind": "pr_merged", "title": "old", "ref": "u0", "at": time.time() - 3 * 86400},
+            ]
+        )
+    )
+    mm.bump(agent.directory, "execute")
+    mm.bump(agent.directory, "execute")
+    await fabric._session_reflection(agent, "did things", {})
+    assert "pr merged: feat: lead form" in model.prompt
+    assert "rejected — claim rejected: RFC-005 done" in model.prompt
+    assert "old" not in model.prompt
+    assert "It took 3 model asks today" in model.prompt  # two executes + this reflect
+    assert "what the world got from you" in model.prompt
