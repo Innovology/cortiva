@@ -383,6 +383,7 @@ async def test_a_reference_she_cannot_read_is_read_with_a_reports_access(
     saved = json.loads((agent.directory / "directives.json").read_text())
     ref = saved[0]["references"][0]
     assert ref["status"] == "read" and ref["read_via"] == "cto"
+    assert "reason" not in ref  # the failed own-token attempt's reason does not ride along
     block = fabric._directive_salience_context(agent)
     assert "Homeschool retirement" in block
     assert "read with cto's access" in block

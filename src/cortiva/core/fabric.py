@@ -4804,6 +4804,9 @@ class Fabric:
                 if resolved is None or attempt.get("status") == "read":
                     resolved = attempt
                     if attempt.get("status") == "read":
+                        resolved.pop(
+                            "reason", None
+                        )  # an earlier failure's reason is not this read's
                         if via != agent.id:
                             resolved["read_via"] = via
                         break
@@ -5252,6 +5255,9 @@ class Fabric:
                 if resolved is None or attempt.get("status") == "read":
                     resolved = attempt
                     if attempt.get("status") == "read":
+                        resolved.pop(
+                            "reason", None
+                        )  # an earlier failure's reason is not this read's
                         if via != agent.id:
                             resolved["read_via"] = via
                         break
