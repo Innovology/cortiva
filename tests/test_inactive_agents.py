@@ -122,3 +122,76 @@ def test_grounding_backfills_references_on_older_directives(tmp_path: Path, monk
         and saved[0]["references"][0]["status"] == "unreadable"
     )
     assert "could **NOT** read" in fabric._directive_salience_context(ceo)
+
+
+def test_planned_tasks_aimed_at_off_rota_colleagues_are_struck(tmp_path: Path) -> None:
+    # 2026-11-06 10:03–10:10: the CEO planned chases to the CMO, CFO and COO,
+    # spent a session on each, and the sender held every mail.
+    fabric = _org(tmp_path)
+    fabric.load_schedules({"ceo": ROTA, "noor": ROTA})  # coo (Marcus) off the rota
+    ceo = fabric.agents["ceo"]
+    ceo.set_plan(
+        "- [ ] **[HIGH]** Chase COO for W44 EFD Pre-Read\n"
+        "- [ ] Email Marcus re: availability\n"
+        "- [ ] Ask Noor for the rota optimiser output\n"
+        "- [ ] Draft the W45 Founder Brief\n"
+    )
+    struck = fabric._strike_tasks_for_inactive(ceo)
+    assert struck == 2
+    by_desc = {t.description.split(" *(")[0]: t.status for t in ceo.task_queue.tasks}
+    assert by_desc["Chase COO for W44 EFD Pre-Read"] == "skipped"
+    assert by_desc["Email Marcus re: availability"] == "skipped"
+    assert by_desc["Ask Noor for the rota optimiser output"] == "pending"
+    assert by_desc["Draft the W45 Founder Brief"] == "pending"
+    plan = (ceo.directory / "today" / "plan.md").read_text()
+    assert "struck: Marcus" in plan
+    # Nobody off the rota → nothing struck.
+    fabric.load_schedules({"ceo": ROTA, "noor": ROTA, "coo": ROTA})
+    ceo.set_plan("- [ ] Chase COO again\n")
+    assert fabric._strike_tasks_for_inactive(ceo) == 0
+
+
+def test_tasks_about_an_off_rota_colleague_are_not_struck(tmp_path: Path) -> None:
+    # 10:19 2026-11-06: the first strike also hit "Assemble & Route W45 Founder
+    # Brief: consolidate CMO/CFO inputs, COO availability concern…" and "File
+    # Executive Escalations to Founder: document COO availability" — tasks for
+    # the founder that merely mention the people who are off.
+    fabric = _org(tmp_path)
+    fabric.load_schedules({"ceo": ROTA, "noor": ROTA})  # coo (Marcus) off
+    ceo = fabric.agents["ceo"]
+    ceo.set_plan(
+        "- [ ] Assemble & Route W45 Founder Brief: consolidate CMO/CFO inputs, COO availability concern\n"
+        "- [ ] File Executive Escalations to Founder: document COO availability (24+ days dark)\n"
+        "- [ ] Close W44 diagnostic; if COO pre-read is missing, note it\n"
+        "- [ ] Follow-up with Marcus on the W44 pre-read\n"
+        "- [ ] Direct the COO to file the pre-read by EOD\n"
+    )
+    assert fabric._strike_tasks_for_inactive(ceo) == 2
+    statuses = [t.status for t in ceo.task_queue.tasks]
+    assert statuses == ["pending", "pending", "pending", "skipped", "skipped"]
+
+
+def test_held_mail_is_shown_to_the_sender_with_the_reason(tmp_path: Path) -> None:
+    import json as _json
+
+    fabric = _org(tmp_path)
+    ceo = fabric.agents["ceo"]
+    held = ceo.directory / "outbox" / "email" / "held"
+    held.mkdir(parents=True)
+    (held / "held-a.json").write_text(
+        _json.dumps(
+            {
+                "to": "samantha@innovology.io",
+                "subject": "CI/PAT Access Resolution",
+                "held_reason": "nobody called samantha@innovology.io is known at innovology.io — not a listed contact",
+            }
+        )
+    )
+    block = fabric._held_mail_context(ceo)
+    assert (
+        "NOT sent" in block
+        and "samantha@innovology.io" in block
+        and "not a listed contact" in block
+    )
+    assert "Do not simply resend" in block
+    assert fabric._held_mail_context(fabric.agents["coo"]) == ""

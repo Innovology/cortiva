@@ -914,6 +914,9 @@ class Fabric:
         unverified_ctx = self._unverified_context(agent)
         if unverified_ctx:
             context = context + "\n\n---\n\n" + unverified_ctx
+        held_ctx = self._held_mail_context(agent)
+        if held_ctx:
+            context = context + "\n\n---\n\n" + held_ctx
 
         # The org head's periodic consultation with the owner — pull the
         # leadership's strategy/roadmap material, put it in front of the
@@ -1028,6 +1031,7 @@ class Fabric:
             call_type="plan",
             on_success=lambda text: agent.set_plan(text),
         )
+        self._strike_tasks_for_inactive(agent)
         logger.info(f"Agent {agent_id} has planned their day")
 
         agent.transition(AgentState.EXECUTING)
@@ -5023,6 +5027,127 @@ class Fabric:
         )
         return "\n".join(lines)
 
+    _CONTACT_VERBS = (
+        r"(?<![a-z])(?:chase|chasing|email|e-mail|mail|write to|ask|asking|direct|"
+        r"remind|ping|nudge|follow[- ]?up (?:with|to|on)|request (?:from|that)|"
+        r"escalate to|delegate to|delegating to|wake|message|call|"
+        r"instruct|hand (?:to|off to))"
+    )
+
+    def _strike_tasks_for_inactive(self, agent: Agent) -> int:
+        """Strike, at plan time, any pending task aimed at a colleague who is
+        not currently working — by first name, agent id or role title. The
+        NOT WORKING block steers execution but not planning: on 2026-11-06
+        the CEO planned a chase to the CMO, the CFO and the COO within ten
+        minutes of each other, spent a session on each, and the sender held
+        every mail. Returns how many tasks were struck."""
+        if agent.task_queue is None:
+            return 0
+        try:
+            inactive = self._inactive_agent_ids()
+        except Exception:
+            return 0
+        if not inactive:
+            return 0
+        cards = {c["id"]: c for c in self._load_directory_cards()}
+        handles: dict[str, str] = {}  # lowercase token → display name
+        for aid in inactive:
+            c = cards.get(aid) or {}
+            name = str(c.get("name") or aid)
+            handles[aid.lower()] = name
+            first = name.split(" ")[0].lower()
+            if len(first) >= 3:
+                handles[first] = name
+            role = str(c.get("role") or "").lower().strip()
+            if len(role) >= 3:
+                handles[role] = name
+        struck = 0
+        for t in agent.task_queue.tasks:
+            if t.status != "pending":
+                continue
+            text = (t.description or "").lower()
+            # Directed AT the person — a contact verb within a few words of
+            # their name — not merely about them. "Assemble the Founder
+            # Brief: consolidate CMO/CFO inputs" and "escalate COO
+            # availability to the founder" are for the founder and stay.
+            hit = next(
+                (
+                    disp
+                    for tok, disp in handles.items()
+                    if re.search(
+                        self._CONTACT_VERBS
+                        + r"\W+(?:[a-z0-9'’-]+\W+){0,4}?"
+                        + re.escape(tok)
+                        + r"(?![a-z0-9])",
+                        text,
+                    )
+                ),
+                None,
+            )
+            if hit is None:
+                continue
+            t.status = "skipped"
+            t.description = f"{t.description} *(struck: {hit} is not currently working)*"
+            struck += 1
+        if struck:
+            self._write_plan(agent)
+            logger.info(
+                "Agent %s: %d planned task(s) struck — aimed at colleagues who are not working",
+                agent.id,
+                struck,
+            )
+        return struck
+
+    _HELD_MAIL_WINDOW_S = 24 * 3600
+
+    def _held_mail_context(self, agent: Agent) -> str:
+        """Mail of hers the node did NOT send in the last day, with the
+        reason — so a wrong address or a repeat ask is corrected by her, not
+        quietly parked. 2026-11-06: three mails to samantha@innovology.io
+        (no such mailbox) were held one after another; the reason only ever
+        reached a folder she never reads."""
+        import time as _time
+
+        held_dir = Path(agent.directory) / "outbox" / "email" / "held"
+        if not held_dir.is_dir():
+            return ""
+        cutoff = _time.time() - self._HELD_MAIL_WINDOW_S
+        rows: list[tuple[float, str]] = []
+        for p in held_dir.glob("*.json"):
+            try:
+                t = p.stat().st_mtime
+                if t < cutoff:
+                    continue
+                m = json.loads(p.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                continue
+            if not isinstance(m, dict):
+                continue
+            to = m.get("to")
+            to_s = str(to[0] if isinstance(to, list) and to else to or "")
+            rows.append(
+                (
+                    t,
+                    f'- to **{to_s}** — "{str(m.get("subject", ""))[:80]}": '
+                    f"{str(m.get('held_reason', '')) or 'held'}",
+                )
+            )
+        if not rows:
+            return ""
+        rows.sort()
+        lines = [
+            "## ✋ Mail of yours that was NOT sent",
+            "",
+            "The node held these instead of sending them — each with the reason. "
+            "Nobody received them. Read the reason and fix the cause: a wrong "
+            "address (use the directory above), a repeat that added nothing (say "
+            "something new or wait for their answer), or a colleague who is not "
+            "working (they will not read it). Do not simply resend.",
+            "",
+        ]
+        lines.extend(line for _, line in rows[-8:])
+        return "\n".join(lines)
+
     def _active_reports(self, agent: Agent) -> list[str]:
         if self.org is None:
             return []
@@ -8281,6 +8406,9 @@ class Fabric:
         unverified_ctx = self._unverified_context(agent)
         if unverified_ctx:
             context = context + "\n\n---\n\n" + unverified_ctx
+        held_ctx = self._held_mail_context(agent)
+        if held_ctx:
+            context = context + "\n\n---\n\n" + held_ctx
 
         # A due founder brief keeps confronting the org head on reassess too —
         # it self-resolves only when the brief is actually sent.
@@ -8391,6 +8519,7 @@ class Fabric:
                 agent.spend_consciousness()
 
             agent.update_plan(response.content)
+            self._strike_tasks_for_inactive(agent)
 
         if agent.state == AgentState.REPLANNING:
             agent.transition(AgentState.EXECUTING)
