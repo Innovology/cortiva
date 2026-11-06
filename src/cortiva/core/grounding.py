@@ -103,3 +103,53 @@ def read_github_ref(ref: dict[str, Any], token: str, timeout: float = 8.0) -> di
         kind="pull request" if data.get("pull_request") else "issue",
     )
     return out
+
+
+def _github_get(url: str, token: str, timeout: float) -> Any:
+    import urllib.request
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "cortiva-fabric",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def prs_opened_since(token: str, since: str, timeout: float = 8.0) -> list[dict[str, Any]] | None:
+    """Pull requests the token's own user opened on or after ``since``
+    (YYYY-MM-DD), newest first. ``None`` when it cannot be known (no token,
+    GitHub unreachable) — which is different from "none opened"."""
+    import urllib.parse
+
+    if not token:
+        return None
+    try:
+        login = str(_github_get("https://api.github.com/user", token, timeout).get("login") or "")
+        if not login:
+            return None
+        q = urllib.parse.quote(f"author:{login} type:pr created:>={since}")
+        data = _github_get(
+            f"https://api.github.com/search/issues?q={q}&sort=created&order=desc&per_page=20",
+            token,
+            timeout,
+        )
+    except Exception:
+        return None
+    out: list[dict[str, Any]] = []
+    for item in data.get("items") or []:
+        repo = "/".join(str(item.get("repository_url") or "").split("/")[-2:])
+        out.append(
+            {
+                "repo": repo,
+                "number": int(item.get("number") or 0),
+                "title": str(item.get("title") or ""),
+                "state": str(item.get("state") or ""),
+                "url": str(item.get("html_url") or ""),
+            }
+        )
+    return out

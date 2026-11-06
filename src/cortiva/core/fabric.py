@@ -344,6 +344,8 @@ class Fabric:
         self._stopping = False
         # Per-agent accumulated familiarity signals for today
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
+        # Per agent: (monotonic refresh time, PRs opened today or None if unknown).
+        self._shipped_today: dict[str, tuple[float, list[dict[str, Any]] | None]] = {}
         self._emotional_states: dict[str, Any] = {}
         # Event listeners for portal/WebSocket integration
         self._event_listeners: list[Any] = []
@@ -1873,6 +1875,9 @@ class Fabric:
         _is_sched_action = agent.id in self.scheduling_authorised and any(
             k in task.description.lower() for k in ("optimis", "rota", "schedul")
         )
+        # What she has already put into the world today, refreshed before
+        # either execution path builds its prompt.
+        await self._refresh_shipped_today(agent)
         if self.terminal and not _is_sched_action and self._is_terminal_task(task.description):
             terminal_result = await self._execute_via_terminal(agent, task)
             if terminal_result is not None:
@@ -1977,6 +1982,9 @@ class Fabric:
         refs_ctx = self._directive_references_context(agent)
         if refs_ctx:
             context = context + "\n\n---\n\n" + refs_ctx
+        shipped_ctx = self._shipped_today_context(agent)
+        if shipped_ctx:
+            context = context + "\n\n---\n\n" + shipped_ctx
 
         # Plugin-contributed per-task context (e.g. Myelin: inhibition
         # checks, outcome forecasts, emotional conditioning, matched
@@ -3811,6 +3819,9 @@ class Fabric:
             f"## Your Responsibilities\n{responsibilities}\n\n"
             "When done, summarise what you did and the outcome."
         )
+        shipped = self._shipped_today_context(agent)
+        if shipped:
+            prompt += "\n\n" + shipped
 
         # Use the agent's workspace directory as cwd
         cwd = agent.directory / "workspace"
@@ -3976,6 +3987,9 @@ class Fabric:
             f"## Your Responsibilities\n{identity.get('responsibilities', '')}\n\n"
             "Do the work end to end. When done, summarise what you did and the outcome."
         )
+        shipped = self._shipped_today_context(agent)
+        if shipped:
+            prompt += "\n\n" + shipped
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
         envelope = self.isolation.prepare_terminal_env(agent_id=agent.id, cmd=[], cwd=cwd)
@@ -4664,6 +4678,88 @@ class Fabric:
                     "do not mark it delivered.**"
                 )
         return out
+
+    # How long the "PRs opened today" lookup is reused before GitHub is asked
+    # again — one bounded call per agent per few minutes, not per task.
+    _SHIPPED_TODAY_TTL_S = 300.0
+
+    async def _refresh_shipped_today(self, agent: Agent) -> None:
+        """Refresh the cached list of PRs this agent opened today (one bounded
+        GitHub call, off the event loop). Unknown stays unknown — never
+        presented as "nothing opened"."""
+        import time
+
+        from cortiva.core.grounding import agent_github_token, prs_opened_since
+
+        now = time.monotonic()
+        last, _ = self._shipped_today.get(agent.id, (0.0, None))
+        if last and now - last < self._SHIPPED_TODAY_TTL_S:
+            return
+        token = agent_github_token(Path(agent.directory))
+        try:
+            from datetime import UTC
+
+            since = datetime.now(UTC).date().isoformat()
+            prs = await asyncio.to_thread(prs_opened_since, token, since)
+        except Exception:
+            logger.debug("shipped-today lookup failed for %s", agent.id, exc_info=True)
+            prs = None
+        self._shipped_today[agent.id] = (now, prs)
+
+    @staticmethod
+    def _sent_emails_today(agent: Agent) -> list[str]:
+        """One line per email this agent sent today, from its own outbox."""
+        from datetime import UTC
+
+        sent_dir = Path(agent.directory) / "outbox" / "email" / "sent"
+        if not sent_dir.is_dir():
+            return []
+        today = datetime.now(UTC).date()
+        rows: list[tuple[float, str]] = []
+        for p in sent_dir.iterdir():
+            if p.suffix != ".json":
+                continue
+            try:
+                mtime = p.stat().st_mtime
+                if datetime.fromtimestamp(mtime, UTC).date() != today:
+                    continue
+                e = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(e, dict):
+                continue
+            when = datetime.fromtimestamp(mtime, UTC).strftime("%H:%M")
+            rows.append((mtime, f'- {when} email to {e.get("to", "?")} — "{e.get("subject", "")}"'))
+        return [line for _, line in sorted(rows)][-20:]
+
+    def _shipped_today_context(self, agent: Agent) -> str:
+        """What this agent has already put into the world today — sent mail
+        and opened PRs — so a later task session builds on it instead of
+        shipping it again.
+
+        2026-11-05: the CTO opened the same CI fix four times in an hour
+        (innovology.io #229/#230, cortiva #122/#123) — two plan tasks named
+        the same deliverable and each session started cold.
+        """
+        emails = self._sent_emails_today(agent)
+        _, prs = self._shipped_today.get(agent.id, (0.0, None))
+        if not emails and not prs:
+            return ""
+        lines = ["## Already in the world today — do not send or open these again\n"]
+        lines.extend(emails)
+        for p in prs or []:
+            lines.append(
+                f"- PR {p.get('repo')}#{p.get('number')} ({p.get('state')}): "
+                f"{p.get('title')} — {p.get('url')}"
+            )
+        lines.append(
+            "\nIf a task asks for something listed here, it is already done: point "
+            "at it, build on it or close it — never make a second copy. Before "
+            "opening a PR or sending an email, check this list (and `gh pr list "
+            "--author @me` for anything newer). A tool call reported as cancelled "
+            "or errored may still have gone through — look before repeating it."
+        )
+        return "\n".join(lines)
 
     def _directive_references_context(self, agent: Agent) -> str:
         """The grounded references of every open directive, for task execution."""
@@ -7698,6 +7794,34 @@ class Fabric:
         proactive: bool = False,
     ) -> None:
         """Trigger a replan: EXECUTING -> REPLANNING, build new plan, -> EXECUTING.
+
+        A reassessment that fails (the model bounced, the request timed out)
+        must leave the agent EXECUTING so the next cycle reassesses again.
+        2026-11-05 23:32 Mini-2: the model server was relaunched mid-replan,
+        ``think`` raised, and all five working agents sat in REPLANNING for
+        half an hour — the rota's wakes no-op on an agent that isn't asleep,
+        and the cycle does nothing for an agent that is "already replanning".
+        The PLANNING trap (#116), one state later.
+        """
+        try:
+            await self._replan_inner(agent, messages, proactive=proactive)
+        except Exception:
+            if agent.state == AgentState.REPLANNING:
+                agent.transition(AgentState.EXECUTING)
+            logger.warning(
+                "Replan failed for %s — back to executing; reassessing next cycle",
+                agent.id,
+                exc_info=True,
+            )
+
+    async def _replan_inner(
+        self,
+        agent: Agent,
+        messages: list[Any],
+        *,
+        proactive: bool = False,
+    ) -> None:
+        """The reassessment itself — see ``_replan`` for the recovery contract.
 
         ``proactive=True`` is the empty-queue case: the agent has cleared its
         list and is looking for the next valuable thing to do, rather than
