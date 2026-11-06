@@ -8,6 +8,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from cortiva.core import commitments as cm
 from cortiva.core import expectations as ex
 from cortiva.core.fabric import Fabric
