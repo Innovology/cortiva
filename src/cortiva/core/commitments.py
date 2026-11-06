@@ -111,6 +111,8 @@ class Commitment:
     artifact: str = ""  # optional proof link (URL / doc id / commit)
     claimed_delivered_at: str = ""  # agent SAID delivered but no artifact found yet
     verification: str = ""  # last reality-test result (evidence, or why unproven)
+    artifact_check: str = ""  # what the artifact resolved to (or why it was rejected)
+    done_means: str = ""  # the agent's own, checkable definition of done for THIS promise
     escalated_at: str = ""  # set once we've escalated it (idempotent)
     original_due: str = ""  # the FIRST deadline committed to (kept across reschedules)
     reschedule_count: int = 0
@@ -139,6 +141,8 @@ class Commitment:
             "artifact": self.artifact,
             "claimed_delivered_at": self.claimed_delivered_at,
             "verification": self.verification,
+            "artifact_check": self.artifact_check,
+            "done_means": self.done_means,
             "escalated_at": self.escalated_at,
             "original_due": self.original_due,
             "reschedule_count": self.reschedule_count,
@@ -161,6 +165,8 @@ class Commitment:
             blocked_on=str(d.get("blocked_on") or ""),
             blocked_to=str(d.get("blocked_to") or ""),
             blocked_at=str(d.get("blocked_at") or ""),
+            artifact_check=str(d.get("artifact_check") or ""),
+            done_means=str(d.get("done_means") or ""),
             claimed_blocked_at=str(d.get("claimed_blocked_at") or ""),
             rejected_by=str(d.get("rejected_by") or ""),
             rejected_at=str(d.get("rejected_at") or ""),
@@ -661,8 +667,14 @@ def register(
     effort_hours: Any = 1.0,
     subtasks: list[str] | None = None,
     now: datetime | None = None,
+    done_means: str = "",
 ) -> Commitment:
     """Create + persist a new commitment.
+
+    ``done_means`` is the agent's own, checkable definition of done for this
+    promise — the gate it must pass for their role ("PR merged into main",
+    "live at <url>", "brief in his inbox"). It is what the evidence is tested
+    against; "I said I did it" is never it.
 
     Dedup is on (to, what) for any OPEN commitment, REGARDLESS of due — the org
     chart got registered 11× because the model re-stated the same promise with
@@ -688,6 +700,8 @@ def register(
                 if not c.original_due:
                     c.original_due = c.due_at
                 c.due_at = due_iso
+            if done_means and not c.done_means:
+                c.done_means = str(done_means).strip()
             save(agent_dir, commitments)
             return c
     c = Commitment(
@@ -695,6 +709,7 @@ def register(
         to=str(to or "").strip(),
         what=str(what or "").strip(),
         due_at=due_iso,
+        done_means=str(done_means or "").strip(),
         effort_hours=_safe_float(effort_hours, 1.0),
         subtasks=[{"desc": str(s), "done": False} for s in (subtasks or [])],
         created_at=now_dt.isoformat(),
@@ -852,3 +867,33 @@ def _resolve(
         return None
     # No id given → the most pressing open commitment (highest U).
     return max(opens, key=lambda c: required_utilisation(c, now))
+
+
+def record_artifact_check(
+    agent_dir: Path,
+    commitment_id: str,
+    *,
+    ok: bool,
+    detail: str,
+    now: datetime | None = None,
+) -> Commitment | None:
+    """Write the resolved artifact verdict onto a commitment. A failed check
+    reopens a 'delivered' commitment as claimed-but-unproven — the same state
+    as a claim with no artifact at all — so it is owed again and the manager
+    sees why. A passing check keeps it delivered with the evidence recorded."""
+    items = load(agent_dir)
+    for c in items:
+        if c.id != commitment_id:
+            continue
+        c.artifact_check = detail
+        if ok:
+            c.verification = f"artifact checked: {detail}"
+        else:
+            c.verification = f"artifact rejected: {detail}"
+            if c.status == "delivered":
+                c.status = "open"
+                c.delivered_at = ""
+                c.claimed_delivered_at = _now(now).isoformat()
+        save(agent_dir, items)
+        return c
+    return None

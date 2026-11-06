@@ -261,6 +261,17 @@ REGISTER_COMMITMENT_TOOL: dict[str, Any] = {
                         "end-of-day) or datetime (YYYY-MM-DDTHH:MM)."
                     ),
                 },
+                "done_means": {
+                    "type": "string",
+                    "description": (
+                        "What 'done' means for THIS promise, in terms someone "
+                        "else can check — the gate it must pass for your role. "
+                        "An engineer: 'PR merged into main'. A lead: 'live at "
+                        "<url> and the founder can use it'. A reply: 'in their "
+                        "inbox'. 'Done' is never 'I said I did it' — the evidence "
+                        "will be tested against exactly this."
+                    ),
+                },
                 "effort_hours": {
                     "type": "number",
                     "description": "Your honest estimate of the total work, in hours.",

@@ -346,6 +346,8 @@ class Fabric:
         self._familiarity_signals: dict[str, list[dict[str, Any]]] = {}
         # Per agent: (monotonic refresh time, PRs opened today or None if unknown).
         self._shipped_today: dict[str, tuple[float, list[dict[str, Any]] | None]] = {}
+        # Per agent: (monotonic refresh time, PRs merged in the last 7 days or None).
+        self._merged_week: dict[str, tuple[float, int | None]] = {}
         self._emotional_states: dict[str, Any] = {}
         # Event listeners for portal/WebSocket integration
         self._event_listeners: list[Any] = []
@@ -893,6 +895,8 @@ class Fabric:
 
         # Directives from above / company missions go FIRST — top of mind,
         # above her own plan (the salience she doesn't choose to feel).
+        await self._ground_inbox(agent)
+        await self._refresh_team_truth(agent)
         await self._ground_directives(agent)
         directive_ctx = self._directive_salience_context(agent)
         if directive_ctx:
@@ -901,9 +905,15 @@ class Fabric:
         # For a manager, ensuring the TEAM delivers sits right below the asks
         # from above — the downward mirror, ABOVE her own promises, so stewarding
         # the org isn't buried under her personal deadlines or upward reporting.
+        truth_ctx = self._team_truth_context(agent)
+        if truth_ctx:
+            context = context + "\n\n---\n\n" + truth_ctx
         reports_ctx = self._reports_commitment_context(agent)
         if reports_ctx:
             context = context + "\n\n---\n\n" + reports_ctx
+        unverified_ctx = self._unverified_context(agent)
+        if unverified_ctx:
+            context = context + "\n\n---\n\n" + unverified_ctx
 
         # The org head's periodic consultation with the owner — pull the
         # leadership's strategy/roadmap material, put it in front of the
@@ -4761,6 +4771,361 @@ class Fabric:
         )
         return "\n".join(lines)
 
+    # ------------------------------------------------------------------
+    # Challenge the source. Every claim that reaches an agent is either
+    # grounded by the framework (read with the agent's own access) or lands
+    # in her unverified register; "delivered" is tested against the agent's
+    # own definition of done; managers see what the systems say moved, not
+    # what reports say. 2026-11-06, after 46 sprints of green status and
+    # nothing live: "face value of information is generally weak".
+    # ------------------------------------------------------------------
+    _INBOX_REF_RECHECK_S = 3600.0
+    _UNVERIFIED_TTL_DAYS = 7.0
+    _MERGED_WEEK_TTL_S = 3600.0
+
+    def _schedule_artifact_check(self, agent: Agent, c: Any) -> None:
+        """Resolve a 'delivered' artifact off the event loop; no loop → skip."""
+        from cortiva.core.grounding import extract_github_refs
+
+        if not extract_github_refs(str(getattr(c, "artifact", "") or "")):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._verify_artifact(agent, c.id, c.artifact, c.created_at))
+
+    async def _verify_artifact(
+        self, agent: Agent, commitment_id: str, artifact: str, promised_at: str
+    ) -> dict[str, Any]:
+        """Test a delivered artifact against GitHub with the claimant's own
+        token and write the verdict onto the commitment. A failed check
+        reopens the claim as unproven, with the reason the manager will see."""
+        from cortiva.core import commitments as _cm
+        from cortiva.core.grounding import agent_github_token, check_artifact
+
+        token = agent_github_token(Path(agent.directory))
+        try:
+            result = await asyncio.to_thread(check_artifact, token, artifact, promised_at)
+        except Exception:
+            logger.debug("artifact check failed for %s", agent.id, exc_info=True)
+            return {"ok": None, "reason": "check failed"}
+        if result.get("ok") is None:
+            return result
+        ok = bool(result["ok"])
+        detail = f"{artifact} — {result.get('reason', '')}"
+        _cm.record_artifact_check(agent.directory, commitment_id, ok=ok, detail=detail)
+        if ok:
+            logger.info("Agent %s artifact checked: %s", agent.id, detail)
+        else:
+            logger.warning(
+                "Agent %s claimed delivery with an artifact that does not hold — "
+                "reopened as unproven: %s",
+                agent.id,
+                detail,
+            )
+            self._emit("commitment.artifact_rejected", agent_id=agent.id, detail=detail)
+        return result
+
+    def _inbox_refs_path(self, agent: Agent) -> Path:
+        return Path(agent.directory) / "inbox_refs.json"
+
+    def _load_inbox_refs(self, agent: Agent) -> dict[str, dict]:
+        try:
+            data = json.loads(self._inbox_refs_path(agent).read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (ValueError, OSError):
+            return {}
+
+    async def _ground_inbox(self, agent: Agent) -> None:
+        """Read, with the agent's own access, everything her unread mail
+        points at on GitHub, so each message renders with the real state of
+        the thing it talks about (see _render_inbox_refs). Unreadable links
+        go into her unverified register. Bounded: 8 reads per pass."""
+        import time as _time
+
+        from cortiva.core.grounding import (
+            agent_github_token,
+            extract_github_refs,
+            read_github_ref,
+        )
+
+        inbox = Path(agent.directory) / "inbox"
+        if not inbox.is_dir():
+            return
+        wanted: dict[str, dict] = {}
+        sources: dict[str, dict] = {}
+        for p in sorted(inbox.glob("*.json")):
+            try:
+                m = json.loads(p.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                continue
+            if not isinstance(m, dict):
+                continue
+            for r in extract_github_refs(f"{m.get('subject', '')} {m.get('text', '')}")[:5]:
+                wanted.setdefault(r["url"], r)
+                sources.setdefault(r["url"], m)
+        if not wanted:
+            return
+        cache = self._load_inbox_refs(agent)
+        now = _time.time()
+        todo = []
+        for url, r in wanted.items():
+            cur = cache.get(url)
+            if cur is None or cur.get("status") != "read":
+                todo.append(r)  # unread, or unreadable last time — access may have changed
+            elif (
+                cur.get("state") == "open"
+                and now - float(cur.get("checked_at") or 0) > self._INBOX_REF_RECHECK_S
+            ):
+                todo.append(r)
+        if not todo:
+            return
+        token = agent_github_token(Path(agent.directory))
+        for r in todo[:8]:
+            try:
+                resolved = await asyncio.to_thread(read_github_ref, r, token)
+            except Exception:
+                logger.debug("inbox grounding failed for %s", r.get("url"), exc_info=True)
+                continue
+            prev = cache.get(r["url"]) or {}
+            if resolved.get("status") != "read" and prev.get("status") == "read":
+                continue  # a blip must not void what was read
+            resolved["checked_at"] = now
+            cache[r["url"]] = resolved
+            src = sources.get(r["url"], {})
+            if resolved.get("status") == "read":
+                self._unverified_resolve(agent, r["url"])
+            else:
+                self._unverified_add(
+                    agent,
+                    claim=f"{src.get('subject', '')} ({r['url']})",
+                    source=str(src.get("from", "")),
+                    reason=str(resolved.get("reason", "could not read it")),
+                )
+        try:
+            self._inbox_refs_path(agent).write_text(json.dumps(cache, indent=2), encoding="utf-8")
+        except OSError:
+            logger.debug("could not persist inbox refs", exc_info=True)
+
+    def _render_inbox_refs(self, agent: Agent, m: dict) -> list[str]:
+        """The real state of what a message points at, one line per link."""
+        from cortiva.core.grounding import extract_github_refs
+
+        refs = extract_github_refs(f"{m.get('subject', '')} {m.get('text', '')}")[:5]
+        if not refs:
+            return []
+        cache = self._load_inbox_refs(agent)
+        out: list[str] = []
+        for r in refs:
+            cur = cache.get(r["url"])
+            tag = f"{r['repo']}#{r['number']}"
+            if not cur:
+                out.append(f"  ❔ {tag} — not checked yet")
+            elif cur.get("status") == "read":
+                state = "merged" if cur.get("merged") else cur.get("state", "")
+                by = f", by {cur['author']}" if cur.get("author") else ""
+                out.append(
+                    f"  📎 {tag} ({cur.get('kind', 'issue')}, {state}{by}): "
+                    f"{str(cur.get('title', ''))[:120]}"
+                )
+            else:
+                out.append(f"  ⛔ {tag} — you could NOT read this ({cur.get('reason', '')})")
+        return out
+
+    def _unverified_path(self, agent: Agent) -> Path:
+        return Path(agent.directory) / "unverified.json"
+
+    def _load_unverified(self, agent: Agent) -> list[dict]:
+        try:
+            data = json.loads(self._unverified_path(agent).read_text(encoding="utf-8"))
+            return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
+        except (ValueError, OSError):
+            return []
+
+    def _save_unverified(self, agent: Agent, items: list[dict]) -> None:
+        try:
+            self._unverified_path(agent).write_text(json.dumps(items, indent=2), encoding="utf-8")
+        except OSError:
+            logger.debug("could not persist unverified register", exc_info=True)
+
+    def _unverified_add(self, agent: Agent, *, claim: str, source: str, reason: str) -> None:
+        """A claim reached this agent that the framework could not check.
+        Idempotent by (claim, source)."""
+        from datetime import UTC, datetime
+
+        items = self._load_unverified(agent)
+        stamp = datetime.now(UTC).isoformat()
+        for d in items:
+            if d.get("claim") == claim and d.get("source") == source:
+                d["reason"] = reason
+                d["last_seen"] = stamp
+                self._save_unverified(agent, items)
+                return
+        items.append(
+            {
+                "claim": claim,
+                "source": source,
+                "reason": reason,
+                "first_seen": stamp,
+                "last_seen": stamp,
+            }
+        )
+        self._save_unverified(agent, items)
+
+    def _unverified_resolve(self, agent: Agent, needle: str) -> None:
+        items = self._load_unverified(agent)
+        kept = [d for d in items if needle not in str(d.get("claim", ""))]
+        if len(kept) != len(items):
+            self._save_unverified(agent, kept)
+
+    def _unverified_context(self, agent: Agent) -> str:
+        """The verification drive: what reached this agent that she could not
+        check, and what to do about it — including building the instrument."""
+        from datetime import UTC, datetime
+
+        items = self._load_unverified(agent)
+        now = datetime.now(UTC)
+        live: list[dict] = []
+        for d in items:
+            try:
+                seen = datetime.fromisoformat(str(d.get("last_seen") or d.get("first_seen")))
+            except (ValueError, TypeError):
+                seen = now
+            if (now - seen).total_seconds() <= self._UNVERIFIED_TTL_DAYS * 86400:
+                live.append(d)
+        if len(live) != len(items):
+            self._save_unverified(agent, live)
+        if not live:
+            return ""
+        lines = [
+            "## 🔍 Claims you could not verify",
+            "",
+            "You don't take information at face value — a statement is not a fact "
+            "until you have seen the thing it describes. Each of these reached "
+            "you as a claim you had no way to check:",
+            "",
+        ]
+        for d in live[:8]:
+            lines.append(
+                f"- **{d.get('source') or 'unknown source'}**: {d.get('claim', '')} — "
+                f"{d.get('reason', '')}"
+            )
+        lines.append("")
+        lines.append(
+            "For each: verify it another way, or ask the source for the evidence "
+            "— the artifact, the URL, the merged PR, the thing itself — and do not "
+            "plan, delegate or report on it until you have. If you keep lacking "
+            "the instrument to check this kind of claim, **build it** and give it "
+            "to the team: a check script, a live view, a status page. A claim "
+            "drops off this list when its link reads; the rest age out after 7 "
+            "days, which is not the same as being true."
+        )
+        return "\n".join(lines)
+
+    def _active_reports(self, agent: Agent) -> list[str]:
+        if self.org is None:
+            return []
+        try:
+            inactive = self._inactive_agent_ids()
+        except Exception:
+            inactive = set()
+        return [r for r in self.org.subordinates_of(agent.id) if r not in inactive][:8]
+
+    async def _refresh_team_truth(self, agent: Agent) -> None:
+        """Refresh, from GitHub with each report's own token, what each
+        report has opened today and merged this week. Bounded and cached."""
+        import time as _time
+        from datetime import UTC, datetime, timedelta
+
+        from cortiva.core.grounding import agent_github_token, prs_merged_since
+
+        for rid in self._active_reports(agent):
+            try:
+                ra = self.get_agent(rid)
+            except Exception:
+                continue
+            await self._refresh_shipped_today(ra)
+            now = _time.monotonic()
+            last, _ = self._merged_week.get(rid, (0.0, None))
+            if last and now - last < self._MERGED_WEEK_TTL_S:
+                continue
+            token = agent_github_token(Path(ra.directory))
+            since = (datetime.now(UTC) - timedelta(days=7)).date().isoformat()
+            try:
+                merged = await asyncio.to_thread(prs_merged_since, token, since)
+            except Exception:
+                merged = None
+            self._merged_week[rid] = (now, merged)
+
+    def _team_truth_context(self, agent: Agent) -> str:
+        """What the systems say actually moved for each report — the board a
+        manager reads before any status report. Honest-empty: a report with
+        no GitHub access shows 'unknown', never zero."""
+        from datetime import UTC, datetime
+
+        from cortiva.core import commitments as _cm
+
+        reports = self._active_reports(agent)
+        if not reports:
+            return ""
+        now = datetime.now(UTC)
+        lines = [
+            "## 📊 What actually moved — your team, from the systems themselves",
+            "",
+            "Opened/merged are read from GitHub with each report's own access; "
+            "emails from their outbox; promises from their ledger. A status a "
+            "report gives you that does not show up here is a claim — ask for "
+            "the artifact before you believe it, and never pass it upward as fact.",
+            "",
+        ]
+        for rid in reports:
+            try:
+                ra = self.get_agent(rid)
+            except Exception:
+                continue
+            _, prs = self._shipped_today.get(rid, (0.0, None))
+            if prs is None:
+                opened = "PRs today: unknown (no GitHub access)"
+            else:
+                names = ", ".join(f"{p.get('repo', '')}#{p.get('number')}" for p in prs[:4])
+                opened = f"PRs opened today: {len(prs)}" + (f" ({names})" if names else "")
+            _, merged_week = self._merged_week.get(rid, (0.0, None))
+            week = (
+                "merged last 7 days: unknown"
+                if merged_week is None
+                else f"merged last 7 days: {merged_week}"
+            )
+            emails = len(self._sent_emails_today(ra))
+            try:
+                items = _cm.load(ra.directory)
+            except Exception:
+                items = []
+            open_n = sum(1 for c in items if c.status == "open" and not c.claimed_delivered_at)
+            unproven = [c for c in items if c.status == "open" and c.claimed_delivered_at]
+            delivered_week = []
+            for c in items:
+                if c.status != "delivered" or not c.delivered_at:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(c.delivered_at)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=UTC)
+                    if (now - dt).days <= 7:
+                        delivered_week.append(c)
+                except (ValueError, TypeError):
+                    continue
+            checked = sum(1 for c in delivered_week if c.artifact_check)
+            lines.append(
+                f"- **{rid}** — {opened} · {week} · emails sent today: {emails} · "
+                f"promises: {open_n} open, {len(unproven)} said-done-but-unproven, "
+                f"{len(delivered_week)} delivered this week ({checked} with a checked artifact)"
+            )
+            for c in unproven[:2]:
+                why = c.artifact_check or c.verification or "no artifact"
+                lines.append(f'  ⚠️ unproven: "{c.what[:80]}" — {why}')
+        return "\n".join(lines)
+
     def _directive_references_context(self, agent: Agent) -> str:
         """The grounded references of every open directive, for task execution."""
         opens = [d for d in self._open_directives(agent) if d.get("references")]
@@ -4904,6 +5269,7 @@ class Fabric:
                 due=payload.get("due"),
                 effort_hours=payload.get("effort_hours", 1.0),
                 subtasks=list(payload.get("subtasks") or []),
+                done_means=str(payload.get("done_means") or ""),
             )
             logger.info(
                 "Agent %s registered commitment to %s due %s (~%.1fh): %s",
@@ -4955,6 +5321,7 @@ class Fabric:
                     to=c.to,
                     verification=c.verification,
                 )
+                self._schedule_artifact_check(agent, c)
             elif c.status == "blocked":
                 # The honest ask landed: pressure comes off, and the gap is
                 # now the manager's to resolve (it surfaces in their
@@ -5876,13 +6243,16 @@ class Fabric:
                         continue
                     claimed_rows.append(
                         f'- **{rid}** — "{c.what}" to {c.to}: claims DELIVERED '
-                        f"(receipt: {c.verification or 'none recorded'}; "
+                        f"(done means: {c.done_means or 'NOT STATED — ask'}; "
+                        f"receipt: {c.verification or 'none recorded'}; "
                         f"id `{c.id[:8]}`)"
                     )
                 elif c.status == "open" and c.claimed_delivered_at:
                     claimed_rows.append(
-                        f'- **{rid}** — "{c.what}" to {c.to}: SAID done but no '
-                        f"artifact exists — challenge this (id `{c.id[:8]}`)"
+                        f'- **{rid}** — "{c.what}" to {c.to}: SAID done but it is '
+                        f"NOT proven ({c.artifact_check or 'no artifact exists'}; "
+                        f"done means: {c.done_means or 'not stated'}) — challenge "
+                        f"this (id `{c.id[:8]}`)"
                     )
                 elif c.status == "blocked":
                     age = _cm.blocked_age_days(c, now)
@@ -6357,6 +6727,7 @@ class Fabric:
                     + (f" — _{who}_" if who else "")
                     + f" — {m.get('subject', '')}  \n  {snippet}"
                 )
+                lines.extend(self._render_inbox_refs(agent, m))
             lines.append("")
         # GitHub feedback is rendered durably by `_github_feedback_context`
         # (persisted above), not inline — so it survives this read-once pass.
@@ -6370,6 +6741,17 @@ class Fabric:
             for m in normal[:10]:
                 snippet = (m.get("text") or "").strip().replace("\n", " ")[:200]
                 lines.append(f"- **{m.get('from', '')}** — {m.get('subject', '')}  \n  {snippet}")
+                lines.extend(self._render_inbox_refs(agent, m))
+        if any(ln.lstrip().startswith(("📎", "⛔")) for ln in lines):
+            lines.append("")
+            lines.append(
+                "Where a message points at something checkable, its REAL state is "
+                "shown beneath it (📎 read with your own access; ⛔ you could not "
+                "read it). **Believe the real state over the message.** If they "
+                "disagree — the issue is about something else, the PR is not "
+                "merged, the thing is someone else's — say so to the sender and "
+                "act on the real state, whoever the message came from."
+            )
         return "\n".join(lines)
 
     def _record_github_feedback(self, agent: Agent, github_msgs: list[dict]) -> None:
@@ -7871,6 +8253,8 @@ class Fabric:
             context = context + "\n\n---\n\n" + orders_ctx
 
         # Open directives stay top-of-mind on every reassess, not just at wake.
+        await self._ground_inbox(agent)
+        await self._refresh_team_truth(agent)
         await self._ground_directives(agent)
         directive_ctx = self._directive_salience_context(agent)
         if directive_ctx:
@@ -7888,9 +8272,15 @@ class Fabric:
         # Ensuring the team delivers stays top-of-mind on reassess too, right
         # below the asks from above and above her own promises (same order as
         # wake) — the team's delivery heat shifts cycle to cycle.
+        truth_ctx = self._team_truth_context(agent)
+        if truth_ctx:
+            context = context + "\n\n---\n\n" + truth_ctx
         reports_ctx = self._reports_commitment_context(agent)
         if reports_ctx:
             context = context + "\n\n---\n\n" + reports_ctx
+        unverified_ctx = self._unverified_context(agent)
+        if unverified_ctx:
+            context = context + "\n\n---\n\n" + unverified_ctx
 
         # A due founder brief keeps confronting the org head on reassess too —
         # it self-resolves only when the brief is actually sent.
@@ -7947,8 +8337,12 @@ class Fabric:
                     "already cleared.\n\n"
                     "If — after genuinely looking — there is truly nothing worth "
                     "doing right now, output an empty list and say so plainly; it's "
-                    "fine to rest rather than invent busywork. Output ONLY the "
-                    "checklist."
+                    "fine to rest rather than invent busywork.\n\n"
+                    "One kind of work is always worth doing: an instrument you "
+                    "lack. If claims keep reaching you that you cannot check "
+                    "(your unverified register above), build the checker — a "
+                    "script, a live view, a status page — and give it to the "
+                    "team. Output ONLY the checklist."
                 )
             else:
                 prompt = (
