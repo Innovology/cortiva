@@ -95,12 +95,16 @@ def read_github_ref(ref: dict[str, Any], token: str, timeout: float = 8.0) -> di
         out.update(status="unreadable", reason=f"could not reach GitHub ({type(e).__name__})")
         return out
     body = str(data.get("body") or "").strip()
+    pr = data.get("pull_request") or {}
     out.update(
         status="read",
         title=str(data.get("title") or ""),
         state=str(data.get("state") or ""),
         excerpt=body[:EXCERPT_CHARS],
         kind="pull request" if data.get("pull_request") else "issue",
+        author=str((data.get("user") or {}).get("login") or ""),
+        created_at=str(data.get("created_at") or ""),
+        merged=bool(pr.get("merged_at")) if isinstance(pr, dict) else False,
     )
     return out
 
@@ -153,3 +157,65 @@ def prs_opened_since(token: str, since: str, timeout: float = 8.0) -> list[dict[
             }
         )
     return out
+
+
+def github_login(token: str, timeout: float = 8.0) -> str:
+    """The login the token belongs to; '' when it cannot be known."""
+    if not token:
+        return ""
+    try:
+        return str(_github_get("https://api.github.com/user", token, timeout).get("login") or "")
+    except Exception:
+        return ""
+
+
+def prs_merged_since(token: str, since: str, timeout: float = 8.0) -> int | None:
+    """How many pull requests the token's own user has had MERGED on or after
+    ``since`` (YYYY-MM-DD). ``None`` when it cannot be known. This is output,
+    not activity: opened PRs are a claim, merged ones landed."""
+    import urllib.parse
+
+    login = github_login(token, timeout)
+    if not login:
+        return None
+    try:
+        q = urllib.parse.quote(f"author:{login} type:pr is:merged merged:>={since}")
+        data = _github_get(f"https://api.github.com/search/issues?q={q}&per_page=1", token, timeout)
+    except Exception:
+        return None
+    try:
+        return int(data.get("total_count") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def check_artifact(
+    token: str, url: str, promised_at: str = "", timeout: float = 8.0
+) -> dict[str, Any]:
+    """Test a 'delivered' artifact against GitHub. Returns ``{"ok": bool,
+    "reason": str, ...ref fields}``. Only GitHub issue/PR URLs are checkable
+    here; anything else returns ``ok=None`` (unknown), never a verdict.
+
+    A claim fails when the link does not resolve with the claimant's own
+    token, when the thing is not theirs, or when it predates the promise
+    (2026-11-05: "Land PR #48" — innovology.io#48 was a July dependabot
+    bump) — the three ways a real-looking locator has been a false receipt.
+    """
+    refs = extract_github_refs(url or "")
+    if not refs:
+        return {"ok": None, "reason": "not a GitHub issue/PR link — not checkable here"}
+    ref = read_github_ref(refs[0], token, timeout=timeout)
+    if ref.get("status") != "read":
+        return {"ok": False, "reason": f"could not read it ({ref.get('reason')})", **ref}
+    login = github_login(token, timeout)
+    if login and ref.get("author") and ref["author"].lower() != login.lower():
+        return {"ok": False, "reason": f"authored by {ref['author']}, not you", **ref}
+    created, promised = str(ref.get("created_at") or ""), str(promised_at or "")
+    if created and promised and created[:19] < promised[:19]:
+        return {
+            "ok": False,
+            "reason": f"created {created[:10]}, before this was promised ({promised[:10]})",
+            **ref,
+        }
+    verdict = "merged" if ref.get("merged") else ref.get("state", "")
+    return {"ok": True, "reason": f"{ref.get('kind')} {verdict}, by {ref.get('author')}", **ref}

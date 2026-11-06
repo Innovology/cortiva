@@ -533,7 +533,7 @@ def test_stewardship_surfaces_unverified_done_claims(tmp_path) -> None:
     c = cm.register(astrid, to="maren@x", what="W30 diagnostic", due="2026-08-10")
     cm.update(astrid, commitment_id=c.id, delivered=True, require_evidence=True)  # stays open
     out = _mgr_fab({"astrid": astrid})._reports_commitment_context(_ceo(tmp_path))
-    assert "SAID done but no" in out and "challenge this" in out
+    assert "SAID done but it is" in out and "NOT proven" in out and "challenge" in out
 
 
 def test_stewardship_surfaces_team_asks_waiting(tmp_path) -> None:
