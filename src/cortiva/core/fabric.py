@@ -3956,6 +3956,16 @@ class Fabric:
             logger.warning(f"Terminal agent unavailable for {agent.id}, falling back")
             return None
 
+        # A task whose last session used no tools needs no hands: it is the
+        # local model's, not another session's.
+        if (agent.id, _task_key(task.description)) in self._no_hands_keys():
+            logger.info(
+                "Agent %s: '%s' needs no hands — consciousness executes it",
+                agent.id,
+                task.description[:50],
+            )
+            return None
+
         # Agent-as-driver: run hands-on work as a DETACHED, steerable claude
         # session off the heartbeat (capped at 2/agent), reaped at a later cycle.
         # Falls through to the synchronous one-shot path below when disabled
@@ -4335,6 +4345,14 @@ class Fabric:
         except Exception:
             return ""
 
+    def _no_hands_keys(self) -> set[tuple[str, str]]:
+        """(agent id, task key) pairs whose last dev session used no tools."""
+        keys = getattr(self, "_no_hands", None)
+        if keys is None:
+            keys = set()
+            self._no_hands = keys
+        return keys
+
     async def _reap_dev_sessions(self, agent: Agent) -> None:
         """Apply finished detached sessions to the agent's own queue — done at
         the start of its cycle, single-threaded, so no concurrent state races."""
@@ -4343,6 +4361,23 @@ class Fabric:
         for r in self.dev_sessions.drain_completed(agent.id):
             task = next((t for t in agent.task_queue.tasks if t.id == r.task_id), None)
             if task is None:
+                continue
+            if r.ok and r.tools_used <= 0:
+                # Claude answered in prose and touched nothing — no file, no
+                # command, no GitHub call. That is not a delivery: 41 of the
+                # 280 sessions reaped on 2026-11-06 ended this way (24 the
+                # CEO's: 'Route CI status request to CTO', 'Delegate to CTO')
+                # and each was marked done and remembered as done. A task that
+                # needs no hands is the local model's; it goes back to pending
+                # and the next attempt does not get a session.
+                task.status = "pending"
+                task.outcome = ""
+                self._no_hands_keys().add((agent.id, _task_key(task.description)))
+                logger.warning(
+                    "Agent %s dev session used no tools — not done, back to the local model: %s",
+                    agent.id,
+                    task.description[:50],
+                )
                 continue
             if r.ok:
                 task.status = "done"
