@@ -209,3 +209,15 @@ def test_a_multi_word_phrase_matches_when_all_its_content_words_appear(tmp_path:
     assert fx.match(st, "Triage 11 open GitHub feedback threads: delegate merge/sweep") is not None
     assert fx.match(st, "Sweep the office") is None  # one word of three is not a match
     assert fx.match(st, "Write the board paper") is None
+
+
+def test_a_task_that_names_a_multi_word_station_matches_it(tmp_path: Path) -> None:
+    """yuki, 2026-11-07 00:34: '**Run github-feedback-sweep**: Process 23 open
+    threads' went to an 11-tool Claude session. Naming the station is the
+    match; a single-word name ('founder') is not."""
+    _station(tmp_path, "github-feedback-sweep", OK_BODY, matches=["nothing in particular"])
+    _station(tmp_path, "founder", OK_BODY, matches=["steer live dashboard"])
+    st = fx.stations(tmp_path, ready_only=True)
+    hit = fx.match(st, "**Run github-feedback-sweep**: Process 23 open threads")
+    assert hit is not None and hit.name == "github-feedback-sweep"
+    assert fx.match(st, "Email the founder about the office move") is None

@@ -72,6 +72,13 @@ class Station:
         text = (description or "").strip()
         low = text.lower()
         words = set(re.findall(r"[a-z0-9]+", low))
+        # Named outright: "Run github-feedback-sweep: process 23 open threads"
+        # (yuki, 2026-11-07 00:34 — it went to an 11-tool Claude session on a
+        # node whose floor only had the ordered phrases). A multi-word slug
+        # only; a single word like "founder" is not a name match.
+        name = str(getattr(self, "name", "") or "").strip().lower()
+        if "-" in name and name in low:
+            return True
         for pat in self.matches:
             p = str(pat or "").strip()
             if not p:
