@@ -1233,6 +1233,41 @@ class Fabric:
             parts.append("rejected — " + "; ".join(lost[:3]))
         return ". ".join(parts)
 
+    def _world_verdicts_context(self, agent: Agent) -> str:
+        """What the node judged in the last day, for the hands doing the work.
+        The session is where the ledger gets written by hand — on 2026-11-07
+        the CTO's sessions set ``accepted_by`` to her own login three times
+        (01:02, 10:54, 11:55) and never saw the three rejections that
+        followed, because the session brief carried none of them. The
+        rejections, with their reasons, and the rule they come from."""
+        line = self._outcomes_today_line(agent)
+        try:
+            raw = json.loads((agent.directory / "outcomes.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = []
+        cutoff = time.time() - 86400
+        reasons: list[str] = []
+        for e in raw if isinstance(raw, list) else []:
+            if not isinstance(e, dict) or float(e.get("at") or 0) < cutoff:
+                continue
+            if "rejected" in str(e.get("kind") or "") and e.get("detail"):
+                reasons.append(f"- {str(e.get('title') or '')[:60]}: {str(e.get('detail'))[:160]}")
+        if not line and not reasons:
+            return ""
+        out = ["## What the world has judged (last 24h, written by the node — not by you)"]
+        if line:
+            out.append(line)
+        if reasons:
+            out.append("Rejected, and why:")
+            out.extend(reasons[:4])
+        out.append(
+            "A delivery is accepted by your leader through the fabric, never by you: "
+            "writing accepted_by, accepted_at or status=delivered into commitments.json "
+            "by hand is a claim the node rejects and pays negative. Evidence is what "
+            "the node can see — a merged PR, a URL that answers, a stamped send."
+        )
+        return "\n".join(out)
+
     def _write_session_journal(
         self,
         agent: Agent,
@@ -4167,6 +4202,9 @@ class Fabric:
         floor = self._factory_context(agent)
         if floor:
             prompt += "\n\n" + floor
+        verdicts = self._world_verdicts_context(agent)
+        if verdicts:
+            prompt += "\n\n" + verdicts
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
         envelope = self.isolation.prepare_terminal_env(agent_id=agent.id, cmd=[], cwd=cwd)
