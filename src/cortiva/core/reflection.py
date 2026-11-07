@@ -135,6 +135,11 @@ class ReflectionSuffix:
     ~45 minutes so the agent can keep working past its normal wind-down. The
     payload is empty (``{}``); repeatable. The caffeine masks tiredness, it
     doesn't relieve it — sleep pressure keeps accruing underneath."""
+    build_station: dict[str, Any] | None = None
+    """Scaffold a station on the agent's factory floor and queue its build:
+    ``{"name": "<slug>", "purpose": "...", "matches": ["substring", "/regex/"],
+    "brief": "what run.py must do"}``. The code is written as hands-on work;
+    the station takes matching work once its manifest says ready."""
     refocus_agent: dict[str, Any] | None = None
     """Re-task another agent — the org's lever to actually MOVE work, not just
     ask people to try harder: ``{"agent_id": "<who>", "focus": "<the new

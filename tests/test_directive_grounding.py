@@ -343,3 +343,47 @@ async def test_execution_context_carries_the_grounded_references(
 
     fabric2, agent2 = _fabric_with_directive(tmp_path / "none")
     assert fabric2._directive_references_context(agent2) != ""  # pending refs still listed
+
+
+@pytest.mark.asyncio
+async def test_a_reference_she_cannot_read_is_read_with_a_reports_access(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """2026-11-06 18:42: the CEO, with no GitHub credentials, emailed the founder
+    to paste issue #228; the founder: 'ask Samantha and find some way to
+    believe her'. The way to believe her is GitHub read through her access —
+    the source stays the system, and the agent is told whose access it was."""
+    fabric, agent = _fabric_with_directive(tmp_path)
+    cto = fabric.register_agent("cto")
+    (cto.directory / "credentials.json").write_text('{"GH_TOKEN": "cto-token"}')
+
+    class _Org:
+        def subordinates_of(self, aid):
+            return ["cto"] if aid == "ceo" else []
+
+        def manager_of(self, aid):
+            return "ceo" if aid == "cto" else None
+
+    fabric.org = _Org()
+
+    def _read(ref, token, timeout=8.0):
+        if token == "cto-token":
+            return {
+                **ref,
+                "status": "read",
+                "title": "Homeschool retirement",
+                "state": "open",
+                "kind": "issue",
+                "excerpt": "Retire the homeschool product.",
+            }
+        return {**ref, "status": "unreadable", "reason": "this agent has no GitHub credentials"}
+
+    monkeypatch.setattr(grounding, "read_github_ref", _read)
+    await fabric._ground_directives(agent)
+    saved = json.loads((agent.directory / "directives.json").read_text())
+    ref = saved[0]["references"][0]
+    assert ref["status"] == "read" and ref["read_via"] == "cto"
+    assert "reason" not in ref  # the failed own-token attempt's reason does not ride along
+    block = fabric._directive_salience_context(agent)
+    assert "Homeschool retirement" in block
+    assert "read with cto's access" in block

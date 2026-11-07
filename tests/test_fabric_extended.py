@@ -1016,10 +1016,12 @@ class _CountingConsciousness:
         self.calls = 0
         self.plan_body = plan_body
         self.last_prompt = ""
+        self.last_context = ""
 
     async def think(self, agent_id, context, prompt, **kwargs):
         self.calls += 1
         self.last_prompt = prompt
+        self.last_context = context
         return ConsciousResponse(
             content=self.plan_body,
             tokens_in=10,
@@ -1127,9 +1129,11 @@ class TestIdleProactiveReassess:
         await fabric.cycle("idle-5")
         assert any("lead form" in t.description for t in agent.task_queue.tasks)
         assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S
-        # The idle ask is the light one: it asked about promises and the world,
-        # not for a plan of the day.
-        assert "resting is honest" in cons.last_prompt
+        # With nothing to bring forward the idle look goes straight to the
+        # creative rung — one ask about contributing or streamlining, never a
+        # plan of the day.
+        assert "gets creative" in cons.last_prompt
+        assert "resting is then honest" in cons.last_prompt
 
     @pytest.mark.asyncio
     async def test_proactive_reassess_can_pull_in_work(self, tmp_path):
@@ -1736,3 +1740,220 @@ class TestCycleAdmission:
         fabric, cons = self._rig(tmp_path, concurrency=0)
         await fabric.heartbeat()
         assert sorted(cons.served) == ["a1", "a2", "a3"]
+
+
+class TestIdleLadder:
+    """When the list is done, a person first brings forward what is not bound
+    to its day; only if nothing moves do they get creative. Each rung is one
+    small ask; the first rung is skipped without an ask when there is nothing
+    to bring."""
+
+    def _weekly(self, agent, items: list[str]) -> None:
+        from cortiva.core.planner import Planner
+
+        Planner(agent.directory).save_weekly("\n".join(items))
+
+    @pytest.mark.asyncio
+    async def test_bring_forward_is_the_first_rung_and_resets_the_cadence(self, tmp_path):
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-7")
+        self._weekly(
+            agent,
+            ["- [x] done thing", "- [ ] Tidy the decision log (admin)", "- [ ] Friday review"],
+        )
+        # Rung 1 asks about the week's open items; the model brings one forward.
+        cons.plan_body = "- [ ] Tidy the decision log (admin)\n"
+        await fabric.cycle("idle-7")
+        assert cons.calls == 1 and "Bring forward ONE item" in cons.last_prompt
+        assert "Tidy the decision log" in cons.last_context and "Friday review" in cons.last_context
+        assert any("decision log" in t.description for t in agent.task_queue.tasks)
+        assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S  # found work: no back-off
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_bring_forward_falls_to_the_creative_rung(self, tmp_path):
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-8")
+        self._weekly(agent, ["- [ ] Friday review"])
+        prompts: list[str] = []
+        orig = cons.think
+
+        async def _think(agent_id, context, prompt, **kw):
+            prompts.append(prompt)
+            return await orig(agent_id, context, prompt, **kw)
+
+        cons.think = _think
+        await fabric.cycle("idle-8")
+        # Rung 1 (bring forward) came back unchanged → rung 2 (get creative) was asked.
+        assert len(prompts) == 2
+        assert "Bring forward ONE item" in prompts[0] and "gets creative" in prompts[1]
+        assert "build_station" in prompts[1]
+        assert (
+            agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S * 2
+        )  # both empty: back off
+
+    def test_later_this_week_lists_open_week_items_and_promises_not_yet_due(self, tmp_path):
+        from cortiva.core import commitments as cm
+
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-9")
+        assert fabric._later_this_week_context(agent) == ""
+        self._weekly(agent, ["- [ ] Draft the Q1 narrative", "- [x] Already done"])
+        cm.register(agent.directory, to="maren@x", what="Send the hiring plan", due="2099-01-09")
+        cm.register(agent.directory, to="maren@x", what="Overdue thing", due="2020-01-01")
+        ctx = fabric._later_this_week_context(agent)
+        assert "- [ ] Draft the Q1 narrative" in ctx and "Already done" not in ctx
+        assert "due 2099-01-09: Send the hiring plan" in ctx and "Overdue thing" not in ctx
+
+
+class TestDoneLedger:
+    """What an agent completed, by day: filters the week's plan of what is
+    already done, and shows the recurring steps that are the case for a
+    station — data, not a nudge."""
+
+    def _rig(self, tmp_path):
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "led-1")
+        return fabric, agent
+
+    def test_recurring_steps_are_counted_by_stem_and_stations_are_excluded(self, tmp_path):
+        from cortiva.core.agent import Task
+
+        fabric, agent = self._rig(tmp_path)
+        for i in range(3):
+            fabric._record_done(
+                agent,
+                Task(
+                    id=f"t{i}",
+                    description=f"Triage {11 + i} open GitHub feedback threads: delegate merge/sweep",
+                    outcome="done",
+                ),
+            )
+        fabric._record_done(
+            agent, Task(id="w", description="Write the W45 board paper", outcome="done")
+        )
+        fabric._record_done(
+            agent,
+            Task(id="s", description="Send the weekly digest", outcome="[station digest] sent"),
+        )
+        fabric._record_done(
+            agent,
+            Task(id="s2", description="Send the weekly digest", outcome="[station digest] sent"),
+        )
+        ctx = fabric._recurring_steps_context(agent)
+        assert "3× — e.g." in ctx and "open GitHub feedback threads" in ctx
+        assert "board paper" not in ctx  # once is not a pattern
+        assert "weekly digest" not in ctx  # already on the floor
+        assert "build_station" in ctx
+
+    def test_weekly_items_already_done_are_not_offered_to_bring_forward(self, tmp_path):
+        from cortiva.core.agent import Task
+        from cortiva.core.planner import Planner
+
+        fabric, agent = self._rig(tmp_path)
+        Planner(agent.directory).save_weekly(
+            "- [ ] **[HIGH]** Validate PR triage delegation outcomes (#202/#206) against issued AC\n"
+            "- [ ] Execute W25–W39 velocity tracking review\n"
+        )
+        fabric._record_done(
+            agent,
+            Task(
+                id="t",
+                description="Validate PR triage delegation outcomes (#202/#206/#208) against issued AC, reconcile",
+                outcome="done",
+            ),
+        )
+        ctx = fabric._later_this_week_context(agent)
+        assert "velocity tracking review" in ctx
+        assert "Validate PR triage" not in ctx  # done today; the weekly plan just never heard
+
+    @pytest.mark.asyncio
+    async def test_a_completed_task_lands_in_the_ledger(self, tmp_path):
+        import json
+
+        fabric, agent = self._rig(tmp_path)
+        d = agent.directory / "factory" / "ok"
+        d.mkdir(parents=True)
+        (d / "run.py").write_text(
+            'import json,sys; json.load(sys.stdin); print(json.dumps({"ok": True, "summary": "ran"}))\n'
+        )
+        import sys
+
+        import yaml
+
+        (d / "station.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "ok",
+                    "purpose": "p",
+                    "matches": ["sweep"],
+                    "run": [sys.executable, "run.py"],
+                    "ready": True,
+                }
+            )
+        )
+        from cortiva.core.agent import Task, TaskQueue
+
+        agent.task_queue = TaskQueue(tasks=[Task(id="t1", description="Run the daily sweep")])
+        await fabric.cycle("led-1")
+        rows = [json.loads(ln) for ln in (agent.directory / "done.jsonl").read_text().splitlines()]
+        assert (
+            rows
+            and rows[-1]["stem"] == "run daily sweep"
+            and rows[-1]["outcome"].startswith("[station ok]")
+        )
+
+    def test_items_a_standing_order_would_strike_are_not_offered(self, tmp_path):
+        import json
+
+        from cortiva.core.planner import Planner
+
+        fabric, agent = self._rig(tmp_path)
+        (fabric.agents_dir / ".standing_orders.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "order_id": "o1",
+                        "text": "Stop building red tape.",
+                        "kind": "prohibition",
+                        "scope": {"type": "topic", "value": "pr template|playbook|decision record"},
+                        "issued_by": {"name": "Alex Browne", "role": "founder"},
+                        "issued_at": "2026-11-06T18:40:00+00:00",
+                        "status": "active",
+                    }
+                ]
+            )
+        )
+        Planner(agent.directory).save_weekly(
+            "- [ ] Roll out PR template to all repos\n"
+            "- [ ] Publish the incident playbook\n"
+            "- [ ] Fix the lead form 500 on innovology.io\n"
+        )
+        ctx = fabric._later_this_week_context(agent)
+        assert "lead form 500" in ctx
+        assert "PR template" not in ctx and "playbook" not in ctx
+        Planner(agent.directory).save_weekly("- [ ] Roll out PR template to all repos\n")
+        assert fabric._later_this_week_context(agent) == ""  # nothing offerable → no ask
+
+    @pytest.mark.asyncio
+    async def test_an_idle_rung_keeps_one_new_item_and_strikes_the_rest(self, tmp_path):
+        """The rung asks for exactly one item; a paragraph of status lines in
+        reply (amara 21:58) is cut to the first, the rest struck as not asked for."""
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-10")
+        cons.plan_body = (
+            "- [ ] Fix the lead form 500 on innovology.io\n"
+            "- [ ] Agent messages dispatched to yuki and andre with explicit instructions\n"
+            "- [ ] Commitments tracked in ledger; will mark delivered upon merge\n"
+        )
+        await fabric.cycle("idle-10")
+        tasks = agent.task_queue.tasks
+        pending = [t for t in tasks if t.status == "pending"]
+        struck = [t for t in tasks if t.status == "skipped"]
+        assert [t.description for t in pending] == ["Fix the lead form 500 on innovology.io"]
+        assert len(struck) == 2 and all("one item was asked for" in t.description for t in struck)
+        assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S  # one real item found

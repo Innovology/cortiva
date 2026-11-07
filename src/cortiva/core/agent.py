@@ -96,9 +96,19 @@ def _task_key(description: str) -> str:
     markdown stripped, first 80 characters."""
     import re as _re
 
-    d = _re.sub(r"\*\(struck:.*?\)\*", "", description or "")
+    d = _STATUS_MARKERS_RE.sub("", description or "")
     d = _re.sub(r"[^a-z0-9 ]+", " ", d.lower())
     return " ".join(d.split())[:80]
+
+
+# Markers the fabric appends to a plan line: a strike with its reason, and the
+# rendered status. They are not part of the task's identity, and a line that
+# carries one is settled. Without this a struck line the model echoed back
+# read as a new pending task and was struck again on every pass — amara's
+# directory card for Jessica carried six markers by 23:56 on 2026-11-06.
+_STATUS_MARKERS_RE = re.compile(
+    r"\s*\*\((?:struck:.*?|skipped|acknowledged — not done|exception:.*?)\)\*"
+)
 
 
 def _parse_plan(plan_text: str) -> TaskQueue:
@@ -152,11 +162,18 @@ def _parse_plan(plan_text: str) -> TaskQueue:
         if not description:
             continue
 
+        # A line already struck or skipped by the fabric stays that way when
+        # the model echoes it back; the strike reason stays on the line, the
+        # bare rendered status marker does not.
+        struck = "*(struck:" in description
+        skipped = bool(re.search(r"\*\(skipped\)\*\s*$", description))
+        if skipped:
+            description = re.sub(r"(?:\s*\*\(skipped\)\*)+\s*$", "", description).strip()
         task_id += 1
         task = Task(
             id=f"task-{task_id}",
             description=description,
-            status="done" if done else "pending",
+            status="done" if done else ("skipped" if (struck or skipped) else "pending"),
             priority=priority,
         )
         # Indented bullets attach as subtasks of the last top-level task — so

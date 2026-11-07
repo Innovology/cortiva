@@ -447,6 +447,39 @@ ACCEPT_DELIVERY_TOOL: dict[str, Any] = {
     },
 }
 
+BUILD_STATION_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "build_station",
+        "description": (
+            "Put a recurring step on your factory floor. A station is code you "
+            "write once (run.py in factory/<name>/) that the fabric then runs for "
+            "every matching task without asking you — your job becomes watching "
+            "its runs and failures. Use it for anything you find yourself doing "
+            "by hand again and again: digests, sweeps, checks, reports, routine "
+            "replies. This scaffolds the station and queues the build as "
+            "hands-on work for you."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Short slug, e.g. weekly-digest."},
+                "purpose": {"type": "string", "description": "One sentence: what it does."},
+                "matches": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Task phrases (substrings, or /regex/) this station takes.",
+                },
+                "brief": {
+                    "type": "string",
+                    "description": "What run.py must do, inputs, where the result goes.",
+                },
+            },
+            "required": ["name", "purpose", "matches", "brief"],
+        },
+    },
+}
+
 REFOCUS_AGENT_TOOL = {
     "type": "function",
     "function": {
@@ -577,6 +610,7 @@ _TOOL_TO_SUFFIX_FIELD = {
     "refocus_agent": "refocus_agent",
     "reject_delivery": "reject_delivery",
     "accept_delivery": "accept_delivery",
+    "build_station": "build_station",
     "issue_standing_order": "issue_standing_order",
     "lift_standing_order": "lift_standing_order",
 }
@@ -618,6 +652,7 @@ def tools_for_agent(
         # management chain, so offering it broadly is safe.
         REJECT_DELIVERY_TOOL,
         ACCEPT_DELIVERY_TOOL,
+        BUILD_STATION_TOOL,
     ]
     if agent_id in scheduling_authorised:
         tools.append(OPTIMIZE_SCHEDULE_TOOL)

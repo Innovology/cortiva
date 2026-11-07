@@ -62,6 +62,16 @@ def _scope_pattern(order: dict[str, Any]) -> re.Pattern[str] | None:
     value = str(scope.get("value") or "").strip().lower()
     if stype == "org" or not value:
         return None
+    if stype == "topic":
+        # A list of phrases, "|"-separated: the order covers any task or
+        # promise that names one of them. "Stop building red tape" scoped
+        # to "pr template|playbook|protocol|decision record|…" (founder,
+        # 2026-11-06) — the class of work, not a product.
+        phrases = [p.strip() for p in value.split("|") if p.strip()]
+        if not phrases:
+            return None
+        alt = "|".join(re.escape(p).replace(r"\ ", r"[\s_-]+") for p in phrases)
+        return re.compile(rf"\b(?:{alt})\b", re.IGNORECASE)
     if stype == "repo" and "/" in value:
         # "owner/name" — match the full path OR the bare repo name.
         name = value.rsplit("/", 1)[1]
@@ -105,7 +115,14 @@ def context_block(orders: list[dict[str, Any]]) -> str:
         scope = o.get("scope") or {}
         stype = str(scope.get("type") or "org")
         value = str(scope.get("value") or "")
-        scope_txt = "the whole org" if stype == "org" else f"{stype}: {value}"
+        if stype == "org":
+            scope_txt = "the whole org"
+        elif stype == "topic":
+            scope_txt = "any work that is " + ", ".join(
+                p.strip() for p in value.split("|") if p.strip()
+            )
+        else:
+            scope_txt = f"{stype}: {value}"
         by = (o.get("issued_by") or {}).get("name") or "leadership"
         when = str(o.get("issued_at") or "")[:10]
         lines.append(f"- **[{scope_txt}]** {o.get('text', '')} _(issued by {by}, {when})_")

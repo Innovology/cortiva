@@ -28,8 +28,9 @@ from cortiva.adapters.protocols import (
     RoutineAdapter,
     TerminalAgentAdapter,
 )
+from cortiva.core import factory as _factory
 from cortiva.core import model_meter as _mm
-from cortiva.core.agent import Agent, AgentState, Task
+from cortiva.core.agent import Agent, AgentState, Task, TaskQueue, _task_key
 from cortiva.core.approval import ApprovalQueue
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
@@ -843,8 +844,13 @@ class Fabric:
             )
             if self.budget_manager:
                 self.budget_manager.reset_agent(agent_id)
-            agent.transition(AgentState.EXECUTING)  # _replan_light moves through REPLANNING
-            await self._replan(agent, messages, proactive=False)
+            agent.transition(AgentState.EXECUTING)
+            # The adjustment is a model ask. A wake runs inside the heartbeat,
+            # so awaiting it here froze every agent on the node behind one
+            # queued request (Mini-2, 15:18–15:26 2026-11-06: yuki's wake-time
+            # adjustment sat behind orphaned requests for 480 s and nothing
+            # cycled). The first admitted cycle does it, under the cycle guard.
+            agent._adjust_pending = list(messages or [])
             self._emit("agent.wake", agent_id=agent_id, state=agent.state.value, adjusted=True)
             await self.plugin_manager.dispatch_wake(agent_id, agent)
             return agent
@@ -875,6 +881,7 @@ class Fabric:
                 goals_context=self._goals_context(agent_id),
             )
             monthly_ctx = identity_preamble + "\n\n---\n\n" + monthly_ctx
+            monthly_ctx += self._horizon_planning_context(agent)
             await self._conscious_plan(
                 agent,
                 identity,
@@ -895,6 +902,7 @@ class Fabric:
                 delegation_context=delegation_text,
             )
             weekly_ctx = identity_preamble + "\n\n---\n\n" + weekly_ctx
+            weekly_ctx += self._horizon_planning_context(agent)
             await self._conscious_plan(
                 agent,
                 identity,
@@ -971,6 +979,9 @@ class Fabric:
         meter_ctx = self._model_meter_context(agent)
         if meter_ctx:
             context = context + "\n\n---\n\n" + meter_ctx
+        floor_ctx = self._factory_context(agent)
+        if floor_ctx:
+            context = context + "\n\n---\n\n" + floor_ctx
 
         # The org head's periodic consultation with the owner — pull the
         # leadership's strategy/roadmap material, put it in front of the
@@ -1085,7 +1096,11 @@ class Fabric:
             call_type="plan",
             on_success=lambda text: agent.set_plan(text),
         )
+        self._strike_non_tasks(agent)
         self._strike_tasks_for_inactive(agent)
+        self._strike_phantom_refs(agent)
+        self._strike_under_standing_orders(agent)
+        self._scaffold_stations_from_plan(agent)
         self._last_plan_ts[agent_id] = time.time()
         logger.info(f"Agent {agent_id} has planned their day")
 
@@ -1504,6 +1519,17 @@ class Fabric:
         messages: list[Any] = []
         if self.channel:
             messages = await self.channel.receive(agent_id)
+
+        # A wake with new input deferred its adjustment to here: the one
+        # model ask it needs, admitted like any cycle and bounded by the
+        # cycle guard, never inside the heartbeat.
+        pending = getattr(agent, "_adjust_pending", None)
+        if pending is not None:
+            agent._adjust_pending = None
+            await self._replan(agent, list(pending) + list(messages or []))
+            result["action"] = "adjusted"
+            result["conscious_call"] = True
+            return result
 
         # Check replan triggers
         if await self._should_replan(agent, messages):
@@ -1985,6 +2011,12 @@ class Fabric:
         # What she has already put into the world today, refreshed before
         # either execution path builds its prompt.
         await self._refresh_shipped_today(agent)
+        # The factory floor first: work that matches a ready station the agent
+        # wrote goes through its code — no model ask. A failure is an exception
+        # on her pile, not a reason to think the task through by hand.
+        if not _is_sched_action and await self._run_through_station(agent, task):
+            return
+
         if self.terminal and not _is_sched_action and self._is_terminal_task(task.description):
             terminal_result = await self._execute_via_terminal(agent, task)
             if terminal_result is not None:
@@ -2031,6 +2063,7 @@ class Fabric:
                 task.status = "done"
                 task.outcome = routine_assessment.get("result", "Completed procedurally")
                 agent.tasks_completed_today += 1
+                self._record_done(agent, task)
                 return
             # "defer" and "escalate" (and procedural-but-deliverable) all fall
             # through to consciousness — the work gets done, never dropped.
@@ -2095,6 +2128,9 @@ class Fabric:
         meter_ctx = self._model_meter_context(agent)
         if meter_ctx:
             context = context + "\n\n---\n\n" + meter_ctx
+        floor_ctx = self._factory_context(agent)
+        if floor_ctx:
+            context = context + "\n\n---\n\n" + floor_ctx
 
         # Plugin-contributed per-task context (e.g. Myelin: inhibition
         # checks, outcome forecasts, emotional conditioning, matched
@@ -2242,6 +2278,7 @@ class Fabric:
         else:
             task.status = "done"
             agent.tasks_completed_today += 1
+            self._record_done(agent, task)
 
         # Store as memory
         await self.memory.store(
@@ -3605,6 +3642,8 @@ class Fabric:
             self._handle_reject_delivery(agent, suffix.reject_delivery)
         if suffix.accept_delivery and isinstance(suffix.accept_delivery, dict):
             self._handle_accept_delivery(agent, suffix.accept_delivery)
+        if suffix.build_station and isinstance(suffix.build_station, dict):
+            self._handle_build_station(agent, suffix.build_station)
 
         # Re-task another agent — the org's executable lever for a priority
         # change. Authority-gated in the handler.
@@ -3917,6 +3956,16 @@ class Fabric:
             logger.warning(f"Terminal agent unavailable for {agent.id}, falling back")
             return None
 
+        # A task whose last session used no tools needs no hands: it is the
+        # local model's, not another session's.
+        if (agent.id, _task_key(task.description)) in self._no_hands_keys():
+            logger.info(
+                "Agent %s: '%s' needs no hands — consciousness executes it",
+                agent.id,
+                task.description[:50],
+            )
+            return None
+
         # Agent-as-driver: run hands-on work as a DETACHED, steerable claude
         # session off the heartbeat (capped at 2/agent), reaped at a later cycle.
         # Falls through to the synchronous one-shot path below when disabled
@@ -3940,6 +3989,9 @@ class Fabric:
         meter = self._model_meter_context(agent)
         if meter:
             prompt += "\n\n" + meter
+        floor = self._factory_context(agent)
+        if floor:
+            prompt += "\n\n" + floor
 
         # Use the agent's workspace directory as cwd
         cwd = agent.directory / "workspace"
@@ -4052,6 +4104,7 @@ class Fabric:
         task.status = "done"
         task.outcome = response.content[:500] if response.content else "Completed via terminal"
         agent.tasks_completed_today += 1
+        self._record_done(agent, task)
 
         # Store as memory
         await self.memory.store(
@@ -4111,6 +4164,9 @@ class Fabric:
         meter = self._model_meter_context(agent)
         if meter:
             prompt += "\n\n" + meter
+        floor = self._factory_context(agent)
+        if floor:
+            prompt += "\n\n" + floor
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
         envelope = self.isolation.prepare_terminal_env(agent_id=agent.id, cmd=[], cwd=cwd)
@@ -4289,6 +4345,14 @@ class Fabric:
         except Exception:
             return ""
 
+    def _no_hands_keys(self) -> set[tuple[str, str]]:
+        """(agent id, task key) pairs whose last dev session used no tools."""
+        keys = getattr(self, "_no_hands", None)
+        if keys is None:
+            keys = set()
+            self._no_hands = keys
+        return keys
+
     async def _reap_dev_sessions(self, agent: Agent) -> None:
         """Apply finished detached sessions to the agent's own queue — done at
         the start of its cycle, single-threaded, so no concurrent state races."""
@@ -4298,10 +4362,28 @@ class Fabric:
             task = next((t for t in agent.task_queue.tasks if t.id == r.task_id), None)
             if task is None:
                 continue
+            if r.ok and r.tools_used <= 0:
+                # Claude answered in prose and touched nothing — no file, no
+                # command, no GitHub call. That is not a delivery: 41 of the
+                # 280 sessions reaped on 2026-11-06 ended this way (24 the
+                # CEO's: 'Route CI status request to CTO', 'Delegate to CTO')
+                # and each was marked done and remembered as done. A task that
+                # needs no hands is the local model's; it goes back to pending
+                # and the next attempt does not get a session.
+                task.status = "pending"
+                task.outcome = ""
+                self._no_hands_keys().add((agent.id, _task_key(task.description)))
+                logger.warning(
+                    "Agent %s dev session used no tools — not done, back to the local model: %s",
+                    agent.id,
+                    task.description[:50],
+                )
+                continue
             if r.ok:
                 task.status = "done"
                 task.outcome = r.outcome or "Completed via dev session"
                 agent.tasks_completed_today += 1
+                self._record_done(agent, task)
                 note = f"Task: {task.description}. Outcome: {task.outcome[:200]}"
                 if r.critique and r.critique.upper() != "LGTM":
                     note += f" | Reviewer: {r.critique[:150]}"
@@ -4706,7 +4788,7 @@ class Fabric:
         import json
         from pathlib import Path
 
-        from cortiva.core.grounding import agent_github_token, read_github_ref
+        from cortiva.core.grounding import read_github_ref
 
         path = Path(agent.directory) / "directives.json"
         if not path.exists():
@@ -4748,12 +4830,25 @@ class Fabric:
                 except OSError:
                     pass
             return
-        token = agent_github_token(Path(agent.directory))
+        readers = self._reading_access(agent)
         for _d, ref in pending[:8]:
-            try:
-                resolved = await asyncio.to_thread(read_github_ref, ref, token)
-            except Exception:
-                logger.debug("grounding failed for %s", ref.get("url"), exc_info=True)
+            resolved: dict[str, Any] | None = None
+            for via, token in readers or [(agent.id, "")]:
+                try:
+                    attempt = await asyncio.to_thread(read_github_ref, ref, token)
+                except Exception:
+                    logger.debug("grounding failed for %s", ref.get("url"), exc_info=True)
+                    continue
+                if resolved is None or attempt.get("status") == "read":
+                    resolved = attempt
+                    if attempt.get("status") == "read":
+                        resolved.pop(
+                            "reason", None
+                        )  # an earlier failure's reason is not this read's
+                        if via != agent.id:
+                            resolved["read_via"] = via
+                        break
+            if resolved is None:
                 continue
             if ref.get("status") == "read" and resolved.get("status") != "read":
                 continue  # a blip on re-check must not void what was read
@@ -4786,6 +4881,8 @@ class Fabric:
                     f"({r.get('kind', 'issue')}, {r.get('state', '?')})  \n"
                     f"    {excerpt[:600] or '(no description)'}"
                 )
+                if r.get("read_via"):
+                    out[-1] += f"  \n    _(read with {r['read_via']}'s access — you have none)_"
             else:
                 out.append(
                     f"  ⛔ {url} — you could **NOT** read this "
@@ -4884,6 +4981,189 @@ class Fabric:
             return _mm.context_line(agent.directory)
         except Exception:
             return ""
+
+    # ------------------------------------------------------------------
+    # The factory floor. "Build and write the code for those steps and then
+    # process their work across that. The agent's job then becomes just
+    # monitoring the factory they have created, tuning it, expanding it."
+    # (founder, 2026-11-06). See core/factory.py for the station contract.
+    # ------------------------------------------------------------------
+
+    async def _run_through_station(self, agent: Agent, task: Task) -> bool:
+        """Route the task through a ready station when one matches. Returns
+        True when the floor took it (done or exception), False to fall
+        through to the agent's own hands or head."""
+        try:
+            station = _factory.match(
+                _factory.stations(agent.directory, ready_only=True), task.description
+            )
+        except Exception:
+            logger.debug("station lookup failed for %s", agent.id, exc_info=True)
+            return False
+        if station is None:
+            return False
+        run = await _factory.run_station(
+            station,
+            task_id=task.id,
+            description=task.description,
+            agent_id=agent.id,
+            env=self._station_env(agent),
+        )
+        _factory.record_run(agent.directory, run)
+        if run.ok:
+            task.status = "done"
+            task.outcome = f"[station {station.name}] {run.summary or 'ok'}"
+            if run.artifact:
+                task.outcome += f" — {run.artifact}"
+            agent.tasks_completed_today += 1
+            self._record_done(agent, task)
+            logger.info(
+                "Station %s ran for %s in %.1fs: %s",
+                station.name,
+                agent.id,
+                run.seconds,
+                (run.summary or "ok")[:80],
+            )
+            self._emit(
+                "station.ran",
+                agent_id=agent.id,
+                station=station.name,
+                task_id=task.id,
+                artifact=run.artifact,
+            )
+        else:
+            task.status = "exception"
+            task.error = f"[station {station.name}] {run.error}"
+            logger.warning("Station %s FAILED for %s: %s", station.name, agent.id, run.error[:120])
+            self._emit(
+                "station.failed",
+                agent_id=agent.id,
+                station=station.name,
+                task_id=task.id,
+                error=run.error[:200],
+            )
+        return True
+
+    def _station_env(self, agent: Agent) -> dict[str, str]:
+        """The environment a station runs in: the process env plus the
+        agent's delegated credentials — the same ones her terminal gets."""
+        env = dict(os.environ)
+        creds: dict[str, str] = {}
+        if self.credential_provider is not None:
+            try:
+                creds.update(self.credential_provider.get_env(agent.id))
+            except Exception:
+                logger.debug("credential provider failed for %s", agent.id, exc_info=True)
+        try:
+            creds.update(load_agent_credentials(agent.directory))
+        except Exception:
+            logger.debug("agent credentials unreadable for %s", agent.id, exc_info=True)
+        env.update({k: str(v) for k, v in creds.items() if v is not None})
+        env["CORTIVA_AGENT_DIR"] = str(agent.directory)
+        env["CORTIVA_AGENT_ID"] = agent.id
+        return env
+
+    def _factory_context(self, agent: Agent) -> str:
+        try:
+            return _factory.floor_report(agent.directory)
+        except Exception:
+            return ""
+
+    def _handle_build_station(self, agent: Agent, payload: dict) -> None:
+        """Scaffold a station and queue the build as hands-on work. The code
+        is written in a terminal task; the station takes work once its
+        manifest says ready."""
+        name = str(payload.get("name") or "").strip().lower()
+        purpose = str(payload.get("purpose") or "").strip()
+        brief = str(payload.get("brief") or payload.get("spec") or "").strip()
+        matches = payload.get("matches") or []
+        if isinstance(matches, str):
+            matches = [matches]
+        matches = [str(m).strip() for m in matches if str(m).strip()]
+        if not (name and purpose and brief and matches):
+            logger.info(
+                "build_station from %s ignored — name, purpose, matches and brief are required",
+                agent.id,
+            )
+            return
+        d = _factory.scaffold_station(
+            agent.directory, name=name, purpose=purpose, matches=matches, brief=brief
+        )
+        if d is None:
+            logger.info("build_station from %s: '%s' unusable or already exists", agent.id, name)
+            return
+        import uuid
+
+        if agent.task_queue is None:
+            agent.task_queue = TaskQueue(tasks=[])
+        agent.task_queue.tasks.append(
+            Task(
+                id=uuid.uuid4().hex[:12],
+                description=(
+                    f"Write and test the code for station '{name}' in factory/{name}/run.py "
+                    f"(read STATION.md there first). Purpose: {purpose}. It must read the task "
+                    "JSON on stdin and print {ok, summary, artifact} as the last stdout line. "
+                    "Prove it against one real task, then set ready: true in station.yaml."
+                ),
+                priority=1,
+            )
+        )
+        self._write_plan(agent)
+        logger.info("Agent %s is building station '%s': %s", agent.id, name, purpose[:80])
+        self._emit("station.scaffolded", agent_id=agent.id, station=name, purpose=purpose[:120])
+
+    def _reading_access(self, agent: Agent) -> list[tuple[str, str]]:
+        """Whose GitHub access can ground a reference for this agent: her own
+        token first, then her reports' (and theirs), in org order. 2026-11-06
+        18:42: the CEO, who has no GitHub credentials, emailed the founder to
+        paste issue #228; the founder: "ask Samantha and find some way to
+        believe her". The way to believe her is GitHub read through her
+        access — the source stays the system, not a colleague's account."""
+        from cortiva.core.grounding import agent_github_token
+
+        out: list[tuple[str, str]] = []
+        own = agent_github_token(Path(agent.directory))
+        if own:
+            out.append((agent.id, own))
+        if self.org is None:
+            return out
+        seen = {agent.id}
+        frontier = [agent.id]
+        while frontier and len(seen) < 16:
+            nxt: list[str] = []
+            for aid in frontier:
+                for rid in self.org.subordinates_of(aid):
+                    if rid in seen:
+                        continue
+                    seen.add(rid)
+                    nxt.append(rid)
+                    tok = agent_github_token(self.agents_dir / rid)
+                    if tok:
+                        out.append((rid, tok))
+            frontier = nxt
+        return out
+
+    def _horizon_planning_context(self, agent: Agent) -> str:
+        """What the monthly and weekly plans must be written against: the
+        standing orders (the daily plan already saw them; the W45 weekly
+        plans were written without the founder's red-tape order and were five
+        items of process each, 2026-11-06) and what pays — the only things
+        the world will count."""
+        parts: list[str] = []
+        orders = self._standing_orders_context(agent)
+        if orders:
+            parts.append(orders)
+        parts.append(
+            "## What counts\n\n"
+            "The company's scoreboard moves only on things the world can see: a "
+            "merged pull request someone else merged, a URL that answers, an issue "
+            "closed, a lead, a human's yes. Templates, playbooks, protocols, decision "
+            "records, dashboards about how we work and rules for yourself are not "
+            "deliverables — they do not score, and a standing order may forbid them. "
+            "Every milestone you write names the artefact the world will see when it "
+            "is done, or the person who will have said yes."
+        )
+        return "\n\n---\n\n" + "\n\n---\n\n".join(parts)
 
     def _shipped_today_context(self, agent: Agent) -> str:
         """What this agent has already put into the world today — sent mail
@@ -4988,7 +5268,6 @@ class Fabric:
         import time as _time
 
         from cortiva.core.grounding import (
-            agent_github_token,
             extract_github_refs,
             read_github_ref,
         )
@@ -5024,12 +5303,25 @@ class Fabric:
                 todo.append(r)
         if not todo:
             return
-        token = agent_github_token(Path(agent.directory))
+        readers = self._reading_access(agent) or [(agent.id, "")]
         for r in todo[:8]:
-            try:
-                resolved = await asyncio.to_thread(read_github_ref, r, token)
-            except Exception:
-                logger.debug("inbox grounding failed for %s", r.get("url"), exc_info=True)
+            resolved: dict[str, Any] | None = None
+            for via, token in readers:
+                try:
+                    attempt = await asyncio.to_thread(read_github_ref, r, token)
+                except Exception:
+                    logger.debug("inbox grounding failed for %s", r.get("url"), exc_info=True)
+                    continue
+                if resolved is None or attempt.get("status") == "read":
+                    resolved = attempt
+                    if attempt.get("status") == "read":
+                        resolved.pop(
+                            "reason", None
+                        )  # an earlier failure's reason is not this read's
+                        if via != agent.id:
+                            resolved["read_via"] = via
+                        break
+            if resolved is None:
                 continue
             prev = cache.get(r["url"]) or {}
             if resolved.get("status") != "read" and prev.get("status") == "read":
@@ -5072,6 +5364,8 @@ class Fabric:
                     f"  📎 {tag} ({cur.get('kind', 'issue')}, {state}{by}): "
                     f"{str(cur.get('title', ''))[:120]}"
                 )
+                if cur.get("read_via"):
+                    out[-1] += f" — read with {cur['read_via']}'s access (you have none)"
             else:
                 out.append(f"  ⛔ {tag} — you could NOT read this ({cur.get('reason', '')})")
         return out
@@ -5173,6 +5467,53 @@ class Fabric:
         r"instruct|hand (?:to|off to)|loop in)"
     )
 
+    _CARD_LINE_RE = re.compile(r"^\W*\*\*[a-z0-9][a-z0-9_-]*\*\*\s*\(", re.IGNORECASE)
+    _PLACEHOLDER_RE = re.compile(
+        r"\b(none (currently )?assigned|nothing (currently )?assigned|no tasks? assigned|n/a|tbd|placeholder)\b",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _already_struck(t: Any) -> bool:
+        """A line that already carries a strike marker stays struck: it is not
+        judged, marked or counted again. Belt to the parser's braces — the
+        model echoes struck lines back, and each pass used to append another
+        marker and log another strike (amara, 23:25/23:37/23:56 on 2026-11-06)."""
+        if "*(struck:" in (t.description or ""):
+            if t.status == "pending":
+                t.status = "skipped"
+            return True
+        return False
+
+    def _strike_non_tasks(self, agent: Agent) -> int:
+        """Strike checklist lines that are not tasks: a team-directory card the
+        model echoed from its context ('**ar-scheduler**  (AR Scheduler)',
+        amara 21:18), a placeholder ('[Manager Delegation] None currently
+        assigned', 16:06 — it bought a dev session). Deterministic; the
+        reason stays in the plan. Short lines are left alone: 'Reply to
+        Alex' is a task."""
+        if agent.task_queue is None:
+            return 0
+        struck = 0
+        for t in agent.task_queue.tasks:
+            if t.status != "pending" or self._already_struck(t):
+                continue
+            text = (t.description or "").strip()
+            reason = ""
+            if self._CARD_LINE_RE.match(text):
+                reason = "a directory entry, not a task"
+            elif self._PLACEHOLDER_RE.search(text):
+                reason = "a placeholder, not a task"
+            if not reason:
+                continue
+            t.status = "skipped"
+            t.description = f"{text} *(struck: {reason})*"
+            struck += 1
+        if struck:
+            self._write_plan(agent)
+            logger.info("Agent %s: %d planned line(s) struck — not tasks", agent.id, struck)
+        return struck
+
     def _strike_tasks_for_inactive(self, agent: Agent) -> int:
         """Strike, at plan time, any pending task aimed at a colleague who is
         not currently working — by first name, agent id or role title. The
@@ -5202,7 +5543,7 @@ class Fabric:
                 handles[role] = name
         struck = 0
         for t in agent.task_queue.tasks:
-            if t.status != "pending":
+            if t.status != "pending" or self._already_struck(t):
                 continue
             text = (t.description or "").lower()
             # Directed AT the person — a contact verb within a few words of
@@ -5245,6 +5586,257 @@ class Fabric:
                 struck,
             )
         return struck
+
+    # "Land PR #48": innovology.io#48 is a September dependabot bump. The
+    # artifact check catches the false receipt at delivery; the TASK itself
+    # survived in the plan and bought a dev session per cycle (2026-11-06
+    # 16:42). Challenge the source at plan time: a task that names a PR or
+    # issue is checked against GitHub with the agent's own token.
+    _TASK_REF_RE = re.compile(
+        r"(?:(?P<repo>[\w.-]+/[\w.-]+)#|(?:\bPR|\bpull request|\bissue|\bMR)\s*#?)(?P<num>\d{1,6})\b",
+        re.IGNORECASE,
+    )
+    _LANDING_VERBS = re.compile(
+        r"\b(land|merge|ship|close|rebase|finish|complete|deliver|get .{0,20}merged)\b",
+        re.IGNORECASE,
+    )
+    _REF_CACHE_TTL_S = 3600.0
+
+    def _strike_phantom_refs(self, agent: Agent) -> int:
+        """Strike, at plan time, a pending task that promises to land, merge
+        or close a PR/issue that is not hers (or does not exist in any repo
+        she can see). Bounded: one GitHub read per distinct reference per
+        hour. Returns how many tasks were struck."""
+        if agent.task_queue is None:
+            return 0
+        from cortiva.core.grounding import (
+            GITHUB_REF_RE,
+            _github_get,
+            agent_github_token,
+            github_login,
+            read_github_ref,
+        )
+
+        token = agent_github_token(agent.directory)
+        if not token:
+            return 0
+        login = github_login(token)
+        if not login:
+            return 0
+        cache: dict[str, tuple[float, dict[str, Any] | None]] = getattr(self, "_ref_cache", {})
+        self._ref_cache = cache
+        now = time.monotonic()
+
+        def _repos() -> list[str]:
+            key = f"repos:{agent.id}"
+            hit = cache.get(key)
+            if hit and now - hit[0] < self._REF_CACHE_TTL_S:
+                return list((hit[1] or {}).get("repos") or [])
+            names: list[str] = []
+            try:
+                data = _github_get(
+                    "https://api.github.com/user/repos?per_page=30&sort=pushed", token, 8.0
+                )
+                names = [str(r.get("full_name")) for r in data if r.get("full_name")][:8]
+            except Exception:
+                names = []
+            cache[key] = (now, {"repos": names})
+            return names
+
+        def _resolve(repo: str, num: str) -> dict[str, Any] | None:
+            key = f"{repo}#{num}"
+            hit = cache.get(key)
+            if hit and now - hit[0] < self._REF_CACHE_TTL_S:
+                return hit[1]
+            owner, name = repo.split("/", 1)
+            ref = read_github_ref({"owner": owner, "repo": name, "number": num}, token)
+            out = ref if ref.get("status") == "read" else None
+            cache[key] = (now, out)
+            return out
+
+        struck = 0
+        for t in agent.task_queue.tasks:
+            if t.status != "pending" or self._already_struck(t):
+                continue
+            text = t.description or ""
+            if not self._LANDING_VERBS.search(text):
+                continue
+            refs: list[tuple[str | None, str]] = []
+            for m in GITHUB_REF_RE.finditer(text):
+                refs.append((f"{m.group('owner')}/{m.group('repo')}", m.group("number")))
+            for m in self._TASK_REF_RE.finditer(text):
+                refs.append((m.group("repo"), m.group("num")))
+            if not refs:
+                continue
+            reason = ""
+            for repo, num in refs[:3]:
+                candidates = [repo] if repo else _repos()
+                hers = None
+                foreign: list[dict[str, Any]] = []
+                for r in candidates:
+                    found = _resolve(r, num)
+                    if not found:
+                        continue
+                    author = str(found.get("author") or "")
+                    if not author or author.lower() == login.lower():
+                        hers = {**found, "repo": r}
+                        break  # a bare number is hers in some repo — that is the one
+                    foreign.append({**found, "repo": r})
+                if hers is not None:
+                    continue
+                if repo and foreign:
+                    f = foreign[0]
+                    reason = (
+                        f"{f['repo']}#{num} is {f['author']}'s "
+                        f"'{str(f.get('title') or '')[:50]}', not yours"
+                    )
+                elif foreign:
+                    others = ", ".join(f"{f['repo']}#{num} is {f['author']}'s" for f in foreign[:2])
+                    reason = f"no PR/issue #{num} of yours in any repo you can see ({others})"
+                else:
+                    where = repo or "any repo you can see"
+                    reason = f"no PR/issue #{num} in {where}"
+                break
+            if not reason:
+                continue
+            t.status = "skipped"
+            t.description = f"{t.description} *(struck: {reason})*"
+            struck += 1
+        if struck:
+            self._write_plan(agent)
+            logger.info(
+                "Agent %s: %d planned task(s) struck — they name PRs/issues that are not hers",
+                agent.id,
+                struck,
+            )
+        return struck
+
+    def _strike_under_standing_orders(self, agent: Agent) -> int:
+        """Strike, at plan time, any pending task a standing order covers —
+        product, repo or topic scoped. The order was already in her context;
+        a plan that still carries the work is corrected, not merely warned.
+        2026-11-06: the founder had told the CTO directly to stop building
+        red tape; the ladder brought a PR-template rollout forward because
+        nothing the framework reads held that instruction."""
+        if agent.task_queue is None:
+            return 0
+        try:
+            from cortiva.core import standing_orders as _so
+
+            orders = _so.load(self.agents_dir)
+        except Exception:
+            return 0
+        if not orders:
+            return 0
+        struck = 0
+        for t in agent.task_queue.tasks:
+            if t.status != "pending" or self._already_struck(t):
+                continue
+            order = _so.matching_order(orders, t.description or "")
+            if order is None:
+                continue
+            by = (order.get("issued_by") or {}).get("name") or "leadership"
+            t.status = "skipped"
+            t.description = (
+                f"{t.description} *(struck: standing order from {by} — "
+                f'"{str(order.get("text") or "")[:90]}")*'
+            )
+            struck += 1
+        if struck:
+            self._write_plan(agent)
+            logger.info(
+                "Agent %s: %d planned task(s) struck — covered by a standing order",
+                agent.id,
+                struck,
+            )
+        return struck
+
+    _BUILD_LINE_RE = re.compile(
+        r"^\W*build[_ ]station\W+(?P<name>[A-Za-z0-9_-]{2,40})\W*(?P<rest>.*)$", re.IGNORECASE
+    )
+    # Tokens a plan line puts first that are never a station's name.
+    _NOT_A_STATION_NAME = frozenset(
+        {
+            "re",
+            "fwd",
+            "fw",
+            "blocked",
+            "high",
+            "critical",
+            "urgent",
+            "task",
+            "todo",
+            "new",
+            "the",
+            "and",
+            "for",
+        }
+    )
+
+    def _scaffold_stations_from_plan(self, agent: Agent) -> int:
+        """A plan line written as ``build_station: <name> — <purpose>`` is the
+        verb, not a task to think about: scaffold the station and queue its
+        build. 2026-11-06 18:31: Yuki's creative rung produced exactly that
+        line and nothing happened, because the contract was a tool call."""
+        if agent.task_queue is None:
+            return 0
+        made = 0
+        for t in list(agent.task_queue.tasks):
+            # A line that was mid-session when the fabric restarted comes back
+            # in_progress (21:05: Maren's 'build_station:' line relaunched as a
+            # second session); it is settled the same way as a pending one.
+            if t.status not in ("pending", "in_progress"):
+                continue
+            m = self._BUILD_LINE_RE.match((t.description or "").strip())
+            if not m:
+                continue
+            name = m.group("name").lower().replace("_", "-")
+            rest = m.group("rest") or ""
+            # A first token that is a prefix or a tag is not a name: 'build_station:
+            # Re: [Blocked] CI Gate Routing — …' became station 're' (ceo, 10:00
+            # on 2026-11-07). It yields to a slug of the purpose's content words.
+            if name in self._NOT_A_STATION_NAME or len(name) < 3 or name.isdigit():
+                words = [
+                    w
+                    for w in re.findall(r"[a-z0-9]+", rest.lower())
+                    if len(w) >= 2 and w not in self._NOT_A_STATION_NAME
+                ][:3]
+                if not words:
+                    continue
+                name = "-".join(words)
+            purpose = re.sub(r"^[\s:—–-]+", "", rest).strip() or name
+            if (_factory.factory_dir(agent.directory) / name).is_dir():
+                # Already on the floor (scaffolded on an earlier pass, or built):
+                # the line is done, not a station to scaffold again. Maren's
+                # 'build_station: Founder Steer…' line came back pending every
+                # pass after the first (20:54).
+                t.status = "done"
+                t.outcome = f"station '{name}' is already on the floor"
+                made += 0
+                continue
+            # Match phrases: the purpose's stem, and the name only when it is a
+            # multi-word slug. A single generic word as a match ("founder",
+            # from Maren's 'build_station: Founder Steer: …' at 20:42) would
+            # route every task that mentions it through the station once ready.
+            matches: list[str] = []
+            stem = self._stem(purpose)
+            if stem:
+                matches.append(" ".join(stem.split()[:3]))
+            if "-" in name:
+                matches.append(name.replace("-", " "))
+            if not matches:
+                matches = [purpose[:40]]
+            before = len(agent.task_queue.tasks)
+            self._handle_build_station(
+                agent, {"name": name, "purpose": purpose, "matches": matches, "brief": purpose}
+            )
+            if len(agent.task_queue.tasks) > before:
+                t.status = "done"
+                t.outcome = f"station '{name}' scaffolded — build queued"
+                made += 1
+        if made:
+            self._write_plan(agent)
+        return made
 
     _HELD_MAIL_WINDOW_S = 24 * 3600
 
@@ -5423,25 +6015,19 @@ class Fabric:
     _IDLE_BACKOFF_MAX_S = 3600.0
 
     async def _replan_light(self, agent: Agent, messages: list[Any], *, idle: bool = False) -> None:
+        """One small ask against what Myelin already holds. Not idle: adjust
+        the standing checklist for what arrived. Idle (the list is clear): the
+        ladder a person climbs when their day's list is done — first bring
+        forward anything not bound to its day, then, if nothing moves, get
+        creative: contribute to the goal or streamline the future (build a
+        station). Back-off only when both rungs come back empty."""
         identity = agent.read_all_identity()
-        parts: list[str] = []
+        base: list[str] = []
         resp = str(identity.get("responsibilities", "")).strip()
         if resp:
-            parts.append("## Your Responsibilities\n" + resp[:1500])
+            base.append("## Your Responsibilities\n" + resp[:1500])
         plan = agent.read_identity("plan").strip()
-        parts.append("## Your current checklist\n" + (plan or "(empty)"))
-        if idle:
-            # The clear list is the signal: what stands open that the world
-            # would notice if it moved? Promises first, then what it has
-            # already confirmed today — so the next item is outcome-shaped.
-            promises = self._commitment_salience_context(agent)
-            if promises:
-                parts.append(promises)
-            confirmed = self._outcomes_today_line(agent)
-            parts.append(
-                "## What the world has confirmed from you today\n"
-                + (confirmed or "nothing yet — nothing merged, live, closed or accepted")
-            )
+        base.append("## Your current checklist\n" + (plan or "(empty)"))
         # What arrived / what stands over the plan — the only reasons to change it.
         await self._ground_inbox(agent)
         await self._ground_directives(agent)
@@ -5455,83 +6041,291 @@ class Fabric:
             self._inactive_context(agent),
         ):
             if block:
-                parts.append(block)
+                base.append(block)
         if messages:
             rendered = "\n".join(
                 f"- {getattr(m, 'content', m)}" for m in messages[-10:] if getattr(m, "content", m)
             )
             if rendered:
-                parts.append("## Messages that landed\n" + rendered)
-        context = "\n\n---\n\n".join(parts)
-        self.session_manager.validate_agent(agent.id, context)
+                base.append("## Messages that landed\n" + rendered)
 
-        can_replan = False
-        approval = None
-        if self.budget_manager:
-            approval = self.budget_manager.request_budget(agent.id, "high")
-            can_replan = approval.approved
-        else:
-            can_replan = agent.spend_consciousness()
-        if can_replan:
-            if idle:
-                prompt = (
-                    "Your checklist is clear and nothing new has arrived. Look at "
-                    "your open promises and what the world has confirmed (above). "
-                    "If one promise has a next concrete step that would produce "
-                    "something the world can see — a PR opened or merged, a URL "
-                    "that answers, an issue closed, a reply a human asked for — "
-                    "add ONLY that one item. If there is genuinely nothing, output "
-                    "the checklist unchanged: resting is honest, inventing work is "
-                    "not. Output ONLY the full checklist."
-                )
+        async def _ask(parts: list[str], prompt: str) -> int | None:
+            """One ask; returns how many pending tasks it added, None if no budget."""
+            context = "\n\n---\n\n".join(parts)
+            self.session_manager.validate_agent(agent.id, context)
+            approval = None
+            if self.budget_manager:
+                approval = self.budget_manager.request_budget(agent.id, "high")
+                can = approval.approved
             else:
-                prompt = (
-                    "Something arrived since your checklist was made (above). Adjust "
-                    "the checklist for it and nothing else: ADD what it requires, "
-                    "REPRIORITISE if it changes what matters most, DROP what it "
-                    "supersedes. Keep every other item exactly as it is — do not "
-                    "re-plan your day. Output ONLY the full updated checklist."
-                )
+                can = agent.spend_consciousness()
+            if not can:
+                return None
             queue_tasks = agent.task_queue.tasks if agent.task_queue is not None else []
-            pending_before = sum(1 for t in queue_tasks if t.status == "pending")
+            before = sum(1 for t in queue_tasks if t.status == "pending")
+            before_keys = {_task_key(t.description) for t in queue_tasks if t.status == "pending"}
             self._meter_model_call(agent, "replan")
             response = await self.consciousness.think(
                 agent_id=agent.id,
                 context=context,
                 prompt=prompt,
                 priority=Priority.HIGH,
-                metadata={"call_type": "replan", "light": True},
+                metadata={"call_type": "replan", "light": True, "idle": idle},
             )
             self._meter_tokens(agent, "replan", response)
             if self.budget_manager and approval and approval.backend:
                 self.budget_manager.record_usage(
-                    agent.id,
-                    approval.backend,
-                    response.tokens_in,
-                    response.tokens_out,
+                    agent.id, approval.backend, response.tokens_in, response.tokens_out
                 )
                 agent.spend_consciousness()
             agent.update_plan(response.content)
+            if idle:
+                # The rung asked for exactly ONE item. A model that answers with
+                # a paragraph of status lines ('Agent messages dispatched to…',
+                # 'Commitments tracked in ledger…', amara 21:58) gets the first
+                # new line kept and the rest struck as not asked for.
+                extra = 0
+                for t in agent.task_queue.tasks if agent.task_queue is not None else []:
+                    if t.status == "pending" and _task_key(t.description) not in before_keys:
+                        extra += 1
+                        if extra > 1:
+                            t.status = "skipped"
+                            t.description = f"{t.description} *(struck: one item was asked for)*"
+            self._strike_non_tasks(agent)
             self._strike_tasks_for_inactive(agent)
+            self._strike_phantom_refs(agent)
+            self._strike_under_standing_orders(agent)
+            self._scaffold_stations_from_plan(agent)
             self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
             queue_tasks = agent.task_queue.tasks if agent.task_queue is not None else []
-            pending_after = sum(1 for t in queue_tasks if t.status == "pending")
-            if idle:
-                if pending_after > pending_before:
-                    agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
-                else:
-                    cur = float(getattr(agent, "_idle_interval_s", self._IDLE_REASSESS_INTERVAL_S))
-                    agent._idle_interval_s = min(self._IDLE_BACKOFF_MAX_S, cur * 2)
-                    logger.info(
-                        "Idle: nothing worth doing for %s — next look in %d min",
-                        agent.id,
-                        int(agent._idle_interval_s // 60),
-                    )
-            else:
+            after = sum(1 for t in queue_tasks if t.status == "pending")
+            return max(0, after - before)
+
+        try:
+            if not idle:
+                await _ask(
+                    base,
+                    "Something arrived since your checklist was made (above). Adjust "
+                    "the checklist for it and nothing else: ADD what it requires, "
+                    "REPRIORITISE if it changes what matters most, DROP what it "
+                    "supersedes. Keep every other item exactly as it is — do not "
+                    "re-plan your day. Output ONLY the full updated checklist.",
+                )
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S  # something landed
-        if agent.state == AgentState.REPLANNING:
-            agent.transition(AgentState.EXECUTING)
+                return
+
+            # Rung 1 — bring forward. Only when there is something to bring.
+            later = self._later_this_week_context(agent)
+            added: int | None = 0
+            if later:
+                added = await _ask(
+                    base + [later],
+                    "Your checklist is clear. Look at what is planned for later this "
+                    "week and at your promises not yet due (above). Bring forward ONE "
+                    "item that is not bound to its day — an outstanding admin task, a "
+                    "draft, a check you can do now. A review, a meeting or anything "
+                    "fixed to a date stays where it is. Add exactly that one item to "
+                    "the checklist. If every remaining item is bound to its day, output "
+                    "the checklist unchanged.",
+                )
+            if added:
+                agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
+                logger.info(
+                    "Idle: %s brought forward %d item(s) from later this week", agent.id, added
+                )
+                return
+
+            # Rung 2 — get creative: contribute to the goal, or streamline the future.
+            creative = base + [
+                "## What the world has confirmed from you today\n"
+                + (
+                    self._outcomes_today_line(agent)
+                    or "nothing yet — nothing merged, live, closed or accepted"
+                )
+            ]
+            for block in (
+                self._team_truth_context(agent),
+                self._recurring_steps_context(agent),
+                self._factory_context(agent),
+                self._model_meter_context(agent),
+            ):
+                if block:
+                    creative.append(block)
+            added = await _ask(
+                creative,
+                "Your checklist is clear and nothing can be brought forward. This is "
+                "where a person gets creative: contribute to the goal, or streamline the "
+                "future to free up time. Choose ONE and add exactly that item: (a) a "
+                "step you can produce yourself that moves the company's scoreboard — a "
+                "PR, a URL that answers, an issue closed, a lead; for a manager, the "
+                "report whose promise is most at risk and what you will do about it; "
+                "(b) a step you keep doing by hand that belongs on your factory floor — "
+                "name it with build_station so the build goes on the checklist; (c) a "
+                "station that failed — fix it. Output the checklist unchanged only if "
+                "there is genuinely nothing: resting is then honest, inventing work is "
+                "not.",
+            )
+            if added:
+                agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
+                logger.info("Idle: %s found something to contribute or streamline", agent.id)
+                return
+            cur = float(getattr(agent, "_idle_interval_s", self._IDLE_REASSESS_INTERVAL_S))
+            agent._idle_interval_s = min(self._IDLE_BACKOFF_MAX_S, cur * 2)
+            logger.info(
+                "Idle: nothing to bring forward and nothing to build for %s — next look in %d min",
+                agent.id,
+                int(agent._idle_interval_s // 60),
+            )
+        finally:
+            if agent.state == AgentState.REPLANNING:
+                agent.transition(AgentState.EXECUTING)
+
+    # What each agent actually completed, by day — the framework's own light
+    # ledger (``<agent>/done.jsonl``). It filters the week's plan of things
+    # already done, and it is the factual case for a station: "you have done
+    # this by hand four times this week" is data, not a nudge.
+    _DONE_LEDGER = "done.jsonl"
+    _STEM_STOP = frozenset(
+        "the a an and or of to for in on with by from at as is are be this that "
+        "my our your their it its into via per up out all any new".split()
+    )
+
+    _PRIORITY_TAGS = frozenset({"high", "urgent", "critical", "low", "normal", "p0", "p1", "p2"})
+
+    @classmethod
+    def _stem(cls, description: str) -> str:
+        """Six content words of a task, for recurrence: priority tags, numbers
+        and stopwords dropped so '[HIGH] Triage 11 threads' and 'Triage 19
+        threads' are the same step."""
+        text = re.sub(r"\[[A-Za-z0-9 ]+\]", " ", description or "")
+        words = [
+            w
+            for w in _task_key(text).split()
+            if w not in cls._STEM_STOP
+            and w not in cls._PRIORITY_TAGS
+            and not any(ch.isdigit() for ch in w)
+            and len(w) > 2
+        ]
+        return " ".join(words[:6])
+
+    def _record_done(self, agent: Agent, task: Task) -> None:
+        try:
+            from datetime import date as _date
+
+            row = {
+                "at": time.time(),
+                "day": _date.today().isoformat(),
+                "key": _task_key(task.description),
+                "stem": self._stem(task.description),
+                "description": (task.description or "")[:200],
+                "outcome": (task.outcome or "")[:80],
+            }
+            with (agent.directory / self._DONE_LEDGER).open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+        except Exception:
+            logger.debug("done ledger write failed for %s", agent.id, exc_info=True)
+
+    def _done_recent(self, agent: Agent, *, days: float = 14.0) -> list[dict[str, Any]]:
+        path = agent.directory / self._DONE_LEDGER
+        out: list[dict[str, Any]] = []
+        cutoff = time.time() - days * 86400
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(d, dict) and float(d.get("at") or 0) >= cutoff:
+                    out.append(d)
+        except OSError:
+            pass
+        return out
+
+    def _recurring_steps_context(self, agent: Agent) -> str:
+        """Steps this agent has completed by hand more than once in the last
+        fortnight, with counts — the factual case for a station."""
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for d in self._done_recent(agent):
+            stem = str(d.get("stem") or "")
+            if not stem or str(d.get("outcome") or "").startswith("[station "):
+                continue  # already on the floor
+            groups.setdefault(stem, []).append(d)
+        rep = sorted(
+            ((k, v) for k, v in groups.items() if len(v) >= 2), key=lambda kv: -len(kv[1])
+        )[:6]
+        if not rep:
+            return ""
+        lines = ["## Steps you keep doing by hand (last 14 days)", ""]
+        for stem, rows in rep:
+            last = str(rows[-1].get("description") or "")[:90]
+            lines.append(f'- {len(rows)}× — e.g. "{last}"')
+        lines.append("")
+        lines.append(
+            "Each of these is a station to build: code it once (build_station), and the "
+            "fabric runs the next ones for you while you watch the floor."
+        )
+        return "\n".join(lines)
+
+    def _later_this_week_context(self, agent: Agent) -> str:
+        """The week's plan items still open and the promises not yet due — the
+        pool a clear list is refilled from. '' when there is nothing to bring."""
+        from datetime import date as _date
+
+        lines: list[str] = []
+        # Never offer what a standing order would strike the moment it was
+        # brought forward — the CTO's W45 plan was five items of red tape and
+        # every idle look spent an ask picking one for the order to strike
+        # (2026-11-06 19:42).
+        try:
+            from cortiva.core import standing_orders as _so
+
+            orders = _so.load(self.agents_dir)
+        except Exception:
+            orders = []
+
+        def _offerable(text: str) -> bool:
+            return not orders or _so.matching_order(orders, text) is None
+
+        try:
+            weekly = Planner(agent.directory).store.current_weekly()
+            if weekly is not None:
+                done_stems = {str(d.get("stem") or "") for d in self._done_recent(agent, days=7.0)}
+                done_stems.discard("")
+                open_items = [
+                    ln.strip()
+                    for ln in str(weekly.content or "").splitlines()
+                    if ln.strip().startswith("- [ ]")
+                    and self._stem(ln.strip()[5:]) not in done_stems  # already done this week
+                    and _offerable(ln)
+                ][:12]
+                if open_items:
+                    lines.append("### This week's plan, still open")
+                    lines.extend(open_items)
+        except Exception:
+            logger.debug("weekly plan unreadable for %s", agent.id, exc_info=True)
+        try:
+            from cortiva.core import commitments as _cm
+
+            today = _date.today().isoformat()
+            later = []
+            for c in _cm.load(agent.directory):
+                if c.status not in ("open", "held"):
+                    continue
+                due = str(getattr(c, "due_at", "") or "")[:10]
+                if due and due <= today:
+                    continue  # due today or overdue: already on the list or owed now
+                if not _offerable(c.what):
+                    continue
+                later.append(f"- due {due or 'unset'}: {c.what[:90]} → {c.to[:40]}")
+            if later:
+                lines.append("### Promises not yet due")
+                lines.extend(later[:12])
+        except Exception:
+            logger.debug("commitments unreadable for %s", agent.id, exc_info=True)
+        if not lines:
+            return ""
+        return "## Later this week — what could be brought forward\n" + "\n".join(lines)
 
     def _active_reports(self, agent: Agent) -> list[str]:
         if self.org is None:
@@ -8862,6 +9656,9 @@ class Fabric:
         meter_ctx = self._model_meter_context(agent)
         if meter_ctx:
             context = context + "\n\n---\n\n" + meter_ctx
+        floor_ctx = self._factory_context(agent)
+        if floor_ctx:
+            context = context + "\n\n---\n\n" + floor_ctx
 
         # A due founder brief keeps confronting the org head on reassess too —
         # it self-resolves only when the brief is actually sent.
@@ -8974,12 +9771,20 @@ class Fabric:
                 agent.spend_consciousness()
 
             agent.update_plan(response.content)
+            self._strike_non_tasks(agent)
             self._strike_tasks_for_inactive(agent)
+            self._strike_phantom_refs(agent)
+            self._strike_under_standing_orders(agent)
+            self._scaffold_stations_from_plan(agent)
             self._write_plan(agent)  # statuses pinned by update_plan reach plan.md
             self._last_plan_ts[agent.id] = time.time()
 
         if agent.state == AgentState.REPLANNING:
             agent.transition(AgentState.EXECUTING)
+
+    _STATUS_MARK_RE = re.compile(
+        r"(?:\s*\*\((?:skipped|acknowledged — not done|exception: [^)]*)\)\*)+\s*$"
+    )
 
     def _write_plan(self, agent: Agent) -> None:
         """Serialize current task_queue back to plan.md."""
@@ -9001,7 +9806,11 @@ class Fabric:
             elif task.status == "exception":
                 status_suffix = f" *(exception: {task.error})*"
             pad = "  " * indent
-            lines.append(f"{pad}- [{check}] {priority_prefix}{task.description}{status_suffix}")
+            # A description that round-tripped through plan.md already carries
+            # its status marker; strip it so a struck line does not grow one
+            # " *(skipped)*" per pass (cto's plan, 2026-11-06 19:57).
+            desc = self._STATUS_MARK_RE.sub("", task.description or "").rstrip()
+            lines.append(f"{pad}- [{check}] {priority_prefix}{desc}{status_suffix}")
             # Subtasks render indented so they round-trip through _parse_plan.
             for st in getattr(task, "subtasks", []) or []:
                 _render(st, indent + 1)
