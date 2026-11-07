@@ -5754,6 +5754,24 @@ class Fabric:
     _BUILD_LINE_RE = re.compile(
         r"^\W*build[_ ]station\W+(?P<name>[A-Za-z0-9_-]{2,40})\W*(?P<rest>.*)$", re.IGNORECASE
     )
+    # Tokens a plan line puts first that are never a station's name.
+    _NOT_A_STATION_NAME = frozenset(
+        {
+            "re",
+            "fwd",
+            "fw",
+            "blocked",
+            "high",
+            "critical",
+            "urgent",
+            "task",
+            "todo",
+            "new",
+            "the",
+            "and",
+            "for",
+        }
+    )
 
     def _scaffold_stations_from_plan(self, agent: Agent) -> int:
         """A plan line written as ``build_station: <name> — <purpose>`` is the
@@ -5773,7 +5791,20 @@ class Fabric:
             if not m:
                 continue
             name = m.group("name").lower().replace("_", "-")
-            purpose = re.sub(r"^[\s:—–-]+", "", m.group("rest") or "").strip() or name
+            rest = m.group("rest") or ""
+            # A first token that is a prefix or a tag is not a name: 'build_station:
+            # Re: [Blocked] CI Gate Routing — …' became station 're' (ceo, 10:00
+            # on 2026-11-07). It yields to a slug of the purpose's content words.
+            if name in self._NOT_A_STATION_NAME or len(name) < 3 or name.isdigit():
+                words = [
+                    w
+                    for w in re.findall(r"[a-z0-9]+", rest.lower())
+                    if len(w) >= 2 and w not in self._NOT_A_STATION_NAME
+                ][:3]
+                if not words:
+                    continue
+                name = "-".join(words)
+            purpose = re.sub(r"^[\s:—–-]+", "", rest).strip() or name
             if (_factory.factory_dir(agent.directory) / name).is_dir():
                 # Already on the floor (scaffolded on an earlier pass, or built):
                 # the line is done, not a station to scaffold again. Maren's

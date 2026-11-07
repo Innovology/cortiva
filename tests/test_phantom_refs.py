@@ -321,3 +321,35 @@ def test_a_struck_line_the_model_echoes_back_stays_struck(tmp_path, monkeypatch)
     q = _parse_plan("- [ ] Ship it *(skipped)*\n- [ ] Do it\n")
     assert [x.status for x in q.tasks] == ["skipped", "pending"]
     assert q.tasks[0].description == "Ship it"
+
+
+def test_a_reply_prefix_or_tag_is_not_a_station_name(tmp_path) -> None:
+    """ceo, 2026-11-07 10:00: 'build_station: Re: [Blocked] CI Gate Routing — …'
+    became a station called 're'. A prefix or tag yields to a slug of the
+    purpose's content words."""
+    import yaml
+
+    fabric = Fabric(
+        agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=_Model()
+    )
+    agent = fabric.register_agent("ceo")
+    agent.task_queue = TaskQueue(
+        tasks=[
+            Task(
+                id="a",
+                description="build_station: Re: [Blocked] CI Gate Routing — Automate checking live CI status for innovology.io, route green/red, and report to founder.",
+            ),
+        ]
+    )
+    assert fabric._scaffold_stations_from_plan(agent) == 1
+    floor = agent.directory / "factory"
+    assert not (floor / "re").exists()
+    d = floor / "ci-gate-routing"
+    assert d.is_dir()
+    manifest = yaml.safe_load((d / "station.yaml").read_text())
+    assert manifest["name"] == "ci-gate-routing"
+    assert "ci gate routing" in manifest["matches"]
+    assert (
+        manifest["purpose"].startswith("Blocked] CI Gate Routing")
+        or "CI Gate Routing" in manifest["purpose"]
+    )
