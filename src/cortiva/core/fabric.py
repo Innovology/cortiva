@@ -646,12 +646,16 @@ class Fabric:
         self, agent: Agent, exc: BaseException, override_minutes: float
     ) -> None:
         """Put a half-woken agent back to sleep and schedule a bounded retry."""
+        # With the traceback: on 2026-11-07 the CEO failed every wake for
+        # twenty-five minutes with "'str' object has no attribute 'get'" and
+        # nothing in the logs said where.
         logger.error(
             "Wake of %s failed during %s (%s: %s) — returning to sleep",
             agent.id,
             agent.state.value,
             type(exc).__name__,
             exc,
+            exc_info=exc,
         )
         try:
             await self.sleep(agent.id)
@@ -10030,7 +10034,7 @@ class Fabric:
                         timeout=self.resource_guard.limits_for(aid).cycle_timeout_s,
                     )
             except Exception as e:
-                logger.error(f"Cycle error for {aid}: {e}")
+                logger.error("Cycle error for %s: %s", aid, e, exc_info=e)
             finally:
                 self.capacity_tracker.agent_cycle_end(aid, cycle_start)
 
