@@ -1015,9 +1015,11 @@ class _CountingConsciousness:
     def __init__(self, plan_body: str = "") -> None:
         self.calls = 0
         self.plan_body = plan_body
+        self.last_prompt = ""
 
     async def think(self, agent_id, context, prompt, **kwargs):
         self.calls += 1
+        self.last_prompt = prompt
         return ConsciousResponse(
             content=self.plan_body,
             tokens_in=10,
@@ -1084,12 +1086,50 @@ class TestIdleProactiveReassess:
 
         await fabric.cycle("idle-3")
         assert cons.calls == 1
-        # Age the throttle stamp past the interval.
+        # Age the throttle stamp past the (backed-off) interval.
         agent._last_idle_reassess = datetime.now(UTC) - timedelta(
-            seconds=fabric._IDLE_REASSESS_INTERVAL_S + 1
+            seconds=agent._idle_interval_s + 1
         )
         await fabric.cycle("idle-3")
         assert cons.calls == 2  # looked for work again
+
+    @pytest.mark.asyncio
+    async def test_idle_looks_back_off_while_the_answer_is_nothing(self, tmp_path):
+        """An idle look that finds nothing doubles the wait (6→12→24→48 min,
+        capped at an hour); one that finds work, or anything landing, snaps
+        it back. Five idle agents must not buy a replan every six minutes."""
+        from datetime import UTC, datetime, timedelta
+
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        agent = _executing_agent_empty_queue(fabric, "idle-5")
+
+        await fabric.cycle("idle-5")
+        assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S * 2
+        # Not yet due at the old interval…
+        agent._last_idle_reassess = datetime.now(UTC) - timedelta(
+            seconds=fabric._IDLE_REASSESS_INTERVAL_S + 1
+        )
+        assert (await fabric.cycle("idle-5"))["action"] == "idle"
+        assert cons.calls == 1
+        # …due at the doubled one, and it doubles again.
+        agent._last_idle_reassess = datetime.now(UTC) - timedelta(
+            seconds=agent._idle_interval_s + 1
+        )
+        await fabric.cycle("idle-5")
+        assert cons.calls == 2
+        assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S * 4
+        # Finding a real next step resets the cadence.
+        cons.plan_body = "- [ ] **[HIGH]** Open the PR for the lead form\n"
+        agent._last_idle_reassess = datetime.now(UTC) - timedelta(
+            seconds=agent._idle_interval_s + 1
+        )
+        await fabric.cycle("idle-5")
+        assert any("lead form" in t.description for t in agent.task_queue.tasks)
+        assert agent._idle_interval_s == fabric._IDLE_REASSESS_INTERVAL_S
+        # The idle ask is the light one: it asked about promises and the world,
+        # not for a plan of the day.
+        assert "resting is honest" in cons.last_prompt
 
     @pytest.mark.asyncio
     async def test_proactive_reassess_can_pull_in_work(self, tmp_path):
@@ -1586,3 +1626,113 @@ class TestRefocusAgent:
         assert not (fabric.agents_dir / "remote-agent").is_dir()
         relays = list((fabric.agents_dir / "ar-lead" / "outbox" / "refocus").glob("*.json"))
         assert len(relays) == 1
+
+
+# ---------------------------------------------------------------------------
+# Shutdown files before it forces — the purpose of sleep is the filing
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownFiles:
+    @pytest.mark.asyncio
+    async def test_a_straggler_forced_at_the_drain_deadline_still_gets_its_sleep_hook(
+        self, tmp_path: Path
+    ) -> None:
+        """The reflection ask hangs past the drain deadline → the agent is
+        force-slept, but the plugins' sleep hook still runs (bounded) so the
+        day's chemistry and learning reach disk before the process dies."""
+        import asyncio
+
+        from cortiva.core.plugins import FabricPlugin
+
+        class _Hangs(_CountingConsciousness):
+            async def think(self, agent_id, context, prompt, **kwargs):
+                await asyncio.sleep(30)
+                return ConsciousResponse(content="", model="mock")
+
+        class _Filing(FabricPlugin):
+            name = "filing"
+
+            def __init__(self) -> None:
+                self.slept: list[str] = []
+
+            async def on_sleep(self, agent_id: str) -> None:
+                self.slept.append(agent_id)
+
+        fabric = _fabric_with(tmp_path, _Hangs())
+        filing = _Filing()
+        fabric.plugin_manager.register(filing)
+        agent = _executing_agent_empty_queue(fabric, "late-1")
+        fabric._running = True
+        await fabric.stop(drain_timeout_s=0.2)
+        assert agent.state == AgentState.SLEEPING
+        assert filing.slept == ["late-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_stop_does_not_buy_a_reflection_per_agent(self, tmp_path: Path) -> None:
+        """A hot-patch restart is not the end of anyone's day: the sleep at
+        shutdown files but writes no note — zero model asks."""
+        cons = _CountingConsciousness(plan_body="")
+        fabric = _fabric_with(tmp_path, cons)
+        _executing_agent_empty_queue(fabric, "late-2")
+        fabric._running = True
+        before = cons.calls
+        await fabric.stop(drain_timeout_s=5.0)
+        assert cons.calls == before
+
+
+# ---------------------------------------------------------------------------
+# Cycle admission — as many cycles in flight as the model has decode slots
+# ---------------------------------------------------------------------------
+
+
+class TestCycleAdmission:
+    def _rig(self, tmp_path: Path, concurrency: int):
+        import asyncio
+
+        class _Slow(_CountingConsciousness):
+            def __init__(self) -> None:
+                super().__init__(plan_body="")
+                self.served: list[str] = []
+
+            async def think(self, agent_id, context, prompt, **kwargs):
+                self.served.append(agent_id)
+                await asyncio.sleep(0.05)
+                return await super().think(agent_id, context, prompt, **kwargs)
+
+        cons = _Slow()
+        fabric = Fabric(
+            agents_dir=tmp_path / "agents",
+            memory=InMemoryAdapter(),
+            consciousness=cons,
+            cycle_concurrency=concurrency,
+        )
+        for aid in ("a1", "a2", "a3"):
+            _executing_agent_empty_queue(fabric, aid)  # each cycle = one idle ask
+        return fabric, cons
+
+    @pytest.mark.asyncio
+    async def test_one_slot_means_one_cycle_per_heartbeat_and_nobody_starves(
+        self, tmp_path: Path
+    ) -> None:
+        """Five agents woken together on a one-at-a-time model queued four of
+        them past the cycle guard. With one slot, one cycle runs per heartbeat
+        and the others yield; the longest-waiting agent goes next."""
+        fabric, cons = self._rig(tmp_path, concurrency=1)
+        await fabric.heartbeat()
+        assert len(cons.served) == 1
+        assert set(fabric._cycle_waiting_since) == {"a1", "a2", "a3"} - set(cons.served)
+        await fabric.heartbeat()
+        await fabric.heartbeat()
+        assert sorted(cons.served) == ["a1", "a2", "a3"]  # each served exactly once
+        # With one slot and three agents, two are always waiting — never the
+        # one just served, and the slot is free again between heartbeats.
+        assert len(fabric._cycle_waiting_since) == 2
+        assert cons.served[-1] not in fabric._cycle_waiting_since
+        assert fabric._cycles_in_flight == 0
+
+    @pytest.mark.asyncio
+    async def test_unlimited_is_the_old_behaviour(self, tmp_path: Path) -> None:
+        fabric, cons = self._rig(tmp_path, concurrency=0)
+        await fabric.heartbeat()
+        assert sorted(cons.served) == ["a1", "a2", "a3"]

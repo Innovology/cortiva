@@ -293,6 +293,7 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
 
     # --- Fabric ---
     heartbeat = config.get("fabric", {}).get("heartbeat_interval", 30)
+    cycle_concurrency = config.get("fabric", {}).get("cycle_concurrency", 0)
     budget = config.get("consciousness", {}).get("budget", {}).get("daily_limit", 1000)
 
     fabric = Fabric(
@@ -303,6 +304,7 @@ def build_fabric(config: dict[str, Any]) -> Fabric:
         channel=channel,
         terminal=terminal,
         heartbeat_interval=float(heartbeat),
+        cycle_concurrency=int(cycle_concurrency or 0),
         daily_consciousness_limit=int(budget),
         budget_manager=budget_manager,
         isolation=enforcer,
