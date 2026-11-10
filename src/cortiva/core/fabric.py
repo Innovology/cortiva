@@ -3544,6 +3544,8 @@ class Fabric:
 
         if suffix.reject_delivery and isinstance(suffix.reject_delivery, dict):
             self._handle_reject_delivery(agent, suffix.reject_delivery)
+        if suffix.accept_delivery and isinstance(suffix.accept_delivery, dict):
+            self._handle_accept_delivery(agent, suffix.accept_delivery)
 
         # Re-task another agent — the org's executable lever for a priority
         # change. Authority-gated in the handler.
@@ -5758,6 +5760,53 @@ class Fabric:
             cur = mgr
         return False
 
+    def _handle_accept_delivery(self, agent: Agent, payload: dict) -> None:
+        """A manager's acceptance of a report's delivery after checking it —
+        the downward reward (the node turns it into a ``manager_accepted``
+        outcome the report is paid for). Authority-gated to the report's
+        management chain; honoured only for a delivery that carries
+        evidence, so acceptance can never launder a bare claim."""
+        target = str(payload.get("report") or payload.get("agent_id") or "").strip()
+        commitment_id = str(payload.get("commitment_id") or "").strip()
+        checked = str(payload.get("checked") or payload.get("note") or "").strip()
+        if not (target and commitment_id and checked):
+            logger.info(
+                "accept_delivery from %s ignored — report, commitment_id and what you checked are required",
+                agent.id,
+            )
+            return
+        if not self._manages(agent.id, target):
+            logger.info(
+                "accept_delivery REJECTED: %s is not in %s's management chain", agent.id, target
+            )
+            return
+        try:
+            from cortiva.core import commitments as _cm
+
+            target_dir = self.agents_dir / target
+            if not target_dir.is_dir():
+                return
+            c = _cm.accept(target_dir, commitment_id=commitment_id, by=agent.id, note=checked)
+            if c is None:
+                logger.info(
+                    "accept_delivery: no delivered commitment %s for %s carries evidence — not accepted",
+                    commitment_id[:8],
+                    target,
+                )
+                return
+            logger.info(
+                "Agent %s ACCEPTED %s's delivery of %s: %s",
+                agent.id,
+                target,
+                c.id[:8],
+                checked[:80],
+            )
+            self._emit(
+                "commitment.accepted", agent_id=target, accepted_by=agent.id, what=c.what[:120]
+            )
+        except Exception:
+            logger.exception("accept_delivery failed for %s", agent.id)
+
     def _handle_reject_delivery(self, agent: Agent, payload: dict) -> None:
         """A manager's push-back on a report's claimed delivery: the claim
         didn't survive scrutiny, so the commitment reopens as owed, carrying
@@ -6705,8 +6754,10 @@ class Fabric:
                 "(`reject_delivery` with their id, the commitment id and your "
                 "reason) so it reopens as owed — a false 'done' that stands "
                 "becomes YOUR false report upward. When a claim holds up, "
-                "accept it citing what you checked — never on their say-so "
-                "alone."
+                "accept it (`accept_delivery` with their id, the commitment id "
+                "and what you checked) — your acceptance is a reward they feel, "
+                "and it is only honoured for a delivery that carries evidence, "
+                "never on their say-so alone."
             )
         team_blocked = load["blocked_rows"]
         if team_blocked:
