@@ -135,3 +135,54 @@ def test_prs_opened_since_parses_the_search_result(monkeypatch) -> None:
             "url": "https://github.com/Innovology/innovology.io/pull/230",
         }
     ]
+
+
+def test_the_session_brief_carries_the_nodes_verdicts_and_the_acceptance_rule(
+    tmp_path: Path,
+) -> None:
+    """2026-11-07: the CTO's sessions set accepted_by to her own login three
+    times and never saw the rejections — the brief carried none of them."""
+    import json
+
+    fabric, agent = _fabric(tmp_path)
+    (agent.directory / "outcomes.json").write_text(
+        json.dumps(
+            [
+                {
+                    "kind": "claim_rejected",
+                    "agent_id": agent.id,
+                    "ref": "c1",
+                    "title": "BetterAuth: first commit",
+                    "at": time.time() - 600,
+                    "detail": "acceptance by 'samantha-innovology' is not a verdict from your management chain (ceo)",
+                },
+                {
+                    "kind": "ci_green",
+                    "agent_id": agent.id,
+                    "ref": "https://github.com/Innovology/innovology.io/pull/240",
+                    "title": "lead capture",
+                    "at": time.time() - 600,
+                },
+                {
+                    "kind": "pr_merged",
+                    "agent_id": agent.id,
+                    "ref": "old",
+                    "title": "old",
+                    "at": time.time() - 90000,
+                },
+            ]
+        )
+    )
+    task = Task(id="t1", description="Close out the BetterAuth commitment", priority=1)
+    prompt = fabric._terminal_context_for_session(agent, task)["prompt"]
+    assert "What the world has judged" in prompt
+    assert "confirmed — ci green: lead capture" in prompt
+    assert "Rejected, and why:" in prompt and "not a verdict from your management chain" in prompt
+    assert "never by you" in prompt and "accepted_by" in prompt
+    assert "old" not in prompt.split("What the world has judged")[1]
+    # Nothing judged → no block, no rule lecture.
+    (agent.directory / "outcomes.json").write_text("[]")
+    assert (
+        "What the world has judged"
+        not in fabric._terminal_context_for_session(agent, task)["prompt"]
+    )

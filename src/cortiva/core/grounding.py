@@ -189,6 +189,15 @@ def prs_merged_since(token: str, since: str, timeout: float = 8.0) -> int | None
         return None
 
 
+def _day(iso: str) -> Any:
+    from datetime import date
+
+    try:
+        return date.fromisoformat(str(iso)[:10])
+    except ValueError:
+        return None
+
+
 def check_artifact(
     token: str, url: str, promised_at: str = "", timeout: float = 8.0
 ) -> dict[str, Any]:
@@ -211,11 +220,17 @@ def check_artifact(
     if login and ref.get("author") and ref["author"].lower() != login.lower():
         return {"ok": False, "reason": f"authored by {ref['author']}, not you", **ref}
     created, promised = str(ref.get("created_at") or ""), str(promised_at or "")
-    if created and promised and created[:19] < promised[:19]:
-        return {
-            "ok": False,
-            "reason": f"created {created[:10]}, before this was promised ({promised[:10]})",
-            **ref,
-        }
+    # "Before the promise" is judged by the day, with a day's grace: a
+    # commitment is often extracted from the agent's own text hours after the
+    # PR it describes was opened (2026-11-06 15:47: amara's #235, opened and
+    # promised the same day, rejected as pre-existing). The false receipt this
+    # guards against is months old, not hours.
+    if created and promised and _day(created) is not None and _day(promised) is not None:
+        if (_day(promised) - _day(created)).days > 1:  # type: ignore[operator]
+            return {
+                "ok": False,
+                "reason": f"created {created[:10]}, before this was promised ({promised[:10]})",
+                **ref,
+            }
     verdict = "merged" if ref.get("merged") else ref.get("state", "")
     return {"ok": True, "reason": f"{ref.get('kind')} {verdict}, by {ref.get('author')}", **ref}

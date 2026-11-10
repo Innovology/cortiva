@@ -534,3 +534,17 @@ def test_reject_only_touches_delivered(tmp_path) -> None:
     c = cm.register(tmp_path, to="coo@x.io", what="W30 diagnostic", due="2026-08-10")
     assert cm.reject(tmp_path, commitment_id=c.id, by="founder", reason="nope") is None
     assert cm.load(tmp_path)[0].status == "open"  # untouched
+
+
+def test_hand_written_string_subtasks_are_notes_not_steps() -> None:
+    """2026-11-07 12:09–12:48: the CEO failed every wake because a report's
+    ledger held subtasks written as strings by a session; progress_of
+    called .get on one. Strings are ignored; progress falls back to the
+    agent's own number when no framework-shaped step exists."""
+    c = cm.Commitment(id="x", to="alex@x", what="w", due_at="2026-11-10T00:00:00+00:00")
+    c.subtasks = ["Amara opens PR by Nov 17", "Delegate to Amara: service init"]
+    c.progress = 0.25
+    assert cm.progress_of(c) == 0.25
+    assert cm.work_remaining_hours(c) >= 0.0
+    c.subtasks = ["a note", {"desc": "real step", "done": True}, {"desc": "other", "done": False}]
+    assert cm.progress_of(c) == 0.5

@@ -64,16 +64,20 @@ async def test_inbound_mail_or_a_directive_makes_the_next_wake_adjust(tmp_path: 
         json.dumps({"from": "maren@x", "subject": "Please", "text": "do X"})
     )
     await f.wake("cto")
+    assert calls.count("replan") == 0  # the wake itself asks nothing — it runs in the heartbeat
+    assert (await f.cycle("cto"))["action"] == "adjusted"
     assert calls.count("plan") == 1 and calls.count("replan") == 1  # adjusted, not rebuilt
 
     await f.sleep("cto")
     await f.wake("cto")
-    assert calls.count("replan") == 1  # the mail was read during that adjustment; nothing new since
+    assert getattr(agent, "_adjust_pending", None) is None  # nothing new since: resumed, no ask
+    assert calls.count("replan") == 1  # the mail was read during that adjustment
 
     await f.sleep("cto")
     time.sleep(0.01)
     (agent.directory / "directives.json").write_text("[]")
     await f.wake("cto")
+    assert (await f.cycle("cto"))["action"] == "adjusted"
     assert calls.count("plan") == 1 and calls.count("replan") == 2
 
 
@@ -202,6 +206,7 @@ async def test_a_wake_with_new_input_adjusts_the_standing_plan_not_rebuilds_it(
         json.dumps({"from": "maren@x", "subject": "Lead form", "text": "start it"})
     )
     await f.wake("cto")
+    await f.cycle("cto")  # the adjustment is the first cycle's one ask
     assert seen[-1][0] == "replan" and seen[-1][1] is True, seen
     assert [t for t, _, _ in seen if t == "plan"] == ["plan"], "no second full plan"
     assert agent.state == AgentState.EXECUTING
@@ -231,3 +236,60 @@ def test_an_adjustment_cannot_resurrect_a_done_or_struck_task(tmp_path: Path) ->
     plan = (agent.directory / "today" / "plan.md").read_text()
     assert "- [x] " in plan and "Land PR #48" in plan
     assert f._resume_plan(agent) == 2  # only the genuinely open items are pending
+
+
+def test_a_struck_line_does_not_grow_a_marker_per_pass(tmp_path: Path) -> None:
+    """cto's plan, 19:57: 'Land PR #48 … *(skipped)* *(skipped)* *(skipped)*'."""
+    from cortiva.core.agent import Task, TaskQueue
+
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    agent = f.register_agent("cto")
+    agent.task_queue = TaskQueue(tasks=[Task(id="a", description="Land PR #48", status="skipped")])
+    for _ in range(3):
+        f._write_plan(agent)
+        agent.task_queue = f._queue_from_plan_text(agent.read_identity("plan"))
+    line = next(ln for ln in agent.read_identity("plan").splitlines() if "Land PR #48" in ln)
+    assert line.count("*(skipped)*") == 1
+    assert agent.task_queue.tasks[0].status == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_weekly_and_monthly_plans_are_written_against_the_standing_orders_and_what_counts(
+    tmp_path: Path,
+) -> None:
+    """The daily plan saw the founder's red-tape order; the W45 weekly plans
+    were written without it and were five items of process each. The horizon
+    plans now carry the orders and the definition of what counts."""
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    f.register_agent("cto")
+    (f.agents_dir / ".standing_orders.json").write_text(
+        json.dumps(
+            [
+                {
+                    "order_id": "o1",
+                    "text": "Stop building red tape.",
+                    "kind": "prohibition",
+                    "scope": {"type": "topic", "value": "pr template|playbook"},
+                    "issued_by": {"name": "Alex Browne", "role": "founder"},
+                    "issued_at": "2026-11-06T18:40:00+00:00",
+                    "status": "active",
+                }
+            ]
+        )
+    )
+    seen: dict[str, tuple[str, str]] = {}
+    orig = model.think
+
+    async def _think(agent_id, context, prompt, **kw):
+        seen[(kw.get("metadata") or {}).get("call_type", "")] = (context, prompt)
+        return await orig(agent_id, context, prompt, **kw)
+
+    model.think = _think
+    await f.wake("cto")  # first wake of its life: monthly, weekly, daily
+    for horizon in ("plan_monthly", "plan_weekly"):
+        ctx, prompt = seen[horizon]
+        assert "⛔ Standing orders" in ctx and "Stop building red tape" in ctx, horizon
+        assert "## What counts" in ctx and "the world can see" in ctx, horizon
+        assert "the world" in prompt and "standing orders" in prompt.lower(), horizon

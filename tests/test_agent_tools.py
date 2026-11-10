@@ -36,6 +36,7 @@ class TestToolsForAgent:
             "refocus_agent",
             "reject_delivery",
             "accept_delivery",
+            "build_station",
         ]
 
     def test_schema_shape_is_valid_openai_function(self) -> None:

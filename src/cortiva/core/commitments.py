@@ -514,11 +514,17 @@ def delivery_evidence(agent_dir: Path, c: Commitment) -> tuple[bool, str]:
 
 
 def progress_of(c: Commitment) -> float:
-    """Fraction complete in [0,1]. Subtasks (objective) win over the float."""
-    if c.subtasks:
-        total = len(c.subtasks)
-        done = sum(1 for st in c.subtasks if st.get("done"))
-        return _clamp01(done / total) if total else 0.0
+    """Fraction complete in [0,1]. Subtasks (objective) win over the float.
+
+    Only the framework's own shape counts — ``{"desc", "done"}`` dicts. The
+    ledger is the agent's file and her sessions write subtasks as strings
+    (Andre: 75 commitments; the CTO's two forged ones, 2026-11-07); a string
+    is a note, not a tracked step, and on 2026-11-07 12:09–12:48 one of them
+    took the CEO down on every wake through her team-delivery load."""
+    steps = [st for st in (c.subtasks or []) if isinstance(st, dict)]
+    if steps:
+        done = sum(1 for st in steps if st.get("done"))
+        return _clamp01(done / len(steps))
     return _clamp01(c.progress)
 
 
