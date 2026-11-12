@@ -124,6 +124,40 @@ class TestChecks:
         assert not met and "no answer" in seen
 
 
+class TestOwnerConfirmed:
+    """What the system cannot see is judged by the mission's owner, never the team."""
+
+    def _m(self, **check) -> dict:
+        return _mission(
+            route=None,
+            end_state=[
+                {
+                    "id": "signin",
+                    "describe": "The founder has signed in to the pipeline screen",
+                    "check": {"type": "owner", **check},
+                }
+            ],
+        )
+
+    def test_unconfirmed_is_not_met_and_tells_the_team_how_to_ask(self, tmp_path):
+        assert ms.problems(self._m()) == []
+        _write(tmp_path, [self._m()])
+        state = ms.probe(tmp_path, fetch=_world({}), now=T0)
+        assert state["m-leads-228"]["complete"] is False
+        block = ms.context_block(ms.load(tmp_path), state, now=T0)
+        assert "only the mission's owner can confirm" in block
+        assert "ask Alex ONCE" in block and "Do not ask before it is true" in block
+
+    def test_confirmed_in_the_register_is_met(self, tmp_path):
+        _write(tmp_path, [self._m(confirmed_at=T0.isoformat())])
+        state = ms.probe(tmp_path, fetch=_world({}), now=T0 + timedelta(hours=1))
+        assert state["m-leads-228"]["complete"] is True
+        assert (
+            "confirmed by the mission's owner"
+            in (state["m-leads-228"]["conditions"]["signin"]["observed"])
+        )
+
+
 class TestProbe:
     def test_records_what_was_seen_and_when_it_changed(self, tmp_path):
         _write(tmp_path, [_mission()])

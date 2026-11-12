@@ -119,6 +119,8 @@ def _dict(value: Any) -> dict[str, Any]:
 def _check_problems(check: Any) -> list[str]:
     if not isinstance(check, dict):
         return ["no check"]
+    if str(check.get("type") or "http") == "owner":
+        return []
     if str(check.get("type") or "http") != "http":
         return [f"unknown check type {check.get('type')!r}"]
     out: list[str] = []
@@ -231,7 +233,17 @@ def _json_at(doc: Any, path: str) -> tuple[bool, Any]:
 
 def run_check(check: dict[str, Any], fetch: Fetch | None = None) -> tuple[bool, str]:
     """Run one check. Returns ``(met, what was observed)``. Never raises:
-    a check that could not be run is not met, and says why."""
+    a check that could not be run is not met, and says why.
+
+    ``type: owner`` is for what the system cannot see (a person signed in, a
+    customer said yes). The judge is then the human who issued the mission,
+    through the register HQ owns: it is met when the register carries
+    ``confirmed_at``. It is never the team's to set."""
+    if str(check.get("type") or "http") == "owner":
+        when = str(check.get("confirmed_at") or "").strip()
+        if when:
+            return True, f"confirmed by the mission's owner, {_clock(when)}"
+        return False, "only the mission's owner can confirm this, and has not yet"
     url = str(check.get("url") or "")
     try:
         status, body = (fetch or _default_fetch)(url, CHECK_TIMEOUT_S)
@@ -472,6 +484,11 @@ def context_block(
                 lines.append(f"- ✅ {cond['describe']} — met since {_clock(seen.get('since', ''))}")
             else:
                 lines.append(f"- ❌ {cond['describe']} — NOT MET ({seen.get('observed', '')})")
+                if str((cond.get("check") or {}).get("type") or "") == "owner":
+                    lines.append(
+                        f"  Make it true, then ask {_issuer(m)} ONCE to confirm it, saying "
+                        "exactly what to do and where to look. Do not ask before it is true."
+                    )
         if entry and not entry.get("complete"):
             if entry.get("last_change_at"):
                 idle = _hours_between(entry["last_change_at"], now)
