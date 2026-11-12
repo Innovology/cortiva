@@ -7546,10 +7546,116 @@ class Fabric:
         try:
             from cortiva.core import standing_orders as _so
 
-            return _so.context_block(_so.load(self.agents_dir))
+            orders = _so.context_block(_so.load(self.agents_dir))
         except Exception:
             logger.debug("standing-orders context failed for %s", agent.id, exc_info=True)
+            orders = ""
+        # The mission end state travels with the orders: both are set from
+        # above, neither is the agent's to resolve, and every place that must
+        # carry one (plan, execute, weekly plan, reassess) must carry the other.
+        mission = self._mission_context(agent)
+        return "\n\n---\n\n".join(b for b in (orders, mission) if b)
+
+    def _missions_for(self, agent: Agent) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """(missions this agent is on, what the fabric last observed)."""
+        try:
+            from cortiva.core import missions as _ms
+
+            mine = _ms.for_agent(_ms.load(self.agents_dir), agent.id)
+            return mine, (_ms.load_state(self.agents_dir) if mine else {})
+        except Exception:
+            logger.debug("mission load failed for %s", agent.id, exc_info=True)
+            return [], {}
+
+    def _mission_context(self, agent: Agent) -> str:
+        """The end state of each mission this agent is on, as the fabric
+        observed it — the one judge of done. See cortiva.core.missions."""
+        mine, state = self._missions_for(agent)
+        if not mine:
             return ""
+        try:
+            from cortiva.core import missions as _ms
+
+            return _ms.context_block(mine, state)
+        except Exception:
+            logger.debug("mission context failed for %s", agent.id, exc_info=True)
+            return ""
+
+    def _mission_stamp(self, agent: Agent, to: Any) -> str:
+        """The observed mission state to append to a report leaving the
+        workforce. Empty for mail between agents and for agents on no
+        mission: the stamp is for the human, who cannot see the checks."""
+        try:
+            first = str(to[0] if isinstance(to, list) and to else to or "").lower()
+            m = re.search(r"[\w.+-]+@([\w.-]+)", first)
+            if not m:
+                return ""
+            workforce = str(self._email_meta().get("domain") or "").lower()
+            if m.group(0) not in self._founder_addresses() and (
+                not workforce or m.group(1) == workforce
+            ):
+                return ""
+            mine, state = self._missions_for(agent)
+            if not mine:
+                return ""
+            from cortiva.core import missions as _ms
+
+            return _ms.status_stamp(mine, state)
+        except Exception:
+            logger.debug("mission stamp failed for %s", agent.id, exc_info=True)
+            return ""
+
+    def _kick_mission_probe(self) -> None:
+        """Start a probe of every mission's end state if one is due and none
+        is running. The checks are network calls, so they run in a thread;
+        the heartbeat never waits for them."""
+        import time as _time
+
+        from cortiva.core import missions as _ms
+
+        running = getattr(self, "_mission_probe_task", None)
+        if running is not None and not running.done():
+            return
+        now = _time.monotonic()
+        last = getattr(self, "_mission_probed_at", 0.0)
+        if last and now - last < _ms.PROBE_INTERVAL_S:
+            return
+        if not (self.agents_dir / _ms.MISSIONS_FILE).exists():
+            return
+        self._mission_probed_at = now
+
+        async def _run() -> None:
+            try:
+                before = _ms.load_state(self.agents_dir)
+                after = await asyncio.to_thread(_ms.probe, self.agents_dir)
+            except Exception:
+                logger.debug("mission probe failed", exc_info=True)
+                return
+            for mid, entry in after.items():
+                was = (before.get(mid) or {}).get("conditions") or {}
+                for cid, seen in (entry.get("conditions") or {}).items():
+                    if bool((was.get(cid) or {}).get("met")) != bool(seen.get("met")):
+                        logger.info(
+                            "Mission %s: condition %s is now %s (%s)",
+                            mid,
+                            cid,
+                            "MET" if seen.get("met") else "NOT MET",
+                            seen.get("observed"),
+                        )
+                        self._emit(
+                            "mission.condition_changed",
+                            mission_id=mid,
+                            condition=cid,
+                            met=bool(seen.get("met")),
+                        )
+                if entry.get("complete") and not (before.get(mid) or {}).get("complete"):
+                    logger.info("Mission %s: end state reached", mid)
+                    self._emit("mission.end_state_reached", mission_id=mid)
+
+        try:
+            self._mission_probe_task = asyncio.get_running_loop().create_task(_run())
+        except RuntimeError:
+            logger.debug("no running loop for the mission probe", exc_info=True)
 
     def _apply_standing_orders_to_ledger(self, agent: Agent) -> None:
         """Park open commitments a standing order covers; revive held ones
@@ -9335,6 +9441,10 @@ class Fabric:
                         "cc": spec.get("cc"),
                         "subject": spec.get("subject", ""),
                         "body": body,
+                        # Kept apart from the body on purpose: the node rewrites
+                        # the body for voice before sending, and appends this
+                        # after, verbatim. The sender's words cannot replace it.
+                        "system_footer": self._mission_stamp(agent, to),
                         "in_reply_to": spec.get("in_reply_to"),
                         "queued_at": datetime.now(UTC).isoformat(),
                     },
@@ -10125,6 +10235,9 @@ class Fabric:
         Check all agents. Process scheduled actions and run cycles
         for active agents.
         """
+        # Observe mission end states off the loop; a wake only reads the file.
+        self._kick_mission_probe()
+
         # Process scheduled actions
         due = self.scheduler.tick()
         for agent_id, actions in due.items():
