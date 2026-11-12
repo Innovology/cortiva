@@ -187,6 +187,7 @@ def _queue_shim(agent, meta):
         _thread_key=Fabric._thread_key,
         _email_meta=lambda: meta,
         _emit=lambda *a, **k: None,
+        _mission_stamp=lambda a, to: "",
         _OUTBOX_MAX_SENDS=Fabric._OUTBOX_MAX_SENDS,
         _OUTBOX_DEBOUNCE_S=Fabric._OUTBOX_DEBOUNCE_S,
         _OUTBOX_HUMAN_DEBOUNCE_S=Fabric._OUTBOX_HUMAN_DEBOUNCE_S,
