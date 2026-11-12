@@ -234,6 +234,11 @@ class TestBrief:
         assert out.index("FIRST: the route is not proven") < out.index("NOT MET")
         assert "cortiva-route-leads228" in out and "HTTP 404" in out
         assert len(out) < 1500  # it rides in the small asks
+        # The mission is the team's: a step one member cannot do goes to a
+        # teammate before it goes to the human (the CEO, with no GitHub access,
+        # asked the founder for a token while three teammates could push).
+        assert "The team on it: amara, cto." in out
+        assert out.index("teammate who can") < out.index("nobody on the team")
 
     def test_nothing_to_say_once_the_end_state_is_reached(self, tmp_path):
         _write(tmp_path, [_mission()])

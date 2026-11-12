@@ -426,9 +426,11 @@ def _route_lines(m: dict[str, Any], entry: dict[str, Any], now: datetime) -> lis
         f"Before any other work on this mission, make the text `{route['token']}` appear at "
         f"{route['url']}, by the same path your real work will travel. It is a rehearsal: "
         "it finds every gate between your work and the end state while the change is trivial.",
-        "If a step on that path is one you cannot see or cannot do, that is the finding. "
-        f"Send ONE message to {_issuer(m)} naming the step, the place and what you need. "
-        "Do not build further behind a gate you have not passed.",
+        "A step you cannot do yourself goes to the teammate who can: the mission is the "
+        "team's, and so is the route. Only a step that NOBODY on the team can see or do is "
+        f"the finding. Then, and only then, send ONE message to {_issuer(m)} naming the "
+        "step, the place and what the team needs. Do not build further behind a gate "
+        "you have not passed.",
     ]
     return lines
 
@@ -534,6 +536,9 @@ def brief(
             f"**{m['title']}** — {entry.get('met', 0)} of {len(m['end_state'])} end-state "
             f"conditions met, as observed by the system (issued by {_issuer(m)})."
         )
+        team = [str(t) for t in _as_list(m.get("team")) if str(t).strip()]
+        if team:
+            out.append(f"The team on it: {', '.join(team)}.")
         route = route_of(m)
         if route and not (entry.get("route") or {}).get("first_met_at"):
             waited = _hours_between(
@@ -542,8 +547,9 @@ def brief(
             out.append(
                 f"- FIRST: the route is not proven ({_age(waited)}). Get the text "
                 f"`{route['token']}` to appear at {route['url']} by the path your real work "
-                f"travels. A step you cannot see or do is the finding: one message to "
-                f"{_issuer(m)} naming it."
+                f"travels. A step you cannot do goes to the teammate who can. Only a step "
+                f"nobody on the team can see or do goes to {_issuer(m)}, as one message "
+                f"naming it."
             )
         for cond in unmet:
             seen = conds.get(str(cond["id"])) or {}

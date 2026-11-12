@@ -6419,9 +6419,10 @@ class Fabric:
                     "Your checklist is clear and your mission (above) is not at its end "
                     "state. Add exactly ONE item: the step you can take yourself, now, "
                     "that moves the first thing listed under the mission — the route if "
-                    "it is not proven, otherwise the first condition not met. If only "
-                    "someone else can move it, the item is the one message that gets it "
-                    "moved, naming the step and the place. If a colleague already has "
+                    "it is not proven, otherwise the first condition not met. If you "
+                    "cannot do that step yourself, the item is the one message to the "
+                    "teammate who can, naming the step and the place; a human is asked "
+                    "only for what nobody on the team can do. If a colleague already has "
                     "that step in hand and nothing of yours can move a condition, output "
                     "the checklist unchanged.",
                 )
