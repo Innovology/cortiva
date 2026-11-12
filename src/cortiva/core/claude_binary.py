@@ -54,6 +54,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -180,15 +181,41 @@ def _lay_copy(source: Path, generation: int) -> str:
     """Copy the upstream binary to a brand-new path under the managed dir and
     return it. The filename carries a fresh nonce every time so the path string
     is *never reused* — the wedge is path-keyed, so each cure must land on a
-    path that has never been executed before. ``shutil.copyfile`` copies bytes
-    only (no xattrs), so the copy carries no ``com.apple.quarantine`` and skips
-    Gatekeeper assessment."""
+    path that has never been executed before. The copy must not carry
+    ``com.apple.quarantine`` (see :func:`_strip_quarantine`)."""
     _MANAGED_DIR.mkdir(parents=True, exist_ok=True)
     nonce = uuid.uuid4().hex[:8]
     dst = _MANAGED_DIR / f"claude-g{generation}-{nonce}"
     shutil.copyfile(source, dst)
     os.chmod(dst, 0o755)
+    _strip_quarantine(dst)
     return str(dst)
+
+
+def _strip_quarantine(path: Path) -> None:
+    """Remove ``com.apple.quarantine`` from a managed copy (macOS only).
+
+    Homebrew quarantines every cask it downloads, and — contrary to what this
+    module used to assume — ``shutil.copyfile`` carries that attribute onto the
+    copy. The first exec of a quarantined build makes Gatekeeper raise its
+    "downloaded from the internet" prompt and wait for a click; on a headless
+    node nobody clicks, so the exec hangs until our timeout kills it (seen on
+    the first 2.1.145 -> 2.1.311 upgrade: ``syspolicyd: Prompt shown, waiting
+    for response`` then ``ASP: Security policy would not allow process``). The
+    build is still signed and notarized, and brew verified its checksum; this
+    only drops the interactive first-open gate for the node's own copy."""
+    if sys.platform != "darwin":
+        return
+    try:
+        subprocess.run(
+            ["/usr/bin/xattr", "-d", "com.apple.quarantine", str(path)],
+            capture_output=True,
+            timeout=10,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        logger.debug("could not strip quarantine from %s", path, exc_info=True)
 
 
 def _prune_old(*keep: str | None) -> None:
@@ -556,7 +583,12 @@ def _try_promote(source: Path, sig: str, managed: str, state: dict) -> str | Non
         source,
     )
     candidate = _lay_copy(source, 0)
-    if _validate(candidate) and _probe_headless(candidate):
+    failed = ""
+    if not _validate(candidate):
+        failed = "`--version` did not return"
+    elif not _probe_headless(candidate):
+        failed = "the headless `claude -p` call did not succeed"
+    if not failed:
         was = state.get("version", "")
         _commit(candidate, source, sig, 0, True, state, previous=managed)
         logger.warning(
@@ -575,9 +607,10 @@ def _try_promote(source: Path, sig: str, managed: str, state: dict) -> str | Non
     state["skip_until"] = time.time() + _REJECT_RETRY_S
     _write_state(state)
     logger.error(
-        "claude candidate from %s FAILED its probes — staying on %s (%s); "
+        "claude candidate from %s was NOT promoted (%s) — staying on %s (%s); "
         "will retry this build in %.0fh",
         source,
+        failed,
         managed,
         state.get("version", "?"),
         _REJECT_RETRY_S / 3600,
@@ -685,6 +718,4 @@ def _main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    import sys
-
     raise SystemExit(_main(sys.argv[1:]))

@@ -284,6 +284,30 @@ def test_other_process_follows_a_promotion_without_restart(monkeypatch, tmp_path
     assert cb.claude_binary() == str(new)
 
 
+def test_managed_copy_is_laid_without_quarantine(monkeypatch, tmp_path):
+    """Homebrew quarantines the cask and the attribute rides along on a copy;
+    a quarantined first exec hangs on a Gatekeeper prompt nobody can click."""
+    _setup(monkeypatch, tmp_path)
+    monkeypatch.undo()
+    monkeypatch.setattr(cb, "_MANAGED_DIR", tmp_path / "claude-bin")
+    monkeypatch.setattr(cb.sys, "platform", "darwin")
+    src = tmp_path / "src-claude"
+    src.write_text("x")
+    runs: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        runs.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cb.subprocess, "run", fake_run)
+    laid = cb._lay_copy(src, 0)
+    assert runs == [["/usr/bin/xattr", "-d", "com.apple.quarantine", laid]]
+    # Elsewhere there is no such attribute and nothing is spawned.
+    monkeypatch.setattr(cb.sys, "platform", "linux")
+    cb._lay_copy(src, 0)
+    assert len(runs) == 1
+
+
 def test_upgrade_command_follows_the_installed_cask(monkeypatch, tmp_path):
     prefix = tmp_path / "homebrew"
     (prefix / "bin").mkdir(parents=True)
