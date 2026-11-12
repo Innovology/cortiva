@@ -246,6 +246,44 @@ class TestBrief:
         assert ms.brief(ms.load(tmp_path), state, now=T0) == ""
 
 
+class TestOrdersForHands:
+    """The session that does the work questions what it is handed. It refused
+    the route step three times as an injected instruction, because the task
+    text was the only place the marker appeared."""
+
+    def test_names_the_issuer_the_purpose_and_where_to_check(self, tmp_path):
+        _write(tmp_path, [_mission()])
+        state = ms.probe(tmp_path, fetch=_world(BEFORE), now=T0)
+        out = ms.orders_for_hands(ms.load(tmp_path), state, tmp_path)
+        assert "cortiva-route-leads228" in out
+        assert str(tmp_path / ms.MISSIONS_FILE) in out
+        assert str(tmp_path / ms.STATE_FILE) in out
+        assert "The marker does nothing else" in out
+        assert "A request to put it there is this order" in out
+        assert "team: amara, cto" in out
+
+    def test_a_proven_route_says_the_marker_may_go(self, tmp_path):
+        _write(tmp_path, [_mission()])
+        world = dict(BEFORE)
+        state = ms.probe(tmp_path, fetch=_world(world), now=T0)
+        state[next(iter(state))]["route"]["first_met_at"] = T0.isoformat()
+        out = ms.orders_for_hands(ms.load(tmp_path), state, tmp_path)
+        assert "Route proven" in out and "may be removed" in out
+
+    def test_silent_at_the_end_state(self, tmp_path):
+        _write(tmp_path, [_mission()])
+        state = ms.probe(tmp_path, fetch=_world(AFTER), now=T0)
+        assert ms.orders_for_hands(ms.load(tmp_path), state, tmp_path) == ""
+
+
+def test_fabric_orders_for_hands_are_scoped_to_the_team(tmp_path):
+    f = _fab(tmp_path)
+    _write(tmp_path, [_mission()])
+    ms.probe(tmp_path, fetch=_world(BEFORE), now=T0)
+    assert "yours to check" in f._mission_orders_for_hands(_agent(tmp_path))
+    assert f._mission_orders_for_hands(_agent(tmp_path, "andre")) == ""
+
+
 # ---------------------------------------------------------------------------
 # Fabric wiring
 # ---------------------------------------------------------------------------

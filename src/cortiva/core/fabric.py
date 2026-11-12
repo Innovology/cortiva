@@ -4031,6 +4031,9 @@ class Fabric:
         floor = self._factory_context(agent)
         if floor:
             prompt += "\n\n" + floor
+        orders = self._mission_orders_for_hands(agent)
+        if orders:
+            prompt += "\n\n" + orders
 
         # Use the agent's workspace directory as cwd
         cwd = agent.directory / "workspace"
@@ -4206,6 +4209,9 @@ class Fabric:
         floor = self._factory_context(agent)
         if floor:
             prompt += "\n\n" + floor
+        orders = self._mission_orders_for_hands(agent)
+        if orders:
+            prompt += "\n\n" + orders
         verdicts = self._world_verdicts_context(agent)
         if verdicts:
             prompt += "\n\n" + verdicts
@@ -4348,7 +4354,9 @@ class Fabric:
         # strong family (e.g. Qwen-Max) so the reviewer doesn't share the
         # producer's blind spots — verify with a different lineage than you
         # produced with.
-        critique = await self._slot_b_critique(task.description, final, model)
+        critique = await self._slot_b_critique(
+            task.description, final, model, self._mission_orders_for_hands(agent)
+        )
         return SessionResult(
             agent_id=agent.id,
             task_id=task.id,
@@ -4364,6 +4372,7 @@ class Fabric:
         task_desc: str,
         outcome: str,
         model: str | None,
+        orders: str = "",
     ) -> str:
         """Slot B: a Claude pass that challenges Slot A's output, on a model at
         least as capable as the one that produced it (``model`` = Slot A's; None
@@ -4378,7 +4387,7 @@ class Fabric:
                     f"task:\n{task_desc}\n\nThey report:\n{outcome}\n\n"
                     "In ONE line: is this actually complete and correct? If "
                     "something's missing, wrong, or unverified, say so plainly. "
-                    "If it's solid, reply 'LGTM'."
+                    "If it's solid, reply 'LGTM'." + (f"\n\n{orders}" if orders else "")
                 ),
                 timeout_s=90.0,
                 extra_args=(["--model", model] if model else None),
@@ -7617,6 +7626,20 @@ class Fabric:
             return _ms.brief(mine, state)
         except Exception:
             logger.debug("mission brief failed for %s", agent.id, exc_info=True)
+            return ""
+
+    def _mission_orders_for_hands(self, agent: Agent) -> str:
+        """The agent's unfinished missions for the session that does its work,
+        with where to check them. See missions.orders_for_hands."""
+        mine, state = self._missions_for(agent)
+        if not mine:
+            return ""
+        try:
+            from cortiva.core import missions as _ms
+
+            return _ms.orders_for_hands(mine, state, self.agents_dir)
+        except Exception:
+            logger.debug("mission orders failed for %s", agent.id, exc_info=True)
             return ""
 
     def _mission_stamp(self, agent: Agent, to: Any) -> str:
