@@ -468,7 +468,11 @@ BUILD_STATION_TOOL: dict[str, Any] = {
                 "matches": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Task phrases (substrings, or /regex/) this station takes.",
+                    "description": (
+                        "The wording the tasks really arrive in — phrases of two or more "
+                        "words (every word must be in the task), or /regex/. Not a "
+                        "description of the station."
+                    ),
                 },
                 "brief": {
                     "type": "string",
