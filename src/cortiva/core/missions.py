@@ -478,10 +478,13 @@ def context_block(
                 lines.append(f"\nLast time any condition moved: {_age(idle)} ago.")
             else:
                 watched = _hours_between(str(entry.get("first_checked_at") or ""), now)
-                lines.append(
-                    f"\nNo condition has moved in the {_age(watched)} the system has watched. "
-                    "Nothing this team has done has yet arrived where the end state is observed."
-                )
+                line = f"\nNo condition has moved since the system began watching, {_age(watched)} ago."
+                if watched is not None and watched >= ROUTE_OVERDUE_HOURS:
+                    line += (
+                        " Nothing this team has done has yet arrived where the end state "
+                        "is observed."
+                    )
+                lines.append(line)
             lines.append(
                 "Your next action is whatever moves the first ❌. Work that moves no "
                 "condition is not work on this mission."

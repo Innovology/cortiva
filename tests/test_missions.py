@@ -168,7 +168,9 @@ class TestWhatTheTeamSees:
         assert "ROUTE NOT PROVEN — 30 h" in block and "first problem" in block
         assert "cortiva-route-leads228" in block and "Alex" in block
         assert block.index("ROUTE NOT PROVEN") < block.index("❌")
-        assert "No condition has moved" in block
+        assert "No condition has moved" in block and "has yet arrived" in block
+        early = ms.context_block(ms.load(tmp_path), state, now=T0 + timedelta(hours=2))
+        assert "No condition has moved" in early and "has yet arrived" not in early
         assert "HTTP 404" in block  # the observation, not a summary of it
 
     def test_reached_end_state_reads_as_reached(self, tmp_path):
