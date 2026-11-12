@@ -510,6 +510,59 @@ def context_block(
     return "\n".join(lines).rstrip()
 
 
+def brief(
+    missions: list[dict[str, Any]],
+    state: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> str:
+    """The mission in a few lines, for the small asks: the "what next" replan
+    an agent makes many times a day carries a short context by design, and it
+    is the ask that decides what the agent does. A mission that is only in
+    the long contexts is one the agent reads and then does not act on (first
+    live run, Mini-2 2026-11-12: 17 of 27 model calls were this ask, and none
+    carried the mission). Empty when every mission is at its end state."""
+    now = now or datetime.now(UTC)
+    out: list[str] = []
+    for m in missions:
+        entry = state.get(str(m["mission_id"])) or {}
+        if entry.get("complete"):
+            continue
+        conds = entry.get("conditions") or {}
+        unmet = [c for c in m["end_state"] if not (conds.get(str(c["id"])) or {}).get("met")]
+        out.append(
+            f"**{m['title']}** — {entry.get('met', 0)} of {len(m['end_state'])} end-state "
+            f"conditions met, as observed by the system (issued by {_issuer(m)})."
+        )
+        route = route_of(m)
+        if route and not (entry.get("route") or {}).get("first_met_at"):
+            waited = _hours_between(
+                str(m.get("issued_at") or entry.get("first_checked_at") or ""), now
+            )
+            out.append(
+                f"- FIRST: the route is not proven ({_age(waited)}). Get the text "
+                f"`{route['token']}` to appear at {route['url']} by the path your real work "
+                f"travels. A step you cannot see or do is the finding: one message to "
+                f"{_issuer(m)} naming it."
+            )
+        for cond in unmet:
+            seen = conds.get(str(cond["id"])) or {}
+            owner = str((cond.get("check") or {}).get("type") or "") == "owner"
+            tail = (
+                f"only {_issuer(m)} can confirm; make it true, then ask once"
+                if owner
+                else str(seen.get("observed") or "not yet checked")
+            )
+            out.append(f"- NOT MET: {cond['describe']} ({tail})")
+    if not out:
+        return ""
+    return (
+        "## 🎯 Your mission — not at its end state\n"
+        "Only the system's checks and the mission's owner decide done; no report, merge "
+        "or closed issue does.\n" + "\n".join(out)
+    )
+
+
 def status_stamp(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
     """What the system appends to a member's report to a human: the observed
     state of each mission, in the system's words. It travels beside the body,

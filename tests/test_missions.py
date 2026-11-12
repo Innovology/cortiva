@@ -225,6 +225,22 @@ class TestWhatTheTeamSees:
         assert ms.status_stamp([], {}) == ""
 
 
+class TestBrief:
+    def test_short_form_leads_with_the_route_then_what_is_not_met(self, tmp_path):
+        _write(tmp_path, [_mission()])
+        state = ms.probe(tmp_path, fetch=_world(BEFORE), now=T0)
+        out = ms.brief(ms.load(tmp_path), state, now=T0 + timedelta(hours=3))
+        assert "0 of 3 end-state conditions met" in out
+        assert out.index("FIRST: the route is not proven") < out.index("NOT MET")
+        assert "cortiva-route-leads228" in out and "HTTP 404" in out
+        assert len(out) < 1500  # it rides in the small asks
+
+    def test_nothing_to_say_once_the_end_state_is_reached(self, tmp_path):
+        _write(tmp_path, [_mission()])
+        state = ms.probe(tmp_path, fetch=_world(AFTER), now=T0)
+        assert ms.brief(ms.load(tmp_path), state, now=T0) == ""
+
+
 # ---------------------------------------------------------------------------
 # Fabric wiring
 # ---------------------------------------------------------------------------
@@ -332,3 +348,11 @@ def test_no_register_means_no_probe(tmp_path):
 
     asyncio.run(run())
     assert getattr(f, "_mission_probe_task", None) is None
+
+
+def test_fabric_brief_is_scoped_to_the_team(tmp_path):
+    f = _fab(tmp_path)
+    _write(tmp_path, [_mission()])
+    ms.probe(tmp_path, fetch=_world(BEFORE), now=T0)
+    assert "Lead capture live" in f._mission_brief(_agent(tmp_path))
+    assert f._mission_brief(_agent(tmp_path, "andre")) == ""

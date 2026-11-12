@@ -5430,8 +5430,8 @@ class Fabric:
         parts.append(
             "## What counts\n\n"
             "The company's scoreboard moves only on things the world can see: a "
-            "merged pull request someone else merged, a URL that answers, an issue "
-            "closed, a lead, a human's yes. Templates, playbooks, protocols, decision "
+            "merged pull request someone else merged, a mission's end-state condition "
+            "met, a lead, a human's yes. Templates, playbooks, protocols, decision "
             "records, dashboards about how we work and rules for yourself are not "
             "deliverables — they do not score, and a standing order may forbid them. "
             "Every milestone you write names the artefact the world will see when it "
@@ -6318,6 +6318,11 @@ class Fabric:
             base.append("## Your Responsibilities\n" + resp[:1500])
         plan = agent.read_identity("plan").strip()
         base.append("## Your current checklist\n" + (plan or "(empty)"))
+        # The mission stands over the checklist in every ask, in its short
+        # form: this is the ask that decides what the agent does next.
+        mission_brief = self._mission_brief(agent)
+        if mission_brief:
+            base.append(mission_brief)
         # What arrived / what stands over the plan — the only reasons to change it.
         await self._ground_inbox(agent)
         await self._ground_directives(agent)
@@ -6405,9 +6410,28 @@ class Fabric:
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S  # something landed
                 return
 
+            # Rung 0 — the mission. A clear checklist while the mission is
+            # short of its end state is not free time.
+            added: int | None = 0
+            if mission_brief:
+                added = await _ask(
+                    base,
+                    "Your checklist is clear and your mission (above) is not at its end "
+                    "state. Add exactly ONE item: the step you can take yourself, now, "
+                    "that moves the first thing listed under the mission — the route if "
+                    "it is not proven, otherwise the first condition not met. If only "
+                    "someone else can move it, the item is the one message that gets it "
+                    "moved, naming the step and the place. If a colleague already has "
+                    "that step in hand and nothing of yours can move a condition, output "
+                    "the checklist unchanged.",
+                )
+            if added:
+                agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
+                logger.info("Idle: %s took a step on the mission", agent.id)
+                return
+
             # Rung 1 — bring forward. Only when there is something to bring.
             later = self._later_this_week_context(agent)
-            added: int | None = 0
             if later:
                 added = await _ask(
                     base + [later],
@@ -6448,7 +6472,7 @@ class Fabric:
                 "where a person gets creative: contribute to the goal, or streamline the "
                 "future to free up time. Choose ONE and add exactly that item: (a) a "
                 "step you can produce yourself that moves the company's scoreboard — a "
-                "PR, a URL that answers, an issue closed, a lead; for a manager, the "
+                "PR someone else merges, a mission condition met, a lead; for a manager, the "
                 "report whose promise is most at risk and what you will do about it; "
                 "(b) a step you keep doing by hand that belongs on your factory floor — "
                 "name it with build_station so the build goes on the checklist; (c) a "
@@ -7579,6 +7603,19 @@ class Fabric:
             return _ms.context_block(mine, state)
         except Exception:
             logger.debug("mission context failed for %s", agent.id, exc_info=True)
+            return ""
+
+    def _mission_brief(self, agent: Agent) -> str:
+        """The agent's unfinished missions in a few lines, for the small asks."""
+        mine, state = self._missions_for(agent)
+        if not mine:
+            return ""
+        try:
+            from cortiva.core import missions as _ms
+
+            return _ms.brief(mine, state)
+        except Exception:
+            logger.debug("mission brief failed for %s", agent.id, exc_info=True)
             return ""
 
     def _mission_stamp(self, agent: Agent, to: Any) -> str:
