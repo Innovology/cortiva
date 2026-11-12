@@ -5034,11 +5034,27 @@ class Fabric:
     async def _run_through_station(self, agent: Agent, task: Task) -> bool:
         """Route the task through a ready station when one matches. Returns
         True when the floor took it (done or exception), False to fall
-        through to the agent's own hands or head."""
+        through to the agent's own hands or head.
+
+        Her own stations first. Then the team's: a ready station a colleague
+        built and that is safe to run for somebody else (see
+        ``factory.sharing_problem``) does the work for *this* agent — her id,
+        her directory, her credentials — and stays its builder's. On
+        Mini-2, 5-12 November 2026, one agent's station took "Track to
+        delivery; mark the commitment delivered" while the other four did
+        the identical step by hand about 350 times."""
+        author = ""
         try:
             station = _factory.match(
                 _factory.stations(agent.directory, ready_only=True), task.description
             )
+            if station is None:
+                station = _factory.match_team(
+                    _factory.team_stations(self._team_dirs(agent)),
+                    task.description,
+                    _factory.adopted(agent.directory),
+                )
+                author = station.author if station is not None else ""
         except Exception:
             logger.debug("station lookup failed for %s", agent.id, exc_info=True)
             return False
@@ -5050,18 +5066,31 @@ class Fabric:
             description=task.description,
             agent_id=agent.id,
             env=self._station_env(agent),
+            agent_dir=agent.directory,
+            author=author,
         )
+        run.author = author
         _factory.record_run(agent.directory, run)
+        if author:
+            # The builder's ledger too: her floor report shows whose work her
+            # station did, and a failure for a colleague is hers to fix.
+            from dataclasses import replace as _replace
+
+            _factory.record_run(
+                station.directory.parent.parent, _replace(run, author="", used_by=agent.id)
+            )
+        label = f"[station {station.name} by {author}]" if author else f"[station {station.name}]"
         if run.ok:
             task.status = "done"
-            task.outcome = f"[station {station.name}] {run.summary or 'ok'}"
+            task.outcome = f"{label} {run.summary or 'ok'}"
             if run.artifact:
                 task.outcome += f" — {run.artifact}"
             agent.tasks_completed_today += 1
             self._record_done(agent, task)
             logger.info(
-                "Station %s ran for %s in %.1fs: %s",
+                "Station %s%s ran for %s in %.1fs: %s",
                 station.name,
+                f" (built by {author})" if author else "",
                 agent.id,
                 run.seconds,
                 (run.summary or "ok")[:80],
@@ -5072,19 +5101,51 @@ class Fabric:
                 station=station.name,
                 task_id=task.id,
                 artifact=run.artifact,
+                author=author or agent.id,
+                trace_id=task.id,
             )
-        else:
-            task.status = "exception"
-            task.error = f"[station {station.name}] {run.error}"
-            logger.warning("Station %s FAILED for %s: %s", station.name, agent.id, run.error[:120])
-            self._emit(
-                "station.failed",
-                agent_id=agent.id,
-                station=station.name,
-                task_id=task.id,
-                error=run.error[:200],
-            )
+            if author:
+                # Credit is the builder's. The framework pays nothing itself —
+                # the outcome ledger is the node's — so this event is the hook:
+                # one colleague's task done by her station.
+                self._emit(
+                    "station.used_by_colleague",
+                    agent_id=author,
+                    station=station.name,
+                    used_by=agent.id,
+                    task_id=task.id,
+                    artifact=run.artifact,
+                    seconds=run.seconds,
+                    trace_id=task.id,
+                )
+            return True
+        logger.warning(
+            "Station %s%s FAILED for %s: %s",
+            station.name,
+            f" (built by {author})" if author else "",
+            agent.id,
+            run.error[:120],
+        )
+        self._emit(
+            "station.failed",
+            agent_id=agent.id,
+            station=station.name,
+            task_id=task.id,
+            error=run.error[:200],
+            author=author or agent.id,
+            trace_id=task.id,
+        )
+        if author:
+            # Not hers to fix: the task goes back to her own hands, the
+            # failure stays on the builder's floor.
+            return False
+        task.status = "exception"
+        task.error = f"{label} {run.error}"
         return True
+
+    def _team_dirs(self, agent: Agent) -> list[tuple[str, Path]]:
+        """Every colleague on this fabric, as (id, directory)."""
+        return [(aid, a.directory) for aid, a in sorted(self.agents.items()) if aid != agent.id]
 
     def _station_env(self, agent: Agent) -> dict[str, str]:
         """The environment a station runs in: the process env plus the
@@ -5107,15 +5168,86 @@ class Fabric:
 
     def _factory_context(self, agent: Agent) -> str:
         try:
-            return _factory.floor_report(agent.directory)
+            return _factory.floor_report(
+                agent.directory,
+                team=self._team_dirs(agent),
+                demand=self._colleague_demand(agent),
+            )
         except Exception:
+            logger.debug("floor report failed for %s", agent.id, exc_info=True)
             return ""
 
-    def _handle_build_station(self, agent: Agent, payload: dict) -> None:
+    _DEMAND_TTL_S = 600.0
+
+    def _colleague_demand(self, agent: Agent) -> dict[str, int]:
+        """Per ready station of hers that cannot run for a colleague: how
+        often colleagues did work it would take, by hand, in the last
+        fortnight — from their done ledgers. The factual case for sharing
+        it, the way recurrence is the factual case for building one."""
+        cached = getattr(agent, "_station_demand", None)
+        if cached and time.time() - cached[0] < self._DEMAND_TTL_S:
+            return dict(cached[1])
+        private = [
+            st
+            for st in _factory.stations(agent.directory, ready_only=True)
+            if _factory.sharing_problem(st)
+        ]
+        demand: dict[str, int] = {}
+        if private:
+            for aid, _dir in self._team_dirs(agent):
+                for d in self._done_recent(self.agents[aid]):
+                    if str(d.get("outcome") or "").startswith("[station "):
+                        continue
+                    desc = str(d.get("description") or "")
+                    for st in private:
+                        if st.matches_task(desc, strict=True):
+                            demand[st.name] = demand.get(st.name, 0) + 1
+                            break
+        agent._station_demand = (time.time(), demand)  # type: ignore[attr-defined]
+        return dict(demand)
+
+    def _learned_match_phrases(self, agent: Agent, *texts: str) -> list[str]:
+        """Match phrases in the words her tasks really arrive in: steps she
+        has done by hand more than once this fortnight whose wording the
+        new station's name, purpose or brief substantially repeats.
+
+        The first floor took its phrases from the station's own description:
+        'automate-ci-sweep-and-report' listened for "collect status
+        innovology" and "automate ci sweep and report" while the work arrived
+        as "Live CI Sweep & Status Report — innovology.io, sailcoach,
+        cortiva-hq", twice in the same done ledger. A learned phrase is the
+        whole stem (three words or more), and every word of it must be in a
+        task for the station to take it."""
+        about = _factory.roots(" ".join(texts))
+        groups: dict[str, int] = {}
+        for d in self._done_recent(agent):
+            stem = str(d.get("stem") or "")
+            if not stem or str(d.get("outcome") or "").startswith("[station "):
+                continue
+            groups[stem] = groups.get(stem, 0) + 1
+        out: list[str] = []
+        for stem, n in sorted(groups.items(), key=lambda kv: -kv[1]):
+            words = _factory.roots(stem)
+            if n < 2 or len(_factory.content_words(stem)) < 3:
+                continue
+            # Nearly all of it, and never fewer than three words: yuki's PR
+            # sweep "replies to comments and logs outcomes", which is two
+            # thirds of "reply originator outcome" and not that step.
+            hit = len(words & about)
+            if hit >= 3 and hit / len(words) >= 0.75:
+                out.append(stem)
+        return out[:3]
+
+    def _handle_build_station(self, agent: Agent, payload: dict) -> str:
         """Scaffold a station and queue the build as hands-on work. The code
         is written in a terminal task; the station takes work once its
-        manifest says ready."""
-        name = str(payload.get("name") or "").strip().lower()
+        manifest says ready.
+
+        Before anything is scaffolded the floor is checked — hers and the
+        team's — for a station that already does this. Returns '' when the
+        station was scaffolded, otherwise the reason it was not (also left
+        as a note in her floor report)."""
+        name = _factory.slug(str(payload.get("name") or ""))
         purpose = str(payload.get("purpose") or "").strip()
         brief = str(payload.get("brief") or payload.get("spec") or "").strip()
         matches = payload.get("matches") or []
@@ -5127,32 +5259,132 @@ class Fabric:
                 "build_station from %s ignored — name, purpose, matches and brief are required",
                 agent.id,
             )
-            return
+            return "name, purpose, matches and brief are required"
+
+        # Her own floor first, ready or still being built. On Mini-2 one agent
+        # scaffolded fourteen stations in a week, most of them the same
+        # directive-scope-delegate step under a drifting name; six were
+        # never built and the rest ran eleven times between them.
+        own = [st for st in _factory.stations(agent.directory) if st.name != name]
+        twin = _factory.find_equivalent(name=name, purpose=purpose, matches=matches, candidates=own)
+        if twin is not None:
+            state = "ready" if twin.ready else "still being built"
+            reason = (
+                f"'{name}' was not scaffolded: your station '{twin.name}' ({state}) already "
+                "does this. Tune it, extend its `matches`, or finish it — a variant under "
+                "another name is a second station to maintain."
+            )
+            if not twin.ready:
+                self._queue_station_build(agent, twin.name, twin.purpose)
+            return self._station_not_built(agent, name, twin.name, agent.id, reason)
+
+        # Then the team's. A colleague's station that can run for her is the
+        # station; her wording is kept on her side so her tasks reach it.
+        team = self._team_dirs(agent)
+        twin = _factory.find_equivalent(
+            name=name, purpose=purpose, matches=matches, candidates=_factory.team_stations(team)
+        )
+        if twin is not None:
+            _factory.adopt(
+                agent.directory,
+                author=twin.author,
+                station=twin.name,
+                phrases=[*matches, *self._learned_match_phrases(agent, name, purpose, brief)],
+            )
+            reason = (
+                f"'{name}' was not scaffolded: '{twin.name}', built by {twin.author}, already "
+                f"does this ({twin.purpose[:120]}). Your matching tasks now go through it. "
+                f"If it falls short for your work, tell {twin.author} what is missing — or "
+                "build yours for the part it does not cover."
+            )
+            return self._station_not_built(agent, name, twin.name, twin.author, reason)
+
+        # A colleague built one that cannot run for her: she builds her own,
+        # and starts from theirs.
+        private: list[_factory.Station] = []
+        for aid, directory in team:
+            for st in _factory.stations(directory, ready_only=True):
+                st.author = aid
+                private.append(st)
+        near = _factory.find_equivalent(
+            name=name, purpose=purpose, matches=matches, candidates=private
+        )
+        if near is not None:
+            brief += (
+                f"\n\n{near.author} already built a station for this step — "
+                f"`{near.directory}/run.py` ('{near.name}'). It is written against "
+                f"{near.author}'s own directory, so it cannot run for you; read it before "
+                "writing yours."
+            )
+
+        learned = self._learned_match_phrases(agent, name, purpose, brief)
+        matches += [m for m in learned if m not in matches]
         d = _factory.scaffold_station(
             agent.directory, name=name, purpose=purpose, matches=matches, brief=brief
         )
         if d is None:
             logger.info("build_station from %s: '%s' unusable or already exists", agent.id, name)
-            return
+            return f"'{name}' is unusable as a name or already exists"
+        self._queue_station_build(agent, name, purpose)
+        logger.info("Agent %s is building station '%s': %s", agent.id, name, purpose[:80])
+        self._emit(
+            "station.scaffolded",
+            agent_id=agent.id,
+            station=name,
+            purpose=purpose[:120],
+            learned_matches=len(learned),
+            trace_id=f"station:{agent.id}:{name}",
+        )
+        return ""
+
+    def _station_not_built(
+        self, agent: Agent, asked: str, existing: str, author: str, reason: str
+    ) -> str:
+        _factory.add_notice(agent.directory, reason)
+        logger.info(
+            "build_station from %s: '%s' not scaffolded — '%s' (built by %s) already does it",
+            agent.id,
+            asked,
+            existing,
+            author,
+        )
+        self._emit(
+            "station.duplicate",
+            agent_id=agent.id,
+            station=asked,
+            existing=existing,
+            author=author,
+            trace_id=f"station:{agent.id}:{asked}",
+        )
+        return reason
+
+    def _queue_station_build(self, agent: Agent, name: str, purpose: str) -> None:
+        """The build as hands-on work — once: a station whose build is
+        already on the checklist is not queued again."""
         import uuid
 
         if agent.task_queue is None:
             agent.task_queue = TaskQueue(tasks=[])
+        marker = f"station '{name}'"
+        if any(
+            marker in (t.description or "") and t.status in ("pending", "in_progress")
+            for t in agent.task_queue.tasks
+        ):
+            return
         agent.task_queue.tasks.append(
             Task(
                 id=uuid.uuid4().hex[:12],
                 description=(
                     f"Write and test the code for station '{name}' in factory/{name}/run.py "
                     f"(read STATION.md there first). Purpose: {purpose}. It must read the task "
-                    "JSON on stdin and print {ok, summary, artifact} as the last stdout line. "
+                    "JSON on stdin and print {ok, summary, artifact} as the last stdout line, "
+                    "and work in the `agent_dir` the input names, not its own path. "
                     "Prove it against one real task, then set ready: true in station.yaml."
                 ),
                 priority=1,
             )
         )
         self._write_plan(agent)
-        logger.info("Agent %s is building station '%s': %s", agent.id, name, purpose[:80])
-        self._emit("station.scaffolded", agent_id=agent.id, station=name, purpose=purpose[:120])
 
     def _reading_access(self, agent: Agent) -> list[tuple[str, str]]:
         """Whose GitHub access can ground a reference for this agent: her own
@@ -5793,8 +6025,12 @@ class Fabric:
             )
         return struck
 
+    # The whole slug is the name, however long: a 40-character cap here cut
+    # 'automate-directive-scope-delegate-and-track' to '…-and-tr' and made
+    # 'ack — Code the repetitive…' its purpose (cto, Mini-2, November 2026).
+    # ``factory.slug`` shortens an over-long name at a word.
     _BUILD_LINE_RE = re.compile(
-        r"^\W*build[_ ]station\W+(?P<name>[A-Za-z0-9_-]{2,40})\W*(?P<rest>.*)$", re.IGNORECASE
+        r"^\W*build[_ ]station\W+(?P<name>[A-Za-z0-9_-]{2,})\W*(?P<rest>.*)$", re.IGNORECASE
     )
     # Tokens a plan line puts first that are never a station's name.
     _NOT_A_STATION_NAME = frozenset(
@@ -5823,6 +6059,7 @@ class Fabric:
         if agent.task_queue is None:
             return 0
         made = 0
+        settled = 0
         for t in list(agent.task_queue.tasks):
             # A line that was mid-session when the fabric restarted comes back
             # in_progress (21:05: Maren's 'build_station:' line relaunched as a
@@ -5832,7 +6069,7 @@ class Fabric:
             m = self._BUILD_LINE_RE.match((t.description or "").strip())
             if not m:
                 continue
-            name = m.group("name").lower().replace("_", "-")
+            name = _factory.slug(m.group("name"))
             rest = m.group("rest") or ""
             # A first token that is a prefix or a tag is not a name: 'build_station:
             # Re: [Blocked] CI Gate Routing — …' became station 're' (ceo, 10:00
@@ -5856,27 +6093,38 @@ class Fabric:
                 t.outcome = f"station '{name}' is already on the floor"
                 made += 0
                 continue
-            # Match phrases: the purpose's stem, and the name only when it is a
-            # multi-word slug. A single generic word as a match ("founder",
+            # Match phrases: the name when it is a multi-word slug, else the
+            # purpose's stem. A single generic word as a match ("founder",
             # from Maren's 'build_station: Founder Steer: …' at 20:42) would
             # route every task that mentions it through the station once ready.
+            # The purpose's stem is a last resort: it describes the station
+            # ("codify repetitive failure", "automate manual sweep" — the
+            # latter on four of one agent's stations), not the work. The
+            # phrases that meet real tasks are learned from her done ledger
+            # in _handle_build_station.
             matches: list[str] = []
-            stem = self._stem(purpose)
-            if stem:
-                matches.append(" ".join(stem.split()[:3]))
             if "-" in name:
                 matches.append(name.replace("-", " "))
+            else:
+                stem = self._stem(purpose)
+                if stem:
+                    matches.append(" ".join(stem.split()[:3]))
             if not matches:
                 matches = [purpose[:40]]
-            before = len(agent.task_queue.tasks)
-            self._handle_build_station(
+            refused = self._handle_build_station(
                 agent, {"name": name, "purpose": purpose, "matches": matches, "brief": purpose}
             )
-            if len(agent.task_queue.tasks) > before:
+            if not refused:
                 t.status = "done"
                 t.outcome = f"station '{name}' scaffolded — build queued"
                 made += 1
-        if made:
+            elif "was not scaffolded" in refused:
+                # It exists already — hers under another name, or a colleague's
+                # that takes her work. The line is settled, and says so.
+                t.status = "done"
+                t.outcome = refused[:300]
+                settled += 1
+        if made or settled:
             self._write_plan(agent)
         return made
 
