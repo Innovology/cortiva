@@ -554,10 +554,19 @@ def context_block(
             else:
                 lines.append(f"- ❌ {cond['describe']} — NOT MET ({seen.get('observed', '')})")
                 if str((cond.get("check") or {}).get("type") or "") == "owner":
-                    lines.append(
-                        f"  Make it true, then ask {_issuer(m)} ONCE to confirm it, saying "
-                        "exactly what to do and where to look. Do not ask before it is true."
-                    )
+                    asked = _dict(entry.get("owner_asked"))
+                    if str(cond["id"]) in asked.get("conditions", []):
+                        lines.append(
+                            f"  {_issuer(m)} was asked {_clock(asked.get('at', ''))} by "
+                            f"{asked.get('by', 'a teammate')}. That was the team's one ask. "
+                            "Do not ask again, do not chase a colleague about it, and treat "
+                            "any item on your list that asks again as already done."
+                        )
+                    else:
+                        lines.append(
+                            f"  Make it true, then ask {_issuer(m)} ONCE to confirm it, saying "
+                            "exactly what to do and where to look. Do not ask before it is true."
+                        )
         if entry and not entry.get("complete"):
             if entry.get("last_change_at"):
                 idle = _hours_between(entry["last_change_at"], now)

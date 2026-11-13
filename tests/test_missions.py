@@ -284,6 +284,8 @@ class TestAskedOnce:
         assert "waits on Alex" in out and "by andre" in out and "do not ask again" in out
         assert "NOT MET" not in out
         assert ms.team_has_work(missions, state) is False
+        block = ms.context_block(missions, state, now=T0 + timedelta(hours=1))
+        assert "That was the team's one ask" in block and "ONCE to confirm" not in block
 
     def test_work_coming_back_is_shown_beside_the_standing_ask(self, tmp_path):
         _write(tmp_path, [self._m()])
