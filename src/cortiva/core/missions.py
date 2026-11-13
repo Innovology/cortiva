@@ -371,6 +371,9 @@ def probe(
                     fetch,
                 )
                 entry["route"] = _observe(prev_route, met, observed, now_iso)
+        asked = _dict(prev.get("owner_asked"))
+        if asked and all(not _dict(conds.get(c)).get("met") for c in asked.get("conditions", [])):
+            entry["owner_asked"] = asked
         complete = entry["met"] == entry["total"]
         entry["complete"] = complete
         entry["completed_at"] = (str(prev.get("completed_at") or "") or now_iso) if complete else ""
@@ -382,6 +385,70 @@ def probe(
 # ---------------------------------------------------------------------------
 # What the team sees, and what a human is told
 # ---------------------------------------------------------------------------
+
+
+def _owner_unmet(m: dict[str, Any], entry: dict[str, Any]) -> list[str]:
+    """Ids of the conditions only the owner can confirm and has not."""
+    conds = _dict(entry.get("conditions"))
+    return [
+        str(c["id"])
+        for c in m["end_state"]
+        if str(_dict(c.get("check")).get("type") or "") == "owner"
+        and not _dict(conds.get(str(c["id"]))).get("met")
+    ]
+
+
+def _only_owner_left(m: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """The route is proven and every condition the system can check is met."""
+    if not entry or entry.get("complete"):
+        return False
+    if route_of(m) and not _dict(entry.get("route")).get("first_met_at"):
+        return False
+    owner = _owner_unmet(m, entry)
+    unmet = int(entry.get("total", 0)) - int(entry.get("met", 0))
+    return bool(owner) and unmet == len(owner)
+
+
+def waits_on_owner(m: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """True when the system sees nothing left for the team and the owner
+    has been asked."""
+    return _only_owner_left(m, entry) and bool(entry.get("owner_asked"))
+
+
+def record_owner_ask(
+    agents_dir: Path,
+    missions: list[dict[str, Any]],
+    by: str,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Note that the owner has been asked, for the whole team.
+
+    Each member was told "ask once" and each did: ten messages from four
+    members reached the owner overnight for the same two confirmations (first
+    live run, Mini-2 2026-11-13). "Once" is a fact about the team, so the
+    system keeps it. The first message a member sends a human once only owner
+    conditions are left is the ask; it stands until one of them is confirmed.
+    A message sent while the team still has work is not the ask.
+    Returns the missions newly marked."""
+    state = load_state(agents_dir)
+    marked: list[str] = []
+    for m in missions:
+        mid = str(m["mission_id"])
+        entry = _dict(state.get(mid))
+        if not _only_owner_left(m, entry) or entry.get("owner_asked"):
+            continue
+        owner = _owner_unmet(m, entry)
+        entry["owner_asked"] = {
+            "at": (now or datetime.now(UTC)).isoformat(),
+            "by": by,
+            "conditions": owner,
+        }
+        state[mid] = entry
+        marked.append(mid)
+    if marked:
+        save_state(agents_dir, state)
+    return marked
 
 
 def _hours_between(start_iso: str, end: datetime) -> float | None:
@@ -532,6 +599,16 @@ def brief(
             continue
         conds = entry.get("conditions") or {}
         unmet = [c for c in m["end_state"] if not (conds.get(str(c["id"])) or {}).get("met")]
+        asked = _dict(entry.get("owner_asked"))
+        if waits_on_owner(m, entry):
+            out.append(
+                f"**{m['title']}** — waits on {_issuer(m)}, who was asked "
+                f"{_clock(asked.get('at', ''))} by {asked.get('by', 'a teammate')}. Every "
+                "condition the system can check is met. Nothing here is yours to do: do not "
+                "ask again, do not chase, do not add mission work. A second message does "
+                "not make the answer come sooner."
+            )
+            continue
         out.append(
             f"**{m['title']}** — {entry.get('met', 0)} of {len(m['end_state'])} end-state "
             f"conditions met, as observed by the system (issued by {_issuer(m)})."
@@ -554,11 +631,18 @@ def brief(
         for cond in unmet:
             seen = conds.get(str(cond["id"])) or {}
             owner = str((cond.get("check") or {}).get("type") or "") == "owner"
-            tail = (
-                f"only {_issuer(m)} can confirm; make it true, then ask once"
-                if owner
-                else str(seen.get("observed") or "not yet checked")
-            )
+            if owner and str(cond["id"]) in asked.get("conditions", []):
+                tail = (
+                    f"{_issuer(m)} was asked {_clock(asked.get('at', ''))} by "
+                    f"{asked.get('by', 'a teammate')}; it waits on them, do not ask again"
+                )
+            elif owner:
+                tail = (
+                    f"only {_issuer(m)} can confirm; make it true, then ONE member asks "
+                    "once for the team"
+                )
+            else:
+                tail = str(seen.get("observed") or "not yet checked")
             out.append(f"- NOT MET: {cond['describe']} ({tail})")
     if not out:
         return ""
@@ -567,6 +651,16 @@ def brief(
         "Only the system's checks and the mission's owner decide done; no report, merge "
         "or closed issue does.\n" + "\n".join(out)
     )
+
+
+def team_has_work(missions: list[dict[str, Any]], state: dict[str, Any]) -> bool:
+    """False when every unfinished mission waits on its owner: an idle member
+    then has no mission step to take, and asking for one produces a chase."""
+    for m in missions:
+        entry = _dict(state.get(str(m["mission_id"])))
+        if not entry.get("complete") and not waits_on_owner(m, entry):
+            return True
+    return False
 
 
 def orders_for_hands(

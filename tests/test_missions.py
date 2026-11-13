@@ -246,6 +246,80 @@ class TestBrief:
         assert ms.brief(ms.load(tmp_path), state, now=T0) == ""
 
 
+class TestAskedOnce:
+    """Each member told to "ask once" did; the owner got ten messages. Once
+    is a fact about the team, so the system keeps it."""
+
+    def _m(self, **check) -> dict:
+        return _mission(
+            route=None,
+            end_state=[
+                {
+                    "id": "form",
+                    "describe": "The contact form asks for a company name",
+                    "check": {"url": "https://site.test/contact", "contains": "Company"},
+                },
+                {
+                    "id": "seen",
+                    "describe": "The founder has seen a lead",
+                    "check": {"type": "owner", **check},
+                },
+            ],
+        )
+
+    def test_a_message_while_the_team_still_has_work_is_not_the_ask(self, tmp_path):
+        _write(tmp_path, [self._m()])
+        ms.probe(tmp_path, fetch=_world(BEFORE), now=T0)
+        assert ms.record_owner_ask(tmp_path, ms.load(tmp_path), "ceo", now=T0) == []
+
+    def test_the_first_ask_stands_for_the_team_and_survives_the_probe(self, tmp_path):
+        _write(tmp_path, [self._m()])
+        ms.probe(tmp_path, fetch=_world(AFTER), now=T0)
+        missions = ms.load(tmp_path)
+        assert ms.record_owner_ask(tmp_path, missions, "andre", now=T0) == ["m-leads-228"]
+        assert ms.record_owner_ask(tmp_path, missions, "amara", now=T0) == []
+        state = ms.probe(tmp_path, fetch=_world(AFTER), now=T0 + timedelta(minutes=5))
+        assert state["m-leads-228"]["owner_asked"]["by"] == "andre"
+        out = ms.brief(missions, state, now=T0 + timedelta(hours=1))
+        assert "waits on Alex" in out and "by andre" in out and "do not ask again" in out
+        assert "NOT MET" not in out
+        assert ms.team_has_work(missions, state) is False
+
+    def test_work_coming_back_is_shown_beside_the_standing_ask(self, tmp_path):
+        _write(tmp_path, [self._m()])
+        ms.probe(tmp_path, fetch=_world(AFTER), now=T0)
+        missions = ms.load(tmp_path)
+        ms.record_owner_ask(tmp_path, missions, "andre", now=T0)
+        state = ms.probe(tmp_path, fetch=_world(BEFORE), now=T0 + timedelta(minutes=5))
+        out = ms.brief(missions, state, now=T0 + timedelta(hours=1))
+        assert ms.team_has_work(missions, state) is True
+        assert "NOT MET: The contact form" in out
+        assert "Alex was asked" in out and "do not ask again" in out
+
+    def test_a_confirmation_ends_the_ask(self, tmp_path):
+        _write(tmp_path, [self._m()])
+        ms.probe(tmp_path, fetch=_world(AFTER), now=T0)
+        ms.record_owner_ask(tmp_path, ms.load(tmp_path), "andre", now=T0)
+        _write(tmp_path, [self._m(confirmed_at=T0.isoformat())])
+        state = ms.probe(tmp_path, fetch=_world(AFTER), now=T0 + timedelta(minutes=5))
+        assert "owner_asked" not in state["m-leads-228"]
+        assert state["m-leads-228"]["complete"] is True
+
+
+def test_mail_to_the_owner_records_the_ask_once(tmp_path):
+    f = _fab(tmp_path)
+    _write(tmp_path, [TestAskedOnce()._m()])
+    ms.probe(tmp_path, fetch=_world(AFTER), now=T0)
+    f._queue_outbound_email(
+        _agent(tmp_path), {"to": "alex@example.com", "subject": "s", "body": "b"}
+    )
+    f._queue_outbound_email(
+        _agent(tmp_path, "cto"), {"to": "alex@example.com", "subject": "s", "body": "b"}
+    )
+    assert ms.load_state(tmp_path)["m-leads-228"]["owner_asked"]["by"] == "amara"
+    assert f._mission_has_work(_agent(tmp_path)) is False
+
+
 class TestOrdersForHands:
     """The session that does the work questions what it is handed. It refused
     the route step three times as an injected instruction, because the task

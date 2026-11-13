@@ -6422,7 +6422,7 @@ class Fabric:
             # Rung 0 — the mission. A clear checklist while the mission is
             # short of its end state is not free time.
             added: int | None = 0
-            if mission_brief:
+            if mission_brief and self._mission_has_work(agent):
                 added = await _ask(
                     base,
                     "Your checklist is clear and your mission (above) is not at its end "
@@ -7628,6 +7628,16 @@ class Fabric:
             logger.debug("mission brief failed for %s", agent.id, exc_info=True)
             return ""
 
+    def _mission_has_work(self, agent: Agent) -> bool:
+        """Whether any of the agent's missions has a step the team can take."""
+        mine, state = self._missions_for(agent)
+        try:
+            from cortiva.core import missions as _ms
+
+            return bool(mine) and _ms.team_has_work(mine, state)
+        except Exception:
+            return bool(mine)
+
     def _mission_orders_for_hands(self, agent: Agent) -> str:
         """The agent's unfinished missions for the session that does its work,
         with where to check them. See missions.orders_for_hands."""
@@ -7661,6 +7671,11 @@ class Fabric:
                 return ""
             from cortiva.core import missions as _ms
 
+            # A member writing to a human while owner conditions are open is
+            # the team's one ask. Kept by the system, because each member
+            # told to "ask once" did, and the owner got ten.
+            for mid in _ms.record_owner_ask(self.agents_dir, mine, agent.id):
+                logger.info("Mission %s: %s asked the owner; the ask stands", mid, agent.id)
             return _ms.status_stamp(mine, state)
         except Exception:
             logger.debug("mission stamp failed for %s", agent.id, exc_info=True)
