@@ -3734,6 +3734,13 @@ class Fabric:
                 content = msg.get("content", "")
                 if not recipient or not content:
                     continue
+                # A colleague this fabric runs gets it in team chat: the same
+                # thread their work session reads, so an answer reaches a
+                # session that is waiting for it, and a routine kind costs
+                # the colleague no model call.
+                if self._chat_from_mind(agent, msg):
+                    self.communication_tracker.record(agent.id, recipient)
+                    continue
                 if recipient.lower() in local_keys and self.channel:
                     await self.channel.send(
                         sender=agent.id,
@@ -7713,6 +7720,42 @@ class Fabric:
         except Exception:
             logger.debug("chat intake failed for %s", agent.id, exc_info=True)
             return []
+
+    def _chat_from_mind(self, agent: Agent, msg: dict[str, Any]) -> bool:
+        """Send one of the agent's own messages through team chat. True when
+        it was sent or deliberately refused there (a claim someone else
+        holds); False to let the older paths carry it (a colleague on
+        another node, a name nobody here answers to)."""
+        try:
+            from cortiva.core import teamchat as _tc
+
+            rid = self._chat_resolve(msg.get("to"))
+            if rid is None or rid == agent.id:
+                return False
+            out = _tc.post(
+                self.agents_dir,
+                agent.id,
+                str(msg.get("kind") or "say"),
+                str(msg.get("content") or ""),
+                to=[rid],
+                thread=str(msg.get("thread") or ""),
+                ref=str(msg.get("ref") or ""),
+            )
+            if out.get("ok"):
+                m = out["message"]
+                logger.info("Chat: %s %s -> %s (%s)", agent.id, m["kind"], rid, m["thread"])
+                return True
+            if out.get("held_by"):
+                logger.info("Chat: %s claim refused — %s", agent.id, out["error"])
+                return True
+            # An unknown kind is still a message someone meant to send.
+            out = _tc.post(
+                self.agents_dir, agent.id, "say", str(msg.get("content") or ""), to=[rid]
+            )
+            return bool(out.get("ok"))
+        except Exception:
+            logger.debug("chat from mind failed for %s", agent.id, exc_info=True)
+            return False
 
     def _chat_whoami(self, token: str) -> tuple[str, str] | None:
         return getattr(self, "_chat_tokens", {}).get(str(token or ""))

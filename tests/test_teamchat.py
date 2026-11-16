@@ -156,3 +156,30 @@ def test_only_routine_chat_costs_the_agent_nothing(tmp_path):
     f = _fab(tmp_path)
     tc.post(tmp_path, "cto", "done", thread="site#312", to=["amara"], ref="PR 320")
     assert f._chat_intake(SimpleNamespace(id="amara")) == []
+
+
+def test_the_agents_own_message_goes_through_chat_to_a_local_colleague(tmp_path):
+    f = _fab(tmp_path)
+    amara = f.agents["amara"]
+    assert f._chat_from_mind(
+        amara, {"to": "Samantha", "content": "innovology-web", "kind": "answer"}
+    )
+    assert [m["kind"] for m in tc.unread(tmp_path, "cto")] == ["answer"]
+    # A colleague this fabric does not run is left to the older paths (email).
+    assert f._chat_from_mind(amara, {"to": "willow", "content": "x"}) is False
+
+
+def test_a_refused_claim_from_the_mind_is_not_resent_another_way(tmp_path):
+    f = _fab(tmp_path)
+    tc.post(tmp_path, "cto", "claim", thread="site#312", to=["amara"])
+    tc.unread(tmp_path, "amara")
+    msg = {"to": "cto", "content": "", "kind": "claim", "thread": "site#312"}
+    assert f._chat_from_mind(f.agents["amara"], msg) is True
+    assert tc.claims(tmp_path)["site#312"]["owner"] == "cto"
+    assert tc.unread(tmp_path, "cto") == []
+
+
+def test_a_kind_the_model_invented_still_arrives(tmp_path):
+    f = _fab(tmp_path)
+    assert f._chat_from_mind(f.agents["amara"], {"to": "cto", "content": "hi", "kind": "memo"})
+    assert [m["kind"] for m in tc.unread(tmp_path, "cto")] == ["say"]
