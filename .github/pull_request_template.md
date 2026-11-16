@@ -79,8 +79,34 @@ Leaving blank or with the placeholder fails the AI Delegation lint check.
 <!-- Schema: schemas/agent-review-prompt.schema.json -->
 
 **Change summary:** <!-- One-line description of what changed and why — min 20 chars, be specific -->
+**Acceptance criteria to verify:**
+<!-- paste your AC list from above so the agent can check each one -->
 **Risks:** <!-- security | money-path | data-integrity | backwards-compat | performance | none — <reason> -->
 **Human review focus:** <!-- What the reviewer should scrutinise after the agent pass — min 20 chars -->
+
+## Security Review
+
+- [ ] No new attack surface introduced (auth, input validation, secrets handling)
+- [ ] No credentials, tokens, or PII in diff
+- [ ] External inputs validated at system boundary
+
+## Staging Gate
+
+<!--
+Required when Risks above includes "money-path" or "data-integrity".
+Provide the staging run reference confirming the change was exercised in staging.
+
+  - "N/A — no money-path risk" if Risks does not include money-path or data-integrity
+  - "Skipped — [reason] | CTO sign-off: [name, date]" if staging was waived
+-->
+**Staging run:** <!-- URL, or "N/A — no money-path risk" -->
+
+## Post-Mortem Reference
+
+<!--
+If this PR implements an action item from an incident post-mortem, link here.
+Example: "Closes post-mortem-action cortiva-hq#307"
+-->
 
 ## Checklist
 
@@ -90,4 +116,6 @@ Leaving blank or with the placeholder fails the AI Delegation lint check.
 - [ ] Documentation updated (if applicable)
 - [ ] ADR/RFC reference filled above
 - [ ] AI Delegation field filled above
+- [ ] Security Review checked above
+- [ ] Staging Gate filled (or N/A confirmed)
 - [ ] No secrets or credentials in this diff
