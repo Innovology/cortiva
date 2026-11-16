@@ -26,9 +26,14 @@ exact delimiter line shown below. The suffix must be valid JSON.
   "outcome": "One-sentence summary of what you accomplished",
   "learned": "Key insight or lesson from this task (stored as a memory)",
   "prediction_error": "What surprised you or differed from expectations",
-  "messages": [{"to": "agent-id", "content": "message body"}],
+  "messages": [{"to": "agent-id", "content": "message body", "kind": "say"}],
   "escalation": "Issue requiring human or supervisor attention"
 }
+
+Message kinds: "say" (default), "ask", "answer" and "blocked" get your colleague's \
+attention; "claim", "release", "ready", "done" and "ack" are routine and cost them \
+nothing. Add "thread": "repo#123" when a message is about one item, and "claim" an \
+item before you start on it.
 
 All fields are optional — include only those that apply. \
 Do NOT include the reflection suffix if you have nothing meaningful to report."""

@@ -1558,6 +1558,12 @@ class Fabric:
         messages: list[Any] = []
         if self.channel:
             messages = await self.channel.receive(agent_id)
+        chat_in = self._chat_intake(agent)
+        if chat_in:
+            # A colleague is waiting on this: it is input the checklist must
+            # meet now, whatever the other triggers say.
+            messages = list(messages or []) + chat_in
+            agent._adjust_pending = list(getattr(agent, "_adjust_pending", None) or [])
 
         # A wake with new input deferred its adjustment to here: the one
         # model ask it needs, admitted like any cycle and bounded by the
@@ -3728,6 +3734,13 @@ class Fabric:
                 content = msg.get("content", "")
                 if not recipient or not content:
                     continue
+                # A colleague this fabric runs gets it in team chat: the same
+                # thread their work session reads, so an answer reaches a
+                # session that is waiting for it, and a routine kind costs
+                # the colleague no model call.
+                if self._chat_from_mind(agent, msg):
+                    self.communication_tracker.record(agent.id, recipient)
+                    continue
                 if recipient.lower() in local_keys and self.channel:
                     await self.channel.send(
                         sender=agent.id,
@@ -4215,6 +4228,11 @@ class Fabric:
         verdicts = self._world_verdicts_context(agent)
         if verdicts:
             prompt += "\n\n" + verdicts
+        chat_env = self._chat_session_env(agent, task)
+        if chat_env:
+            from cortiva.core import teamchat as _tc
+
+            prompt += "\n\n" + _tc.session_guide(self.agents_dir, agent.id)
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
         envelope = self.isolation.prepare_terminal_env(agent_id=agent.id, cmd=[], cwd=cwd)
@@ -4231,6 +4249,7 @@ class Fabric:
         config_dir.mkdir(parents=True, exist_ok=True)
         creds["CLAUDE_CONFIG_DIR"] = str(config_dir)
         creds["CORTIVA_AGENT_DIR"] = str(agent.directory)
+        creds.update(chat_env)
 
         # Commit as the agent (real name + workforce email), never a co-author.
         git_name, git_email = self._agent_git_identity(agent)
@@ -4438,6 +4457,11 @@ class Fabric:
                 note = f"Task: {task.description}. Outcome: {task.outcome[:200]}"
                 if r.critique and r.critique.upper() != "LGTM":
                     note += f" | Reviewer: {r.critique[:150]}"
+                # What the hands said to colleagues and were told comes back
+                # to the mind, or it never knows what was agreed in its name.
+                said = getattr(self, "_chat_transcripts", {}).pop((agent.id, r.task_id), None)
+                if said:
+                    note += " | Chat: " + " ; ".join(said)[:600]
                 try:
                     await self.memory.store(
                         agent_id=agent.id,
@@ -6343,6 +6367,7 @@ class Fabric:
             self._held_mail_context(agent),
             self._unverified_context(agent),
             self._inactive_context(agent),
+            self._team_chat_context(agent),
         ):
             if block:
                 base.append(block)
@@ -7627,6 +7652,205 @@ class Fabric:
         except Exception:
             logger.debug("mission brief failed for %s", agent.id, exc_info=True)
             return ""
+
+    # ------------------------------------------------------------------
+    # Team chat (see cortiva.core.teamchat)
+    # ------------------------------------------------------------------
+
+    def _chat_session_env(self, agent: Agent, task: Task) -> dict[str, str]:
+        """Give a work session its way into team chat: a token the fabric
+        maps back to this agent, so the sender of a message is the system's
+        word and not the session's, and the socket to reach the fabric on.
+        Empty when the fabric has no socket (tests, one-shot runs)."""
+        sock = getattr(self, "_ipc_socket_path", None)
+        if sock is None:
+            return {}
+        import secrets
+
+        token = secrets.token_urlsafe(18)
+        tokens: dict[str, tuple[str, str]] | None = getattr(self, "_chat_tokens", None)
+        if tokens is None:
+            tokens = {}
+            self._chat_tokens = tokens
+        # One live token per agent task: a relaunch replaces the old one.
+        for old, owner in list(tokens.items()):
+            if owner == (agent.id, task.id):
+                tokens.pop(old, None)
+        tokens[token] = (agent.id, task.id)
+        return {"CORTIVA_CHAT_TOKEN": token, "CORTIVA_FABRIC_SOCK": str(sock)}
+
+    def _chat_note(self, who: tuple[str, str], text: str) -> None:
+        """Keep what a session said and read, to hand back to the agent."""
+        logs: dict[tuple[str, str], list[str]] | None = getattr(self, "_chat_transcripts", None)
+        if logs is None:
+            logs = {}
+            self._chat_transcripts = logs
+        logs.setdefault(who, []).append(text)
+
+    def _chat_intake(self, agent: Agent) -> list[Any]:
+        """Take what is waiting for the agent in team chat. Messages that
+        need attention come back as channel messages, so the agent meets
+        them the way it meets any other. Routine ones cost no model call:
+        they are kept for one line in the next look at the checklist."""
+        try:
+            from cortiva.adapters.protocols import Message
+            from cortiva.core import teamchat as _tc
+
+            waiting = _tc.unread(self.agents_dir, agent.id)
+            if not waiting:
+                return []
+            attention: list[Any] = []
+            routine: list[dict[str, Any]] = list(getattr(agent, "_chat_routine", []) or [])
+            for m in waiting:
+                if _tc.needs_attention(self.agents_dir, m):
+                    attention.append(
+                        Message(
+                            id=str(m.get("id") or ""),
+                            sender=str(m.get("from") or ""),
+                            recipient=agent.id,
+                            content=f"[chat] {_tc.line(m)}",
+                            thread_id=str(m.get("thread") or "") or None,
+                            metadata={"chat": True, "kind": m.get("kind")},
+                        )
+                    )
+                else:
+                    routine.append(m)
+            agent._chat_routine = routine[-40:]
+            return attention
+        except Exception:
+            logger.debug("chat intake failed for %s", agent.id, exc_info=True)
+            return []
+
+    def _chat_from_mind(self, agent: Agent, msg: dict[str, Any]) -> bool:
+        """Send one of the agent's own messages through team chat. True when
+        it was sent or deliberately refused there (a claim someone else
+        holds); False to let the older paths carry it (a colleague on
+        another node, a name nobody here answers to)."""
+        try:
+            from cortiva.core import teamchat as _tc
+
+            rid = self._chat_resolve(msg.get("to"))
+            if rid is None or rid == agent.id:
+                return False
+            out = _tc.post(
+                self.agents_dir,
+                agent.id,
+                str(msg.get("kind") or "say"),
+                str(msg.get("content") or ""),
+                to=[rid],
+                thread=str(msg.get("thread") or ""),
+                ref=str(msg.get("ref") or ""),
+            )
+            if out.get("ok"):
+                m = out["message"]
+                logger.info("Chat: %s %s -> %s (%s)", agent.id, m["kind"], rid, m["thread"])
+                return True
+            if out.get("held_by"):
+                logger.info("Chat: %s claim refused — %s", agent.id, out["error"])
+                return True
+            # An unknown kind is still a message someone meant to send.
+            out = _tc.post(
+                self.agents_dir, agent.id, "say", str(msg.get("content") or ""), to=[rid]
+            )
+            return bool(out.get("ok"))
+        except Exception:
+            logger.debug("chat from mind failed for %s", agent.id, exc_info=True)
+            return False
+
+    def _chat_whoami(self, token: str) -> tuple[str, str] | None:
+        return getattr(self, "_chat_tokens", {}).get(str(token or ""))
+
+    async def _ipc_chat_send(
+        self,
+        token: str = "",
+        kind: str = "say",
+        body: str = "",
+        to: list[str] | str | None = None,
+        thread: str = "",
+        ref: str = "",
+        **_: Any,
+    ) -> dict[str, Any]:
+        """A work session sends a chat message. The sender is whoever the
+        token was issued to; nothing in the request can change that."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "no chat access: this session has no valid token"}
+        from cortiva.core import teamchat as _tc
+
+        names = [to] if isinstance(to, str) else list(to or [])
+        recipients = [self._chat_resolve(n) for n in names if str(n).strip()]
+        unknown = [n for n, r in zip(names, recipients, strict=False) if r is None]
+        if unknown:
+            return {"ok": False, "error": f"nobody here is called {', '.join(map(str, unknown))}"}
+        out = _tc.post(
+            self.agents_dir,
+            who[0],
+            kind,
+            body,
+            to=[r for r in recipients if r],
+            thread=thread,
+            ref=ref,
+        )
+        if out.get("ok"):
+            self._chat_note(who, "sent " + _tc.line(out["message"]))
+            logger.info(
+                "Chat: %s %s -> %s (%s)",
+                who[0],
+                out["message"]["kind"],
+                ",".join(out["message"]["to"]) or "-",
+                out["message"]["thread"],
+            )
+        return out
+
+    async def _ipc_chat_read(self, token: str = "", wait_s: float = 0, **_: Any) -> dict[str, Any]:
+        """A work session reads what is waiting for its agent, optionally
+        waiting for something to arrive (the reply to a question)."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "no chat access: this session has no valid token"}
+        from cortiva.core import teamchat as _tc
+
+        deadline = min(max(float(wait_s or 0), 0.0), 120.0)
+        waited = 0.0
+        while True:
+            got = _tc.unread(self.agents_dir, who[0])
+            if got or waited >= deadline:
+                break
+            await asyncio.sleep(1.0)
+            waited += 1.0
+        for m in got:
+            self._chat_note(who, "read " + _tc.line(m))
+        return {"ok": True, "messages": got, "text": _tc.digest(got)}
+
+    def _chat_resolve(self, name: Any) -> str | None:
+        """An agent id from an id or a first name, as colleagues are known."""
+        want = str(name or "").strip().lower().split("@")[0]
+        if not want:
+            return None
+        agents = getattr(self, "agents", {}) or {}
+        if want in agents:
+            return want
+        for aid, agent in agents.items():
+            try:
+                given = str(self._agent_git_identity(agent)[0]).split()[0].lower()
+            except Exception:
+                continue
+            if given == want:
+                return str(aid)
+        return None
+
+    def _team_chat_context(self, agent: Agent) -> str:
+        """Routine chat since the agent last looked, as lines. Shown once."""
+        routine = list(getattr(agent, "_chat_routine", []) or [])
+        if not routine:
+            return ""
+        agent._chat_routine = []
+        from cortiva.core import teamchat as _tc
+
+        return (
+            "## 💬 Team chat since you last looked — for your information, no reply needed\n"
+            + _tc.digest(routine)
+        )
 
     def _mission_has_work(self, agent: Agent) -> bool:
         """Whether any of the agent's missions has a step the team can take."""
@@ -11028,6 +11252,8 @@ class Fabric:
         server.register("agent.wake", _handle_agent_wake)
         server.register("agent.sleep", _handle_agent_sleep)
         server.register("agent.cycle", _handle_agent_cycle)
+        server.register("chat.send", self._ipc_chat_send)
+        server.register("chat.read", self._ipc_chat_read)
         server.register("agent.move", _handle_agent_move)
         server.register("budget", _handle_budget)
         server.register("model.perf", _handle_model_perf)
@@ -11176,6 +11402,7 @@ class Fabric:
             self.ipc_server = FabricServer()
             self._register_ipc_handlers(self.ipc_server)
             await self.ipc_server.start(ipc_socket)
+            self._ipc_socket_path = ipc_socket
 
         # One-time, idempotent: give pre-conviction souls a worldview. Runs in
         # the background so it never blocks boot; skips any soul that already

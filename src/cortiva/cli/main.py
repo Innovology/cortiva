@@ -1424,6 +1424,50 @@ def cmd_agent_wake(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_chat(args: argparse.Namespace) -> None:
+    """Team chat from inside a work session (see cortiva.core.teamchat).
+
+    The session is identified by the token the fabric put in its
+    environment; the fabric decides who a message is from."""
+    import os
+    from pathlib import Path
+
+    from cortiva.core.ipc import FabricClient
+
+    token = os.environ.get("CORTIVA_CHAT_TOKEN", "")
+    sock = os.environ.get("CORTIVA_FABRIC_SOCK", "")
+    if not token or not sock:
+        print("Team chat is not available here: no session token.")
+        sys.exit(1)
+    client = FabricClient(socket_path=Path(sock))
+    try:
+        if args.chat_command == "send":
+            resp = client.send_sync(
+                "chat.send",
+                token=token,
+                kind=args.kind,
+                body=" ".join(args.text),
+                to=args.to or [],
+                thread=args.thread or "",
+                ref=args.ref or "",
+            )
+            if resp.get("ok"):
+                m = resp["message"]
+                print(f"sent {m['kind']} to {', '.join(m['to']) or 'nobody yet'} ({m['thread']})")
+            else:
+                print(f"not sent: {resp.get('error', 'unknown error')}")
+                sys.exit(1)
+        else:
+            resp = client.send_sync("chat.read", token=token, wait_s=args.wait)
+            if not resp.get("ok"):
+                print(f"could not read: {resp.get('error', 'unknown error')}")
+                sys.exit(1)
+            print(resp.get("text") or "nothing waiting")
+    except Exception as exc:
+        print(f"Team chat is unreachable: {exc}")
+        sys.exit(1)
+
+
 def cmd_agent_sleep(args: argparse.Namespace) -> None:
     """Put an agent to sleep via the running daemon."""
     from cortiva.core.ipc import FabricClient
@@ -1954,6 +1998,18 @@ def build_parser() -> argparse.ArgumentParser:
     # capacity
     subparsers.add_parser("capacity", help="Show node capacity and contention metrics")
 
+    # chat (used by an agent's work session)
+    chat_top = subparsers.add_parser("chat", help="Team chat from a work session")
+    chat_sub = chat_top.add_subparsers(dest="chat_command")
+    chat_send = chat_sub.add_parser("send", help="Send a message to a colleague")
+    chat_send.add_argument("--to", action="append", help="Colleague (repeatable)")
+    chat_send.add_argument("--kind", default="say", help="say, ask, answer, claim, ...")
+    chat_send.add_argument("--thread", help="Item the message is about, e.g. repo#123")
+    chat_send.add_argument("--ref", help="Evidence or link")
+    chat_send.add_argument("text", nargs="*", help="The message")
+    chat_read = chat_sub.add_parser("read", help="Read what is waiting for you")
+    chat_read.add_argument("--wait", type=float, default=0, help="Seconds to wait for a reply")
+
     # agent
     agent_parser = subparsers.add_parser("agent", help="Agent management")
     agent_sub = agent_parser.add_subparsers(dest="agent_command")
@@ -2123,6 +2179,11 @@ def main() -> None:
         cmd_watch(args)
     elif args.command == "capacity":
         cmd_capacity(args)
+    elif args.command == "chat":
+        if args.chat_command in ("send", "read"):
+            cmd_chat(args)
+        else:
+            parser.parse_args(["chat", "--help"])
     elif args.command == "agent":
         if args.agent_command == "create":
             cmd_agent_create(args)
