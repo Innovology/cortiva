@@ -6412,6 +6412,8 @@ class Fabric:
         "QUEUE: <the task, one line> — it waits its turn behind what you already "
         "have\n"
         "NONE — nothing that arrived needs work from you\n"
+        "A colleague's work stays theirs: it joins your list only for the part "
+        "you owe.\n"
         "Do not rewrite the checklist; it stays as it is. Call it wrong and "
         "something is delivered early, or a colleague waits. Make the call and get on."
     )
@@ -6419,6 +6421,53 @@ class Fabric:
         r"^\s*(?:[-*\d.)]+\s*)?[*_`]*(NOW|QUEUE|NONE)\b[*_`]*\s*[:—–-]?\s*(.*)$", re.IGNORECASE
     )
     _ARRIVAL_MAX_ITEMS = 5
+
+    def _arrivals_context(self, agent: Agent, since: float) -> str:
+        """Directives and GitHub activity that reached the agent after
+        ``since``, and a count of what it already carries."""
+        from datetime import UTC, datetime
+
+        def _new(stamp: Any) -> bool:
+            try:
+                at = datetime.fromisoformat(str(stamp))
+            except (ValueError, TypeError):
+                return False
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=UTC)
+            return at.timestamp() > since
+
+        directives = self._open_directives(agent)
+        threads = self._open_github_feedback(agent)
+        new_d = [d for d in directives if _new(d.get("opened_at"))]
+        new_t = [d for d in threads if _new(d.get("last_seen"))]
+        lines: list[str] = []
+        for d in new_d[:8]:
+            who = d.get("label") or d.get("from") or d.get("from_addr") or "above"
+            lines.append(
+                f"- Directive from {who}: **{d.get('subject', '(no subject)')}** — "
+                f"{str(d.get('snippet', ''))[:240]}"
+            )
+        for d in new_t[:8]:
+            lines.append(
+                f"- GitHub {d.get('ref', '')}: {d.get('subject', '')} — "
+                f"{str(d.get('snippet', ''))[:160]}"
+            )
+        carried = []
+        if len(directives) - len(new_d) > 0:
+            carried.append(f"{len(directives) - len(new_d)} open directive(s)")
+        if len(threads) - len(new_t) > 0:
+            carried.append(f"{len(threads) - len(new_t)} GitHub thread(s)")
+        if not lines and not carried:
+            return ""
+        out = ["## What arrived", ""] + (lines or ["- nothing new from above or on GitHub"])
+        if carried:
+            out += [
+                "",
+                "Already on your books before this, and not what arrived: "
+                + " and ".join(carried)
+                + ". Leave them where they are.",
+            ]
+        return "\n".join(out)
 
     def _plan_with_arrivals(self, agent: Agent, reply: str) -> str | None:
         """The standing checklist with the agent's verdicts placed in it: a
@@ -6506,16 +6555,30 @@ class Fabric:
         # What arrived / what stands over the plan — the only reasons to change it.
         await self._ground_inbox(agent)
         await self._ground_directives(agent)
-        for block in (
-            self._email_inbox_context(agent),
-            self._directive_salience_context(agent),
-            self._directive_references_context(agent),
-            self._github_feedback_context(agent),
-            self._held_mail_context(agent),
-            self._unverified_context(agent),
-            self._inactive_context(agent),
-            self._team_chat_context(agent),
-        ):
+        if idle:
+            blocks: tuple[str, ...] = (
+                self._email_inbox_context(agent),
+                self._directive_salience_context(agent),
+                self._directive_references_context(agent),
+                self._github_feedback_context(agent),
+                self._held_mail_context(agent),
+                self._unverified_context(agent),
+                self._inactive_context(agent),
+                self._team_chat_context(agent),
+            )
+        else:
+            # An arrival is judged on what arrived. Shown every open directive
+            # and thread each time, the agent re-judged all of them on each
+            # arrival (Mini-2, 2026-11-17: three items called NOW at once,
+            # one of them three days old).
+            since = self._last_plan_ts.get(agent.id) or (time.time() - 1800)
+            blocks = (
+                self._email_inbox_context(agent),
+                self._arrivals_context(agent, since),
+                self._held_mail_context(agent),
+                self._team_chat_context(agent),
+            )
+        for block in blocks:
             if block:
                 base.append(block)
         if messages:

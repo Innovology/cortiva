@@ -431,3 +431,24 @@ def test_know_how_is_handed_once_each_and_oldest_first(tmp_path):
     assert block.count("revert it") == 1
     assert block.index("edit the file") < block.index("revert it")
     assert "the later one is the correction" in block
+
+
+def test_an_arrival_shows_what_arrived_and_only_counts_what_was_already_there(tmp_path):
+    import time
+    from datetime import UTC, datetime, timedelta
+
+    f = _fab(tmp_path)
+    now = datetime.now(UTC)
+    old, new = (now - timedelta(days=3)).isoformat(), now.isoformat()
+    f._open_directives = lambda agent: [
+        {"subject": "Old order", "opened_at": old, "label": "Maren"},
+        {"subject": "Lead form today", "opened_at": new, "label": "Maren", "snippet": "start it"},
+    ]
+    f._open_github_feedback = lambda agent: [
+        {"ref": "repo#1", "subject": "stale review", "last_seen": old},
+        {"ref": "repo#2", "subject": "CI failed", "last_seen": new},
+    ]
+    block = f._arrivals_context(f.agents["amara"], time.time() - 600)
+    assert "Lead form today" in block and "repo#2" in block
+    assert "Old order" not in block and "repo#1" not in block
+    assert "1 open directive(s) and 1 GitHub thread(s)" in block
