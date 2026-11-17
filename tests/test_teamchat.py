@@ -263,3 +263,55 @@ def test_a_memory_whose_date_is_a_string_is_still_returned(tmp_path):
     f.memory.rows[0].created_at = "2026-11-17T03:11:55.123456+00:00"
     out = asyncio.run(f._ipc_memory_search(token=a, query="baseline"))
     assert out["ok"] and "[2026-11-17T03:11] PR cycle time baseline" in out["text"]
+
+
+class TestKnowHow:
+    """What was achieved is written down as the clean path, the false steps
+    go to a recovery sheet, and both are handed to the next session."""
+
+    def _fab(self, tmp_path):
+        f = _fab(tmp_path)
+        f.memory = _Mem()
+
+        async def search(agent_id, query, *, limit=10, tags=None, **_):
+            rows = [r for r in f.memory.rows if r.agent_id == agent_id]
+            return rows[:limit]  # an adapter that ignores the tag filter
+
+        f.memory.search = search
+        return f
+
+    def test_a_procedure_keeps_its_steps_and_names_the_task(self, tmp_path):
+        f = self._fab(tmp_path)
+        task = SimpleNamespace(id="task-1", description="Put admin behind sign-in")
+        tok = f._chat_session_env(f.agents["amara"], task)["CORTIVA_CHAT_TOKEN"]
+        steps = "1. add host constraint in config/routes.rb\n\n2. bin/rails test\n3. merge"
+        assert asyncio.run(f._ipc_memory_note(token=tok, kind="procedure", text=steps))["ok"]
+        row = f.memory.rows[0]
+        assert row.tags == ["session", "procedure"] and row.importance == 7.5
+        assert row.content.splitlines() == [
+            "How I did it — Put admin behind sign-in",
+            "1. add host constraint in config/routes.rb",
+            "2. bin/rails test",
+            "3. merge",
+        ]
+
+    def test_the_next_session_is_handed_procedures_and_recoveries_only(self, tmp_path):
+        f = self._fab(tmp_path)
+        task = SimpleNamespace(id="task-1", description="Put admin behind sign-in")
+        tok = f._chat_session_env(f.agents["amara"], task)["CORTIVA_CHAT_TOKEN"]
+        asyncio.run(f._ipc_memory_note(token=tok, kind="lesson", text="A general lesson here."))
+        asyncio.run(f._ipc_memory_note(token=tok, kind="procedure", text="1. do the thing"))
+        asyncio.run(
+            f._ipc_memory_note(token=tok, kind="recovery", text="CI red on lint -> run ruff format")
+        )
+        block = asyncio.run(f._know_how_for(f.agents["amara"], task))
+        assert "How I did it" in block and "How to recover" in block
+        assert "A general lesson" not in block
+        assert "trust the world" in block
+        # A colleague's know-how is not handed over: memory is the agent's own.
+        assert asyncio.run(f._know_how_for(f.agents["cto"], task)) == ""
+
+    def test_nothing_known_means_no_block(self, tmp_path):
+        f = self._fab(tmp_path)
+        task = SimpleNamespace(id="t", description="x")
+        assert asyncio.run(f._know_how_for(f.agents["amara"], task)) == ""

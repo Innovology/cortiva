@@ -268,5 +268,17 @@ def memory_guide(agent_id: str) -> str:
         '- `cortiva memory note --kind <lesson|decision|fact|plan> "<one sentence>"` writes '
         "back something worth keeping: a decision and its reason, a fact you had to find "
         "out, a lesson. Write what a colleague could act on, not a record that you worked.\n"
-        "Search before you investigate something you may already know."
+        "Search before you investigate something you may already know.\n"
+        "\n"
+        "When you have ACHIEVED something (it works, you have seen it work), write down how, "
+        "so the next time is shorter:\n"
+        '- `cortiva memory note --kind procedure "<steps>"`: the steps that got you there, '
+        "one per line, in order, with the exact commands, paths and names. Leave out "
+        "everything you tried that did not work. Someone following it should not repeat "
+        "your detours.\n"
+        '- `cortiva memory note --kind recovery "<what went wrong> -> <what fixed it>"`: one '
+        "note for each false step that cost you time: the symptom as you saw it (the error "
+        "text, the wrong result), then what got you past it. This is your cheat sheet for "
+        "the next time the same thing goes wrong.\n"
+        "Write neither for work that is not finished or that you have not seen working."
     )
