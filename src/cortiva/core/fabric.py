@@ -4295,8 +4295,14 @@ class Fabric:
         from cortiva.core.dev_sessions import SessionResult
 
         model = getattr(self.terminal, "_model", None)
+        # What this agent already knows about work like this goes in front
+        # of the session. Left to the session to look up, nobody looked
+        # (Mini-2, Nov 2026: one search in 60 sessions).
+        known = await self._know_how_for(agent, task)
+        if known:
+            ctx = {**ctx, "prompt": ctx["prompt"] + "\n\n" + known}
 
-        async def _drive(resume: str | None) -> tuple[str, str, int, bool]:
+        async def _drive(resume: str | None, prompt: str = "") -> tuple[str, str, int, bool]:
             """Run one Slot-A session. Returns (final_text, session_id, tools, is_error)."""
             s = ClaudeSession(
                 cwd=ctx["cwd"],
@@ -4306,7 +4312,7 @@ class Fabric:
                 resume=resume,
             )
             final, sid, tools, err = "", "", 0, False
-            await s.start(ctx["prompt"])
+            await s.start(prompt or ctx["prompt"])
             try:
                 async for ev in s.events():
                     if ev.session_id:
@@ -4377,6 +4383,18 @@ class Fabric:
         critique = await self._slot_b_critique(
             task.description, final, model, self._mission_orders_for_hands(agent)
         )
+        # The debrief: the same session, still holding everything it did,
+        # is asked for how it got there and what went wrong on the way.
+        # Asked to do this unprompted at the end of its work, a session
+        # almost never did (one note in 39 sessions, Mini-2 2026-11-17).
+        if self._wants_debrief(tools, sid, ctx["env"]):
+            try:
+                await asyncio.wait_for(
+                    _drive(sid, self._debrief_prompt(task.description, critique)),
+                    timeout=self._DEBRIEF_TIMEOUT_S,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("debrief failed for %s", agent.id, exc_info=True)
         return SessionResult(
             agent_id=agent.id,
             task_id=task.id,
@@ -7678,6 +7696,11 @@ class Fabric:
             if owner == (agent.id, task.id):
                 tokens.pop(old, None)
         tokens[token] = (agent.id, task.id)
+        tasks: dict[tuple[str, str], str] | None = getattr(self, "_session_tasks", None)
+        if tasks is None:
+            tasks = {}
+            self._session_tasks = tasks
+        tasks[(agent.id, task.id)] = str(getattr(task, "description", "") or "")
         return {"CORTIVA_CHAT_TOKEN": token, "CORTIVA_FABRIC_SOCK": str(sock)}
 
     def _chat_note(self, who: tuple[str, str], text: str) -> None:
@@ -7840,7 +7863,13 @@ class Fabric:
         "decision": 6.5,
         "fact": 6.0,
         "plan": 6.0,
+        # How something was achieved, false steps removed; and what to do
+        # when a known thing goes wrong. Both are handed to the next
+        # session that takes on similar work.
+        "procedure": 7.5,
+        "recovery": 7.0,
     }
+    _SESSION_HOW_KINDS = ("procedure", "recovery")
     _SESSION_IDENTITY_FILES = ("soul", "identity", "responsibilities", "skills", "plan")
 
     @staticmethod
@@ -7848,7 +7877,7 @@ class Fabric:
         # Adapters differ: some hand back a datetime, some the stored string
         # (the first live search failed on exactly that, Mini-2 2026-11-17).
         created = getattr(rec, "created_at", None)
-        when = created.isoformat() if hasattr(created, "isoformat") else str(created or "")
+        when = created.isoformat() if isinstance(created, datetime) else str(created or "")
         return {
             "at": when[:16],
             "importance": getattr(rec, "importance", 0.0),
@@ -7893,18 +7922,27 @@ class Fabric:
                 "ok": False,
                 "error": f"kind must be one of: {', '.join(self._SESSION_NOTE_KINDS)}",
             }
-        body = " ".join(str(text or "").split())
+        how = kind in self._SESSION_HOW_KINDS
+        if how:
+            # Steps keep their lines.
+            body = "\n".join(ln.rstrip() for ln in str(text or "").splitlines() if ln.strip())
+        else:
+            body = " ".join(str(text or "").split())
         if len(body) < 12:
             return {
                 "ok": False,
                 "error": "say what was decided or learned, in a sentence",
             }
+        task_desc = getattr(self, "_session_tasks", {}).get(who, "")
+        if how:
+            head = "How I did it" if kind == "procedure" else "How to recover"
+            body = f"{head} — {task_desc[:160]}\n{body}" if task_desc else f"{head}\n{body}"
         rec = await self.memory.store(
             agent_id=who[0],
-            content=body[:1500],
+            content=body[: 3000 if how else 1500],
             tags=["session", kind],
             importance=self._SESSION_NOTE_KINDS[kind],
-            metadata={"task_id": who[1], "source": "work_session"},
+            metadata={"task_id": who[1], "source": "work_session", "task": task_desc[:300]},
         )
         logger.info("Memory: %s session noted a %s", who[0], kind)
         return {"ok": True, "id": getattr(rec, "id", "")}
@@ -7934,6 +7972,60 @@ class Fabric:
             "part": part,
             "text": agent.read_identity(part) or "(empty)",
         }
+
+    _DEBRIEF_MIN_TOOLS = 5  # a session that barely touched anything has little to teach
+    _DEBRIEF_TIMEOUT_S = 300.0
+
+    @classmethod
+    def _wants_debrief(cls, tools: int, session_id: str, env: dict[str, str]) -> bool:
+        return bool(
+            session_id and tools >= cls._DEBRIEF_MIN_TOOLS and env.get("CORTIVA_CHAT_TOKEN")
+        )
+
+    @staticmethod
+    def _debrief_prompt(task_desc: str, critique: str) -> str:
+        verdict = (critique or "").strip() or "none given"
+        return (
+            "Debrief. Two minutes, no other work.\n\n"
+            f"You have just finished: {task_desc[:400]}\n"
+            f"A reviewer's verdict on it: {verdict[:300]}\n\n"
+            "1. If you SAW it work and the reviewer does not dispute it, record how you got "
+            'there: `cortiva memory note --kind procedure "<steps>"`. One step per line, in '
+            "order, with the exact commands, paths and names. Only the steps that were "
+            "needed: leave out everything you tried that did not work.\n"
+            "2. For each false step that cost you time, whether or not the work succeeded, "
+            'record how you got past it: `cortiva memory note --kind recovery "<what went '
+            'wrong, as you saw it> -> <what fixed it>"`.\n'
+            "3. If it was not achieved, write no procedure. If there were no false steps, "
+            "write no recovery note. Writing nothing is a fine answer.\n\n"
+            "Reply with one line saying what you recorded."
+        )
+
+    async def _know_how_for(self, agent: Agent, task: Task) -> str:
+        """The agent's own procedures and recovery notes that match a task,
+        as a block for the session about to do it."""
+        if not getattr(self, "_ipc_socket_path", None):
+            return ""
+        found: list[Any] = []
+        for kind in self._SESSION_HOW_KINDS:
+            try:
+                got = await self.memory.search(
+                    agent.id, str(task.description), limit=3, tags=["session", kind]
+                )
+            except Exception:
+                logger.debug("know-how search failed for %s", agent.id, exc_info=True)
+                continue
+            # An adapter may ignore the tag filter; keep only what carries it.
+            found += [r for r in got if kind in (getattr(r, "tags", None) or [])][:2]
+        if not found:
+            return ""
+        parts = [str(getattr(r, "content", ""))[:1800] for r in found]
+        return (
+            "## 🧭 What you already know about work like this\n"
+            "From your own memory: how you did similar work before, and how you got out of "
+            "trouble. Start from it. It was true when written; if the world now says "
+            "otherwise, trust the world and write the correction back.\n\n" + "\n\n".join(parts)
+        )
 
     def _chat_resolve(self, name: Any) -> str | None:
         """An agent id from an id or a first name, as colleagues are known."""
