@@ -6424,9 +6424,20 @@ class Fabric:
         "something is delivered early, or a colleague waits. Make the call and get on."
     )
     _ARRIVAL_VERDICT_RE = re.compile(
-        r"^\s*(?:[-*\d.)]+\s*)?[*_`]*(NOW|QUEUE|NONE)\b[*_`]*\s*[:—–-]?\s*(.*)$", re.IGNORECASE
+        r"^\s*(?:[-*\d.)]+\s*)?[*_`]*(NOW|QUEUE|ADD|NONE)\b[*_`]*\s*[:—–-]?\s*(.*)$", re.IGNORECASE
     )
     _ARRIVAL_MAX_ITEMS = 5
+
+    # A clear list is one more small call: name one thing, or none. Asked to
+    # hand back the whole checklist with an item added, the model spent its
+    # allowance before it answered (Mini-2, 2026-11-17: 11 of 30 came back
+    # empty, at a median of 80 s each).
+    _IDLE_ANSWER_FORM = (
+        " Reply with one line and nothing else:\n"
+        "ADD: <the item, one line>\n"
+        "NONE — if there is honestly nothing\n"
+        "Do not rewrite the checklist; it stays as it is."
+    )
 
     def _arrivals_context(self, agent: Agent, since: float) -> str:
         """Directives and GitHub activity that reached the agent after
@@ -6475,10 +6486,13 @@ class Fabric:
             ]
         return "\n".join(out)
 
-    def _plan_with_arrivals(self, agent: Agent, reply: str) -> str | None:
+    def _plan_with_arrivals(
+        self, agent: Agent, reply: str, *, limit: int | None = None, why: str = "Arrival triage"
+    ) -> str | None:
         """The standing checklist with the agent's verdicts placed in it: a
-        NOW item at the head as critical, a QUEUE item at the foot. ``None``
-        when the reply holds no verdict."""
+        NOW item at the head as critical, a QUEUE or ADD item at the foot.
+        ``None`` when the reply holds no verdict."""
+        limit = limit or self._ARRIVAL_MAX_ITEMS
         verdicts: list[tuple[str, str]] = []
         seen_verdict = False
         for line in (reply or "").splitlines():
@@ -6491,7 +6505,7 @@ class Fabric:
             item = item.strip(" *_`<>").strip()
             # "QUEUE: NONE" is the model filling in the form, not a task.
             empty = item.rstrip(".").upper() in ("", "NONE", "NOTHING", "N/A")
-            if what != "NONE" and not empty and len(verdicts) < self._ARRIVAL_MAX_ITEMS:
+            if what != "NONE" and not empty and len(verdicts) < limit:
                 verdicts.append((what, item))
         if not seen_verdict:
             return None
@@ -6532,7 +6546,8 @@ class Fabric:
         body = lines[:head] + [f"- [ ] **[CRITICAL]** {x}" for x in now] + lines[head:]
         body += [f"- [ ] {x}" for x in queued]
         logger.info(
-            "Arrival triage for %s: %d now, %d queued, checklist otherwise as it was",
+            "%s for %s: %d now, %d queued, checklist otherwise as it was",
+            why,
             agent.id,
             len(now),
             len(queued),
@@ -6615,7 +6630,7 @@ class Fabric:
                 context=context,
                 prompt=prompt,
                 priority=Priority.HIGH,
-                metadata={"call_type": "replan", "light": True, "idle": idle, "quick": triage},
+                metadata={"call_type": "replan", "light": True, "idle": idle, "quick": True},
             )
             self._meter_tokens(agent, "replan", response)
             if self.budget_manager and approval and approval.backend:
@@ -6623,7 +6638,13 @@ class Fabric:
                     agent.id, approval.backend, response.tokens_in, response.tokens_out
                 )
                 agent.spend_consciousness()
-            placed = self._plan_with_arrivals(agent, response.content) if triage else None
+            reply = response.content or ""
+            if triage:
+                placed = self._plan_with_arrivals(agent, reply)
+            elif re.search(r"^\s*[-*]\s*\[[ xX]\]", reply, re.MULTILINE):
+                placed = None  # a whole checklist came back; it is read as one
+            else:
+                placed = self._plan_with_arrivals(agent, reply, limit=1, why="Idle step")
             if placed is None and not _parse_plan(response.content or "").tasks:
                 # No verdict and no checklist: the model ran out before it
                 # answered. The plan the agent has is kept, not replaced by
@@ -6673,14 +6694,14 @@ class Fabric:
                 added = await _ask(
                     base,
                     "Your checklist is clear and your mission (above) is not at its end "
-                    "state. Add exactly ONE item: the step you can take yourself, now, "
+                    "state. Name exactly ONE item: the step you can take yourself, now, "
                     "that moves the first thing listed under the mission — the route if "
                     "it is not proven, otherwise the first condition not met. If you "
                     "cannot do that step yourself, the item is the one message to the "
                     "teammate who can, naming the step and the place; a human is asked "
                     "only for what nobody on the team can do. If a colleague already has "
-                    "that step in hand and nothing of yours can move a condition, output "
-                    "the checklist unchanged.",
+                    "that step in hand and nothing of yours can move a condition, answer "
+                    "NONE." + self._IDLE_ANSWER_FORM,
                 )
             if added:
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
@@ -6690,20 +6711,20 @@ class Fabric:
             # Someone who leads others and holds no number the system can
             # read is asked for it, once a day until there is one.
             if self._owes_a_number(agent):
+                # The item is placed, not asked for. Asked to add it, one
+                # agent handed its checklist back without it and the other
+                # wrote the commands out as its answer (Mini-2, 2026-11-17);
+                # neither reached a work session.
                 self._number_was_asked(agent)
-                added = await _ask(
-                    base,
-                    "You lead others, and the system can read no number you are held "
-                    "to. Add exactly ONE item: work out the number your work is judged "
-                    "by and what drives it, level by level, and declare each one from "
-                    "a work session with `cortiva measure declare`. Where nothing "
-                    "exposes a driver yet, declare it without a source, "
-                    "so the gap is on the record for whoever can build it. If you are "
-                    "held to no number, output the checklist unchanged.",
+                placed = self._plan_with_arrivals(
+                    agent, "ADD: " + self._NUMBER_ITEM, limit=1, why="Number owed"
                 )
-                if added:
+                if placed is not None:
+                    agent.update_plan(placed)
+                    self._write_plan(agent)
+                    self._last_plan_ts[agent.id] = time.time()
                     agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
-                    logger.info("Idle: %s was asked for the number it is held to", agent.id)
+                    logger.info("Idle: %s was given the number it is held to as work", agent.id)
                     return
 
             # Rung 1 — bring forward. Only when there is something to bring.
@@ -6715,9 +6736,8 @@ class Fabric:
                     "week and at your promises not yet due (above). Bring forward ONE "
                     "item that is not bound to its day — an outstanding admin task, a "
                     "draft, a check you can do now. A review, a meeting or anything "
-                    "fixed to a date stays where it is. Add exactly that one item to "
-                    "the checklist. If every remaining item is bound to its day, output "
-                    "the checklist unchanged.",
+                    "fixed to a date stays where it is. If every remaining item is "
+                    "bound to its day, answer NONE." + self._IDLE_ANSWER_FORM,
                 )
             if added:
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
@@ -6747,15 +6767,14 @@ class Fabric:
                 creative,
                 "Your checklist is clear and nothing can be brought forward. This is "
                 "where a person gets creative: contribute to the goal, or streamline the "
-                "future to free up time. Choose ONE and add exactly that item: (a) a "
+                "future to free up time. Choose exactly ONE: (a) a "
                 "step you can produce yourself that moves the company's scoreboard — a "
                 "PR someone else merges, a mission condition met, a lead; for a manager, the "
                 "report whose promise is most at risk and what you will do about it; "
                 "(b) a step you keep doing by hand that belongs on your factory floor — "
                 "name it with build_station so the build goes on the checklist; (c) a "
-                "station that failed — fix it. Output the checklist unchanged only if "
-                "there is genuinely nothing: resting is then honest, inventing work is "
-                "not.",
+                "station that failed — fix it. Answer NONE only if there is genuinely "
+                "nothing: resting is then honest, inventing work is not." + self._IDLE_ANSWER_FORM,
             )
             if added:
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
@@ -7887,6 +7906,11 @@ class Fabric:
             return ""
 
     _MEASURE_ASK_EVERY_S = 24 * 3600.0
+    _NUMBER_ITEM = (
+        "Declare the number my work is judged by, then what drives it, level by level, "
+        "each with `cortiva measure declare` (one with no source yet is declared without "
+        "one, so the gap is on the record)"
+    )
 
     def _owes_a_number(self, agent: Agent) -> bool:
         """True when this agent leads others, holds no number the system can

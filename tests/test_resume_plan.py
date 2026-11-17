@@ -318,3 +318,57 @@ async def test_an_arrival_is_a_quick_judgement_and_an_empty_answer_keeps_the_che
     await f._replan(agent, ["a colleague asks for a review"])
     assert seen[-1].get("quick") is True
     assert [t.description for t in agent.task_queue.tasks] == before
+
+
+@pytest.mark.asyncio
+async def test_a_clear_list_is_answered_with_one_line_and_the_system_places_it(
+    tmp_path: Path,
+) -> None:
+    """Asked to hand the whole checklist back with one item added, the model
+    ran out before answering 11 times in 30. It now names the item; the
+    system places it."""
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    agent = f.register_agent("cto")
+    await f.wake("cto")
+    for t in agent.task_queue.tasks:
+        t.status = "done"
+    before = [t.description for t in agent.task_queue.tasks]
+    seen: list[tuple[str, dict]] = []
+
+    async def _one_line(agent_id, context, prompt, **kw):
+        seen.append((prompt, kw.get("metadata") or {}))
+        r = await _Model().think(agent_id, context, prompt, **kw)
+        r.content = "ADD: Draft the release note for the next version\nADD: And a second thing"
+        return r
+
+    model.think = _one_line
+    await f._replan_light(agent, [], idle=True)
+    prompt, meta = seen[0]
+    assert "ADD:" in prompt and "Do not rewrite the checklist" in prompt
+    assert meta.get("quick") is True
+    after = [t.description for t in agent.task_queue.tasks]
+    assert after == before + ["Draft the release note for the next version"]
+    assert agent.task_queue.tasks[-1].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_the_number_owed_is_placed_on_the_checklist_by_the_system(tmp_path: Path) -> None:
+    """Asked to add it, one lead handed the checklist back without it and
+    another wrote the commands out as the answer. The system places it."""
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    agent = f.register_agent("cto")
+    await f.wake("cto")
+    for t in agent.task_queue.tasks:
+        t.status = "done"
+    f._load_directory_cards = lambda: [{"id": "amara", "reports_to": "cto"}]
+
+    async def _never(*a, **kw):
+        raise AssertionError("the model is not asked")
+
+    model.think = _never
+    await f._replan_light(agent, [], idle=True)
+    last = agent.task_queue.tasks[-1]
+    assert last.status == "pending" and "cortiva measure declare" in last.description
+    assert f._owes_a_number(agent) is False
