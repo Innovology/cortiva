@@ -127,7 +127,8 @@ async def test_a_replan_on_inbound_change_is_a_small_adjustment(tmp_path: Path) 
     t, ctx, prompt = seen[-1]
     assert t == "replan"
     assert "Your current checklist" in ctx and "Lead form" in ctx
-    assert "Adjust the checklist for it and nothing else" in prompt
+    # One judgement, the agent's own: now, or the queue. Never a rebuilt plan.
+    assert "NOW:" in prompt and "QUEUE:" in prompt and "Do not rewrite the checklist" in prompt
     assert "Company directory" not in ctx and "What actually moved" not in ctx
     assert len(ctx) < len(plan_ctx) / 2, (len(ctx), len(plan_ctx))
 
@@ -293,3 +294,27 @@ async def test_weekly_and_monthly_plans_are_written_against_the_standing_orders_
         assert "⛔ Standing orders" in ctx and "Stop building red tape" in ctx, horizon
         assert "## What counts" in ctx and "the world can see" in ctx, horizon
         assert "the world" in prompt and "standing orders" in prompt.lower(), horizon
+
+
+@pytest.mark.asyncio
+async def test_an_arrival_is_a_quick_judgement_and_an_empty_answer_keeps_the_checklist(
+    tmp_path: Path,
+) -> None:
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    agent = f.register_agent("cto")
+    await f.wake("cto")
+    before = [t.description for t in agent.task_queue.tasks]
+    assert before
+    seen: list[dict] = []
+
+    async def _nothing(agent_id, context, prompt, **kw):
+        seen.append(kw.get("metadata") or {})
+        r = await _Model().think(agent_id, context, prompt, **kw)
+        r.content = ""  # the model spent its allowance before answering
+        return r
+
+    model.think = _nothing
+    await f._replan(agent, ["a colleague asks for a review"])
+    assert seen[-1].get("quick") is True
+    assert [t.description for t in agent.task_queue.tasks] == before
