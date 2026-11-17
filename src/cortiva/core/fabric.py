@@ -6434,7 +6434,9 @@ class Fabric:
             what = m.group(1).upper()
             item = re.sub(r"\s+[—–-]\s+it (?:cannot wait|waits its turn).*$", "", m.group(2))
             item = item.strip(" *_`<>").strip()
-            if what != "NONE" and item and len(verdicts) < self._ARRIVAL_MAX_ITEMS:
+            # "QUEUE: NONE" is the model filling in the form, not a task.
+            empty = item.rstrip(".").upper() in ("", "NONE", "NOTHING", "N/A")
+            if what != "NONE" and not empty and len(verdicts) < self._ARRIVAL_MAX_ITEMS:
                 verdicts.append((what, item))
         if not seen_verdict:
             return None

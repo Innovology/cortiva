@@ -388,6 +388,12 @@ class TestArrivalTriage:
             "- [ ] Write the report",
         ]
 
+    def test_a_form_filled_in_with_none_adds_nothing(self, tmp_path):
+        f = _fab(tmp_path)
+        agent = self._agent(f)
+        out = f._plan_with_arrivals(agent, "NOW: Unblock Amara\nQUEUE: NONE\nNONE: NONE")
+        assert len(self._open(out)) == 4 and "NONE" not in out
+
     def test_a_reply_that_is_a_checklist_is_not_a_verdict(self, tmp_path):
         f = _fab(tmp_path)
         agent = self._agent(f)
