@@ -7845,9 +7845,12 @@ class Fabric:
 
     @staticmethod
     def _memory_row(rec: Any) -> dict[str, Any]:
+        # Adapters differ: some hand back a datetime, some the stored string
+        # (the first live search failed on exactly that, Mini-2 2026-11-17).
         created = getattr(rec, "created_at", None)
+        when = created.isoformat() if hasattr(created, "isoformat") else str(created or "")
         return {
-            "at": created.isoformat()[:16] if created is not None else "",
+            "at": when[:16],
             "importance": getattr(rec, "importance", 0.0),
             "tags": list(getattr(rec, "tags", []) or []),
             "content": str(getattr(rec, "content", ""))[:1200],

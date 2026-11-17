@@ -253,3 +253,13 @@ def test_identity_is_readable_and_only_the_known_parts(tmp_path):
     a = _token(f, "amara")
     assert asyncio.run(f._ipc_memory_identity(token=a, part="soul"))["text"] == "<soul>"
     assert not asyncio.run(f._ipc_memory_identity(token=a, part="../../etc/passwd"))["ok"]
+
+
+def test_a_memory_whose_date_is_a_string_is_still_returned(tmp_path):
+    f = _fab(tmp_path)
+    f.memory = _Mem()
+    a = _token(f, "amara")
+    asyncio.run(f._ipc_memory_note(token=a, kind="fact", text="PR cycle time baseline is 4h."))
+    f.memory.rows[0].created_at = "2026-11-17T03:11:55.123456+00:00"
+    out = asyncio.run(f._ipc_memory_search(token=a, query="baseline"))
+    assert out["ok"] and "[2026-11-17T03:11] PR cycle time baseline" in out["text"]
