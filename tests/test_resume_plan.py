@@ -374,3 +374,24 @@ async def test_the_number_owed_is_placed_on_the_checklist_by_the_system(tmp_path
     assert f._owes_a_number(agent) is False
     # It names a command, so it goes to a work session, not the mind.
     assert f._is_terminal_task(last.description)
+
+
+@pytest.mark.asyncio
+async def test_the_number_item_ticked_with_nothing_declared_is_opened_again(
+    tmp_path: Path,
+) -> None:
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    agent = f.register_agent("cto")
+    await f.wake("cto")
+    for t in agent.task_queue.tasks:
+        t.status = "done"
+    f._load_directory_cards = lambda: [{"id": "amara", "reports_to": "cto"}]
+    await f._replan_light(agent, [], idle=True)
+    item = agent.task_queue.tasks[-1]
+    item.status = "done"  # ticked, and no number stands
+    f._MEASURE_ASK_EVERY_S = 0.0
+    n = len(agent.task_queue.tasks)
+    await f._replan_light(agent, [], idle=True)
+    assert len(agent.task_queue.tasks) == n and item.status == "pending"
+    assert "- [ ] Declare the number" in agent.read_identity("plan")

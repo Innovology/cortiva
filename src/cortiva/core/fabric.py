@@ -6720,11 +6720,30 @@ class Fabric:
                 # wrote the commands out as its answer (Mini-2, 2026-11-17);
                 # neither reached a work session.
                 self._number_was_asked(agent)
-                placed = self._plan_with_arrivals(
-                    agent, "ADD: " + self._NUMBER_ITEM, limit=1, why="Number owed"
+                # Ticked earlier with nothing declared: the same item is
+                # opened again. Added as a second line it would take the
+                # first one's "done" and never be worked (Mini-2, 2026-11-17).
+                key = _task_key(self._NUMBER_ITEM)
+                ticked = [
+                    t
+                    for t in (agent.task_queue.tasks if agent.task_queue is not None else [])
+                    if _task_key(t.description) == key and t.status in ("done", "skipped")
+                ]
+                placed = (
+                    None
+                    if ticked
+                    else self._plan_with_arrivals(
+                        agent, "ADD: " + self._NUMBER_ITEM, limit=1, why="Number owed"
+                    )
                 )
-                if placed is not None:
+                if ticked:
+                    ticked[0].status = "pending"
+                    logger.info(
+                        "Number owed for %s: ticked with nothing declared, reopened", agent.id
+                    )
+                elif placed is not None:
                     agent.update_plan(placed)
+                if ticked or placed is not None:
                     self._write_plan(agent)
                     self._last_plan_ts[agent.id] = time.time()
                     agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
