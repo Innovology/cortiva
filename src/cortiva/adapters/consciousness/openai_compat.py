@@ -84,6 +84,7 @@ class OpenAICompatibleAdapter:
     ):
         self.model = model
         self.max_tokens = max_tokens
+        self._quick_refused = False
         self._default_key = api_key or os.environ.get("OPENAI_API_KEY")
         self._base_url = base_url
         self._per_agent_keys = per_agent_keys or {}
@@ -270,6 +271,13 @@ class OpenAICompatibleAdapter:
         if tools:
             create_kwargs["tools"] = tools
             create_kwargs["tool_choice"] = "auto"
+        # A quick judgement is answered, not deliberated. A reasoning model
+        # asked for one line spent its whole allowance thinking and returned
+        # nothing (Mini-2, 2026-11-17: 6 s and an empty reply with thinking,
+        # 0.2 s and the answer without).
+        quick = bool(metadata and metadata.get("quick")) and not self._quick_refused
+        if quick:
+            create_kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
 
         # Circuit breaker: if a recent run of calls timed out / failed to
         # connect, the local model is almost certainly wedged — fail fast
@@ -303,14 +311,30 @@ class OpenAICompatibleAdapter:
         # but the client timeout makes the thread return on its own).
         try:
             async with self._inference_slot():
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        lambda: client.chat.completions.create(
-                            timeout=self._request_timeout_s, **create_kwargs
-                        )
-                    ),
-                    timeout=self._request_timeout_s + 15.0,
-                )
+                try:
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            lambda: client.chat.completions.create(
+                                timeout=self._request_timeout_s, **create_kwargs
+                            )
+                        ),
+                        timeout=self._request_timeout_s + 15.0,
+                    )
+                except Exception as exc:
+                    # A server that does not take the switch is asked the
+                    # ordinary way, and not offered the switch again.
+                    if not quick or "BadRequest" not in type(exc).__name__:
+                        raise
+                    self._quick_refused = True
+                    create_kwargs.pop("extra_body", None)
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            lambda: client.chat.completions.create(
+                                timeout=self._request_timeout_s, **create_kwargs
+                            )
+                        ),
+                        timeout=self._request_timeout_s + 15.0,
+                    )
         except Exception as exc:
             # Count only model-HEALTH failures (timeout / connection) toward the
             # breaker — a 4xx/validation error is a request problem, not a dead

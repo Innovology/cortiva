@@ -294,3 +294,27 @@ async def test_weekly_and_monthly_plans_are_written_against_the_standing_orders_
         assert "⛔ Standing orders" in ctx and "Stop building red tape" in ctx, horizon
         assert "## What counts" in ctx and "the world can see" in ctx, horizon
         assert "the world" in prompt and "standing orders" in prompt.lower(), horizon
+
+
+@pytest.mark.asyncio
+async def test_an_arrival_is_a_quick_judgement_and_an_empty_answer_keeps_the_checklist(
+    tmp_path: Path,
+) -> None:
+    model = _Model()
+    f = _fabric(tmp_path, model)
+    agent = f.register_agent("cto")
+    await f.wake("cto")
+    before = [t.description for t in agent.task_queue.tasks]
+    assert before
+    seen: list[dict] = []
+
+    async def _nothing(agent_id, context, prompt, **kw):
+        seen.append(kw.get("metadata") or {})
+        r = await _Model().think(agent_id, context, prompt, **kw)
+        r.content = ""  # the model spent its allowance before answering
+        return r
+
+    model.think = _nothing
+    await f._replan(agent, ["a colleague asks for a review"])
+    assert seen[-1].get("quick") is True
+    assert [t.description for t in agent.task_queue.tasks] == before
