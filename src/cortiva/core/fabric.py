@@ -4302,7 +4302,7 @@ class Fabric:
         if known:
             ctx = {**ctx, "prompt": ctx["prompt"] + "\n\n" + known}
 
-        async def _drive(resume: str | None) -> tuple[str, str, int, bool]:
+        async def _drive(resume: str | None, prompt: str = "") -> tuple[str, str, int, bool]:
             """Run one Slot-A session. Returns (final_text, session_id, tools, is_error)."""
             s = ClaudeSession(
                 cwd=ctx["cwd"],
@@ -4312,7 +4312,7 @@ class Fabric:
                 resume=resume,
             )
             final, sid, tools, err = "", "", 0, False
-            await s.start(ctx["prompt"])
+            await s.start(prompt or ctx["prompt"])
             try:
                 async for ev in s.events():
                     if ev.session_id:
@@ -4383,6 +4383,18 @@ class Fabric:
         critique = await self._slot_b_critique(
             task.description, final, model, self._mission_orders_for_hands(agent)
         )
+        # The debrief: the same session, still holding everything it did,
+        # is asked for how it got there and what went wrong on the way.
+        # Asked to do this unprompted at the end of its work, a session
+        # almost never did (one note in 39 sessions, Mini-2 2026-11-17).
+        if self._wants_debrief(tools, sid, ctx["env"]):
+            try:
+                await asyncio.wait_for(
+                    _drive(sid, self._debrief_prompt(task.description, critique)),
+                    timeout=self._DEBRIEF_TIMEOUT_S,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("debrief failed for %s", agent.id, exc_info=True)
         return SessionResult(
             agent_id=agent.id,
             task_id=task.id,
@@ -7960,6 +7972,34 @@ class Fabric:
             "part": part,
             "text": agent.read_identity(part) or "(empty)",
         }
+
+    _DEBRIEF_MIN_TOOLS = 5  # a session that barely touched anything has little to teach
+    _DEBRIEF_TIMEOUT_S = 300.0
+
+    @classmethod
+    def _wants_debrief(cls, tools: int, session_id: str, env: dict[str, str]) -> bool:
+        return bool(
+            session_id and tools >= cls._DEBRIEF_MIN_TOOLS and env.get("CORTIVA_CHAT_TOKEN")
+        )
+
+    @staticmethod
+    def _debrief_prompt(task_desc: str, critique: str) -> str:
+        verdict = (critique or "").strip() or "none given"
+        return (
+            "Debrief. Two minutes, no other work.\n\n"
+            f"You have just finished: {task_desc[:400]}\n"
+            f"A reviewer's verdict on it: {verdict[:300]}\n\n"
+            "1. If you SAW it work and the reviewer does not dispute it, record how you got "
+            'there: `cortiva memory note --kind procedure "<steps>"`. One step per line, in '
+            "order, with the exact commands, paths and names. Only the steps that were "
+            "needed: leave out everything you tried that did not work.\n"
+            "2. For each false step that cost you time, whether or not the work succeeded, "
+            'record how you got past it: `cortiva memory note --kind recovery "<what went '
+            'wrong, as you saw it> -> <what fixed it>"`.\n'
+            "3. If it was not achieved, write no procedure. If there were no false steps, "
+            "write no recovery note. Writing nothing is a fine answer.\n\n"
+            "Reply with one line saying what you recorded."
+        )
 
     async def _know_how_for(self, agent: Agent, task: Task) -> str:
         """The agent's own procedures and recovery notes that match a task,

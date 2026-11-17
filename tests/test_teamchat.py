@@ -315,3 +315,19 @@ class TestKnowHow:
         f = self._fab(tmp_path)
         task = SimpleNamespace(id="t", description="x")
         assert asyncio.run(f._know_how_for(f.agents["amara"], task)) == ""
+
+
+def test_a_debrief_is_asked_of_sessions_that_did_real_work():
+    env = {"CORTIVA_CHAT_TOKEN": "t"}
+    assert Fabric._wants_debrief(12, "sid", env) is True
+    assert Fabric._wants_debrief(2, "sid", env) is False  # barely touched anything
+    assert Fabric._wants_debrief(12, "", env) is False  # no session to resume
+    assert Fabric._wants_debrief(12, "sid", {}) is False  # no way to write memory
+
+
+def test_the_debrief_carries_the_reviewers_verdict_and_allows_writing_nothing():
+    p = Fabric._debrief_prompt("Put admin behind sign-in", "Not verified: /login still 404")
+    assert "Not verified: /login still 404" in p
+    assert "--kind procedure" in p and "--kind recovery" in p
+    assert "If it was not achieved, write no procedure" in p
+    assert "none given" in Fabric._debrief_prompt("x", "")
