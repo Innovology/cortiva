@@ -1504,6 +1504,42 @@ def cmd_memory(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_measure(args: argparse.Namespace) -> None:
+    """Numbers the company is held to, from inside a work session."""
+    import os
+    from pathlib import Path
+
+    from cortiva.core.ipc import FabricClient
+
+    token = os.environ.get("CORTIVA_CHAT_TOKEN", "")
+    sock = os.environ.get("CORTIVA_FABRIC_SOCK", "")
+    if not token or not sock:
+        print("Numbers are not available here: no session token.")
+        sys.exit(1)
+    client = FabricClient(socket_path=Path(sock))
+    try:
+        if args.measure_command == "declare":
+            resp = client.send_sync(
+                "measure.declare",
+                token=token,
+                name=args.name,
+                what=args.what,
+                url=args.url,
+                path=args.path,
+                drives=args.drives,
+                better=args.better,
+            )
+        else:
+            resp = client.send_sync("measure.list", token=token)
+        if not resp.get("ok"):
+            print(f"failed: {resp.get('error', 'unknown error')}")
+            sys.exit(1)
+        print(resp.get("text") or "ok")
+    except Exception as exc:
+        print(f"Numbers are unreachable: {exc}")
+        sys.exit(1)
+
+
 def cmd_agent_sleep(args: argparse.Namespace) -> None:
     """Put an agent to sleep via the running daemon."""
     from cortiva.core.ipc import FabricClient
@@ -2047,6 +2083,19 @@ def build_parser() -> argparse.ArgumentParser:
     chat_read.add_argument("--wait", type=float, default=0, help="Seconds to wait for a reply")
 
     # memory (used by an agent's work session)
+    measure_top = subparsers.add_parser(
+        "measure", help="Numbers the company is held to, from a work session"
+    )
+    measure_sub = measure_top.add_subparsers(dest="measure_command")
+    measure_sub.add_parser("list", help="Every declared number as last read")
+    measure_decl = measure_sub.add_parser("declare", help="Declare a number, or change yours")
+    measure_decl.add_argument("--name", required=True)
+    measure_decl.add_argument("--what", default="")
+    measure_decl.add_argument("--url", default="")
+    measure_decl.add_argument("--path", default="")
+    measure_decl.add_argument("--drives", default="", help="The number this one feeds")
+    measure_decl.add_argument("--better", default="up", choices=["up", "down"])
+
     mem_top = subparsers.add_parser("memory", help="Your own memory, from a work session")
     mem_sub = mem_top.add_subparsers(dest="memory_command")
     mem_search = mem_sub.add_parser("search", help="Find what you know about something")
@@ -2232,6 +2281,11 @@ def main() -> None:
             cmd_chat(args)
         else:
             parser.parse_args(["chat", "--help"])
+    elif args.command == "measure":
+        if args.measure_command in ("declare", "list"):
+            cmd_measure(args)
+        else:
+            parser.parse_args(["measure", "--help"])
     elif args.command == "memory":
         if args.memory_command in ("search", "identity", "note"):
             cmd_memory(args)

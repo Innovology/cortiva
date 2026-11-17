@@ -3988,6 +3988,10 @@ class Fabric:
             "project board",
             "milestone",
             "pull request",
+            # A task that names a command to run needs hands. Left to the
+            # mind, the leader's number was written out as prose and ticked
+            # done with nothing declared (Mini-2, 2026-11-17).
+            "`cortiva ",
         }
     )
 
@@ -4240,6 +4244,12 @@ class Fabric:
 
             prompt += "\n\n" + _tc.session_guide(self.agents_dir, agent.id)
             prompt += "\n\n" + _tc.memory_guide(agent.id)
+            from cortiva.core import measures as _me
+
+            prompt += "\n\n" + _me.guide()
+            numbers = self._measures_context(agent)
+            if numbers:
+                prompt += "\n\n" + numbers
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
         envelope = self.isolation.prepare_terminal_env(agent_id=agent.id, cmd=[], cwd=cwd)
@@ -6418,9 +6428,20 @@ class Fabric:
         "something is delivered early, or a colleague waits. Make the call and get on."
     )
     _ARRIVAL_VERDICT_RE = re.compile(
-        r"^\s*(?:[-*\d.)]+\s*)?[*_`]*(NOW|QUEUE|NONE)\b[*_`]*\s*[:—–-]?\s*(.*)$", re.IGNORECASE
+        r"^\s*(?:[-*\d.)]+\s*)?[*_`]*(NOW|QUEUE|ADD|NONE)\b[*_`]*\s*[:—–-]?\s*(.*)$", re.IGNORECASE
     )
     _ARRIVAL_MAX_ITEMS = 5
+
+    # A clear list is one more small call: name one thing, or none. Asked to
+    # hand back the whole checklist with an item added, the model spent its
+    # allowance before it answered (Mini-2, 2026-11-17: 11 of 30 came back
+    # empty, at a median of 80 s each).
+    _IDLE_ANSWER_FORM = (
+        " Reply with one line and nothing else:\n"
+        "ADD: <the item, one line>\n"
+        "NONE — if there is honestly nothing\n"
+        "Do not rewrite the checklist; it stays as it is."
+    )
 
     def _arrivals_context(self, agent: Agent, since: float) -> str:
         """Directives and GitHub activity that reached the agent after
@@ -6469,10 +6490,13 @@ class Fabric:
             ]
         return "\n".join(out)
 
-    def _plan_with_arrivals(self, agent: Agent, reply: str) -> str | None:
+    def _plan_with_arrivals(
+        self, agent: Agent, reply: str, *, limit: int | None = None, why: str = "Arrival triage"
+    ) -> str | None:
         """The standing checklist with the agent's verdicts placed in it: a
-        NOW item at the head as critical, a QUEUE item at the foot. ``None``
-        when the reply holds no verdict."""
+        NOW item at the head as critical, a QUEUE or ADD item at the foot.
+        ``None`` when the reply holds no verdict."""
+        limit = limit or self._ARRIVAL_MAX_ITEMS
         verdicts: list[tuple[str, str]] = []
         seen_verdict = False
         for line in (reply or "").splitlines():
@@ -6485,7 +6509,7 @@ class Fabric:
             item = item.strip(" *_`<>").strip()
             # "QUEUE: NONE" is the model filling in the form, not a task.
             empty = item.rstrip(".").upper() in ("", "NONE", "NOTHING", "N/A")
-            if what != "NONE" and not empty and len(verdicts) < self._ARRIVAL_MAX_ITEMS:
+            if what != "NONE" and not empty and len(verdicts) < limit:
                 verdicts.append((what, item))
         if not seen_verdict:
             return None
@@ -6526,7 +6550,8 @@ class Fabric:
         body = lines[:head] + [f"- [ ] **[CRITICAL]** {x}" for x in now] + lines[head:]
         body += [f"- [ ] {x}" for x in queued]
         logger.info(
-            "Arrival triage for %s: %d now, %d queued, checklist otherwise as it was",
+            "%s for %s: %d now, %d queued, checklist otherwise as it was",
+            why,
             agent.id,
             len(now),
             len(queued),
@@ -6609,7 +6634,7 @@ class Fabric:
                 context=context,
                 prompt=prompt,
                 priority=Priority.HIGH,
-                metadata={"call_type": "replan", "light": True, "idle": idle, "quick": triage},
+                metadata={"call_type": "replan", "light": True, "idle": idle, "quick": True},
             )
             self._meter_tokens(agent, "replan", response)
             if self.budget_manager and approval and approval.backend:
@@ -6617,7 +6642,13 @@ class Fabric:
                     agent.id, approval.backend, response.tokens_in, response.tokens_out
                 )
                 agent.spend_consciousness()
-            placed = self._plan_with_arrivals(agent, response.content) if triage else None
+            reply = response.content or ""
+            if triage:
+                placed = self._plan_with_arrivals(agent, reply)
+            elif re.search(r"^\s*[-*]\s*\[[ xX]\]", reply, re.MULTILINE):
+                placed = None  # a whole checklist came back; it is read as one
+            else:
+                placed = self._plan_with_arrivals(agent, reply, limit=1, why="Idle step")
             if placed is None and not _parse_plan(response.content or "").tasks:
                 # No verdict and no checklist: the model ran out before it
                 # answered. The plan the agent has is kept, not replaced by
@@ -6667,19 +6698,57 @@ class Fabric:
                 added = await _ask(
                     base,
                     "Your checklist is clear and your mission (above) is not at its end "
-                    "state. Add exactly ONE item: the step you can take yourself, now, "
+                    "state. Name exactly ONE item: the step you can take yourself, now, "
                     "that moves the first thing listed under the mission — the route if "
                     "it is not proven, otherwise the first condition not met. If you "
                     "cannot do that step yourself, the item is the one message to the "
                     "teammate who can, naming the step and the place; a human is asked "
                     "only for what nobody on the team can do. If a colleague already has "
-                    "that step in hand and nothing of yours can move a condition, output "
-                    "the checklist unchanged.",
+                    "that step in hand and nothing of yours can move a condition, answer "
+                    "NONE." + self._IDLE_ANSWER_FORM,
                 )
             if added:
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
                 logger.info("Idle: %s took a step on the mission", agent.id)
                 return
+
+            # Someone who leads others and holds no number the system can
+            # read is given it as work, again every two hours until there is one.
+            if self._owes_a_number(agent):
+                # The item is placed, not asked for. Asked to add it, one
+                # agent handed its checklist back without it and the other
+                # wrote the commands out as its answer (Mini-2, 2026-11-17);
+                # neither reached a work session.
+                self._number_was_asked(agent)
+                # Ticked earlier with nothing declared: the same item is
+                # opened again. Added as a second line it would take the
+                # first one's "done" and never be worked (Mini-2, 2026-11-17).
+                key = _task_key(self._NUMBER_ITEM)
+                ticked = [
+                    t
+                    for t in (agent.task_queue.tasks if agent.task_queue is not None else [])
+                    if _task_key(t.description) == key and t.status in ("done", "skipped")
+                ]
+                placed = (
+                    None
+                    if ticked
+                    else self._plan_with_arrivals(
+                        agent, "ADD: " + self._NUMBER_ITEM, limit=1, why="Number owed"
+                    )
+                )
+                if ticked:
+                    ticked[0].status = "pending"
+                    logger.info(
+                        "Number owed for %s: ticked with nothing declared, reopened", agent.id
+                    )
+                elif placed is not None:
+                    agent.update_plan(placed)
+                if ticked or placed is not None:
+                    self._write_plan(agent)
+                    self._last_plan_ts[agent.id] = time.time()
+                    agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
+                    logger.info("Idle: %s was given the number it is held to as work", agent.id)
+                    return
 
             # Rung 1 — bring forward. Only when there is something to bring.
             later = self._later_this_week_context(agent)
@@ -6690,9 +6759,8 @@ class Fabric:
                     "week and at your promises not yet due (above). Bring forward ONE "
                     "item that is not bound to its day — an outstanding admin task, a "
                     "draft, a check you can do now. A review, a meeting or anything "
-                    "fixed to a date stays where it is. Add exactly that one item to "
-                    "the checklist. If every remaining item is bound to its day, output "
-                    "the checklist unchanged.",
+                    "fixed to a date stays where it is. If every remaining item is "
+                    "bound to its day, answer NONE." + self._IDLE_ANSWER_FORM,
                 )
             if added:
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
@@ -6710,6 +6778,7 @@ class Fabric:
                 )
             ]
             for block in (
+                self._measures_context(agent),
                 self._team_truth_context(agent),
                 self._recurring_steps_context(agent),
                 self._factory_context(agent),
@@ -6721,15 +6790,14 @@ class Fabric:
                 creative,
                 "Your checklist is clear and nothing can be brought forward. This is "
                 "where a person gets creative: contribute to the goal, or streamline the "
-                "future to free up time. Choose ONE and add exactly that item: (a) a "
+                "future to free up time. Choose exactly ONE: (a) a "
                 "step you can produce yourself that moves the company's scoreboard — a "
                 "PR someone else merges, a mission condition met, a lead; for a manager, the "
                 "report whose promise is most at risk and what you will do about it; "
                 "(b) a step you keep doing by hand that belongs on your factory floor — "
                 "name it with build_station so the build goes on the checklist; (c) a "
-                "station that failed — fix it. Output the checklist unchanged only if "
-                "there is genuinely nothing: resting is then honest, inventing work is "
-                "not.",
+                "station that failed — fix it. Answer NONE only if there is genuinely "
+                "nothing: resting is then honest, inventing work is not." + self._IDLE_ANSWER_FORM,
             )
             if added:
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
@@ -7829,7 +7897,8 @@ class Fabric:
         # above, neither is the agent's to resolve, and every place that must
         # carry one (plan, execute, weekly plan, reassess) must carry the other.
         mission = self._mission_context(agent)
-        return "\n\n---\n\n".join(b for b in (orders, mission) if b)
+        numbers = self._measures_context(agent)
+        return "\n\n---\n\n".join(b for b in (orders, mission, numbers) if b)
 
     def _missions_for(self, agent: Agent) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """(missions this agent is on, what the fabric last observed)."""
@@ -7841,6 +7910,143 @@ class Fabric:
         except Exception:
             logger.debug("mission load failed for %s", agent.id, exc_info=True)
             return [], {}
+
+    # ------------------------------------------------------------------
+    # Numbers the company is held to (see cortiva.core.measures)
+    # ------------------------------------------------------------------
+
+    def _measures_context(self, agent: Agent) -> str:
+        """Every declared number as the fabric last read it."""
+        try:
+            from cortiva.core import measures as _me
+
+            declared = _me.load(self.agents_dir)
+            if not declared:
+                return ""
+            return _me.context_block(declared, _me.load_state(self.agents_dir), agent.id)
+        except Exception:
+            logger.debug("measures context failed for %s", agent.id, exc_info=True)
+            return ""
+
+    # Placed again while no number stands: an item ticked with nothing
+    # declared is not the end of it.
+    _MEASURE_ASK_EVERY_S = 2 * 3600.0
+    _NUMBER_ITEM = (
+        "Declare the number my work is judged by, then what drives it, level by level, "
+        "each with `cortiva measure declare` (one with no source yet is declared without "
+        "one, so the gap is on the record)"
+    )
+
+    def _owes_a_number(self, agent: Agent) -> bool:
+        """True when this agent leads others, holds no number the system can
+        read, and has not been given it as work in the last two hours. The ask is the
+        system's step: offered as an instruction, a tool goes unused."""
+        try:
+            from cortiva.core import measures as _me
+
+            if not any(
+                str(c.get("reports_to") or "") == agent.id for c in self._load_directory_cards()
+            ):
+                return False
+            if any(str(m.get("owner")) == agent.id for m in _me.load(self.agents_dir)):
+                return False
+            asked = (_me.load_state(self.agents_dir).get("_placed") or {}).get(agent.id)
+            return not asked or time.time() - float(asked) > self._MEASURE_ASK_EVERY_S
+        except Exception:
+            logger.debug("number check failed for %s", agent.id, exc_info=True)
+            return False
+
+    def _number_was_asked(self, agent: Agent) -> None:
+        from cortiva.core import measures as _me
+
+        state = _me.load_state(self.agents_dir)
+        state.setdefault("_placed", {})[agent.id] = time.time()
+        _me._write_json(self.agents_dir / _me.STATE_FILE, state)
+
+    async def _ipc_measure_declare(
+        self,
+        token: str = "",
+        name: str = "",
+        what: str = "",
+        url: str = "",
+        path: str = "",
+        drives: str = "",
+        better: str = "up",
+        **_: Any,
+    ) -> dict[str, Any]:
+        """A work session declares a number its agent is held to."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        from cortiva.core import measures as _me
+
+        ok, said = _me.declare(
+            self.agents_dir,
+            who[0],
+            name=name,
+            what=what,
+            url=url,
+            path=path,
+            drives=drives,
+            better=better,
+        )
+        if not ok:
+            return {"ok": False, "error": said}
+        row = next((m for m in _me.load(self.agents_dir) if m["id"] == said), {})
+        value, note = await asyncio.to_thread(_me.read_one, row)
+        logger.info("Numbers: %s declared '%s' (%s)", who[0], said, note or f"reads {value}")
+        self._measure_probed_at = 0.0  # read it into the record on the next tick
+        return {
+            "ok": True,
+            "text": f"declared '{said}': "
+            + (f"the system reads {value:g} from it now" if value is not None else note),
+        }
+
+    async def _ipc_measure_list(self, token: str = "", **_: Any) -> dict[str, Any]:
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        agent = self.agents.get(who[0])
+        text = self._measures_context(agent) if agent is not None else ""
+        return {"ok": True, "text": text or "No numbers have been declared."}
+
+    def _kick_measure_probe(self) -> None:
+        """Read every declared number if a read is due and none is running.
+        Network calls, so off the loop; the heartbeat never waits."""
+        from cortiva.core import measures as _me
+
+        running = getattr(self, "_measure_probe_task", None)
+        if running is not None and not running.done():
+            return
+        now = time.monotonic()
+        last = getattr(self, "_measure_probed_at", 0.0)
+        if last and now - last < _me.PROBE_INTERVAL_S:
+            return
+        if not (self.agents_dir / _me.MEASURES_FILE).exists():
+            return
+        self._measure_probed_at = now
+
+        async def _run() -> None:
+            try:
+                moved = await asyncio.to_thread(_me.probe, self.agents_dir)
+            except Exception:
+                logger.debug("measure probe failed", exc_info=True)
+                return
+            owners = {str(m["id"]): str(m.get("owner")) for m in _me.load(self.agents_dir)}
+            for mid, before, value in moved:
+                logger.info("Numbers: '%s' moved from %s to %s", mid, before, value)
+                self._emit(
+                    "measure.moved",
+                    measure_id=mid,
+                    owner=owners.get(mid, ""),
+                    before=before,
+                    value=value,
+                )
+
+        try:
+            self._measure_probe_task = asyncio.get_running_loop().create_task(_run())
+        except RuntimeError:
+            logger.debug("no running loop for the measure probe", exc_info=True)
 
     def _mission_context(self, agent: Agent) -> str:
         """The end state of each mission this agent is on, as the fabric
@@ -10950,6 +11156,7 @@ class Fabric:
         """
         # Observe mission end states off the loop; a wake only reads the file.
         self._kick_mission_probe()
+        self._kick_measure_probe()
 
         # Process scheduled actions
         due = self.scheduler.tick()
@@ -11670,6 +11877,8 @@ class Fabric:
         server.register("memory.search", self._ipc_memory_search)
         server.register("memory.note", self._ipc_memory_note)
         server.register("memory.identity", self._ipc_memory_identity)
+        server.register("measure.declare", self._ipc_measure_declare)
+        server.register("measure.list", self._ipc_measure_list)
         server.register("agent.move", _handle_agent_move)
         server.register("budget", _handle_budget)
         server.register("model.perf", _handle_model_perf)
