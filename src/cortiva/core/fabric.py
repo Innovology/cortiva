@@ -4185,13 +4185,19 @@ class Fabric:
         deferred because the agent is at its 2-session cap (the task stays
         pending and a later cycle launches it). Never blocks the cycle.
         """
-        if self.dev_sessions.is_in_flight(agent.id, task.id):
+        # A session is known by what its task is, never by where the task
+        # sits: ``task-4`` is the fourth line of the plan, and the plan is
+        # rewritten while sessions run.
+        session_key = _task_key(task.description) or task.id
+        if self.dev_sessions.is_in_flight(agent.id, session_key):
+            # A rewritten plan lists the task as open again; it is not.
+            task.status = "in_progress"
             return True  # a session already owns this task
         ctx = self._terminal_context_for_session(agent, task)
         launched = self.dev_sessions.launch(
             agent.id,
-            task.id,
-            lambda: self._run_dev_session(agent, task, ctx),
+            session_key,
+            lambda: self._session_for(agent, task, ctx),
         )
         if launched:
             task.status = "in_progress"
@@ -4277,6 +4283,31 @@ class Fabric:
             "resume_session": resume_session,
             "session_file": session_file,
         }
+
+    async def _session_for(self, agent: Agent, task: Task, ctx: dict[str, Any]) -> Any:
+        """Run the session and stamp its result with what the task was, so
+        the result finds its task again after the plan has been rewritten."""
+        result = await self._run_dev_session(agent, task, ctx)
+        result.meta.setdefault("task_key", _task_key(task.description))
+        result.meta.setdefault("description", task.description)
+        result.meta.setdefault("priority", task.priority)
+        return result
+
+    @staticmethod
+    def _task_for_result(agent: Agent, result: Any) -> Task | None:
+        """The task a finished session belongs to: matched on what the task
+        is, across subtasks too. ``None`` when the plan no longer has it."""
+        tasks = agent.task_queue.tasks if agent.task_queue is not None else []
+        every = [x for t in tasks for x in (t, *(t.subtasks or []))]
+        key = str((result.meta or {}).get("task_key") or "")
+        if not key:
+            by_id = next((t for t in every if t.id == result.task_id), None)
+            return by_id or next(
+                (t for t in every if _task_key(t.description) == result.task_id), None
+            )
+        hits = [t for t in every if _task_key(t.description) == key]
+        open_hit = next((t for t in hits if t.status not in ("done", "skipped")), None)
+        return open_hit or (hits[0] if hits else None)
 
     async def _run_dev_session(
         self,
@@ -4448,9 +4479,17 @@ class Fabric:
         if not self._dev_sessions_enabled or agent.task_queue is None:
             return
         for r in self.dev_sessions.drain_completed(agent.id):
-            task = next((t for t in agent.task_queue.tasks if t.id == r.task_id), None)
-            if task is None:
-                continue
+            found = self._task_for_result(agent, r)
+            # The plan moved on while the session worked. The work was still
+            # done: it is recorded and remembered, or it is launched again
+            # (Mini-2, 2026-11-17: 19 of 26 finished sessions left no trace,
+            # and one task ran six times in two hours).
+            moved = "" if found is not None else " (the plan had moved on)"
+            task = found or Task(
+                id=r.task_id,
+                description=str((r.meta or {}).get("description") or r.task_id),
+                priority=int((r.meta or {}).get("priority") or 0),
+            )
             if r.ok and r.tools_used <= 0:
                 # Claude answered in prose and touched nothing — no file, no
                 # command, no GitHub call. That is not a delivery: 41 of the
@@ -4463,9 +4502,10 @@ class Fabric:
                 task.outcome = ""
                 self._no_hands_keys().add((agent.id, _task_key(task.description)))
                 logger.warning(
-                    "Agent %s dev session used no tools — not done, back to the local model: %s",
+                    "Agent %s dev session used no tools — not done, back to the local model: %s%s",
                     agent.id,
                     task.description[:50],
+                    moved,
                 )
                 continue
             if r.ok:
@@ -4491,21 +4531,24 @@ class Fabric:
                 except Exception:
                     logger.debug("memory store failed for reaped session", exc_info=True)
                 logger.info(
-                    "Agent %s dev session done (%d tools): %s",
+                    "Agent %s dev session done (%d tools): %s%s",
                     agent.id,
                     r.tools_used,
                     task.description[:50],
+                    moved,
                 )
             else:
                 task.status = "exception"
                 task.error = r.error[:200]
-                agent.task_queue.exceptions.append(task)
-                agent.tasks_escalated_today += 1
+                if found is not None:
+                    agent.task_queue.exceptions.append(task)
+                    agent.tasks_escalated_today += 1
                 logger.warning(
-                    "Agent %s dev session failed: %s — %s",
+                    "Agent %s dev session failed: %s — %s%s",
                     agent.id,
                     task.description[:50],
                     r.error[:120],
+                    moved,
                 )
 
     async def _conscious_plan(
@@ -6356,6 +6399,89 @@ class Fabric:
     # 5-minute rota each bought a full 23k-token replan every 6 idle minutes.
     _IDLE_BACKOFF_MAX_S = 3600.0
 
+    # Something lands on a full plate. The person it landed on judges one
+    # thing — drop everything, or join the queue — and gets on. Nobody is
+    # asked, and the plan is not rebuilt.
+    _ARRIVAL_TRIAGE_PROMPT = (
+        "Something arrived since your checklist was made (above). The call is yours "
+        "and nobody else's: for each thing that arrived and needs work from you, "
+        "decide whether it is drop-everything or joins the queue. Reply with one "
+        "line per item and nothing else:\n"
+        "NOW: <the task, one line> — it cannot wait; you take it next, ahead of "
+        "everything\n"
+        "QUEUE: <the task, one line> — it waits its turn behind what you already "
+        "have\n"
+        "NONE — nothing that arrived needs work from you\n"
+        "Do not rewrite the checklist; it stays as it is. Call it wrong and "
+        "something is delivered early, or a colleague waits. Make the call and get on."
+    )
+    _ARRIVAL_VERDICT_RE = re.compile(
+        r"^\s*(?:[-*\d.)]+\s*)?[*_`]*(NOW|QUEUE|NONE)\b[*_`]*\s*[:—–-]?\s*(.*)$", re.IGNORECASE
+    )
+    _ARRIVAL_MAX_ITEMS = 5
+
+    def _plan_with_arrivals(self, agent: Agent, reply: str) -> str | None:
+        """The standing checklist with the agent's verdicts placed in it: a
+        NOW item at the head as critical, a QUEUE item at the foot. ``None``
+        when the reply holds no verdict."""
+        verdicts: list[tuple[str, str]] = []
+        seen_verdict = False
+        for line in (reply or "").splitlines():
+            m = self._ARRIVAL_VERDICT_RE.match(line)
+            if not m:
+                continue
+            seen_verdict = True
+            what = m.group(1).upper()
+            item = re.sub(r"\s+[—–-]\s+it (?:cannot wait|waits its turn).*$", "", m.group(2))
+            item = item.strip(" *_`<>").strip()
+            if what != "NONE" and item and len(verdicts) < self._ARRIVAL_MAX_ITEMS:
+                verdicts.append((what, item))
+        if not seen_verdict:
+            return None
+        self._write_plan(agent)
+        lines: list[str] = []
+        for line in agent.read_identity("plan").splitlines():
+            if line.strip() == "## Exceptions":
+                break
+            lines.append(line)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        head = 1 if lines and lines[0].startswith("#") else 0
+        tasks = agent.task_queue.tasks if agent.task_queue is not None else []
+        open_keys = {
+            _task_key(x.description)
+            for t in tasks
+            for x in (t, *(t.subtasks or []))
+            if x.status in ("pending", "in_progress", "acknowledged")
+        }
+        now: list[str] = []
+        queued: list[str] = []
+        for what, item in verdicts:
+            key = _task_key(item)
+            if not key or key in {_task_key(x) for x in now + queued}:
+                continue
+            if key in open_keys:
+                if what != "NOW":
+                    continue  # already in the queue, and that is where it stays
+                # Already listed and now urgent: it moves to the head.
+                lines = [
+                    ln
+                    for ln in lines
+                    if ln[:1].isspace()
+                    or _task_key(re.sub(r"^[-*]\s*\[[ xX]\]\s*(?:\*\*\[\w+\]\*\*\s*)?", "", ln))
+                    != key
+                ]
+            (now if what == "NOW" else queued).append(item)
+        body = lines[:head] + [f"- [ ] **[CRITICAL]** {x}" for x in now] + lines[head:]
+        body += [f"- [ ] {x}" for x in queued]
+        logger.info(
+            "Arrival triage for %s: %d now, %d queued, checklist otherwise as it was",
+            agent.id,
+            len(now),
+            len(queued),
+        )
+        return "\n".join(body) + "\n"
+
     async def _replan_light(self, agent: Agent, messages: list[Any], *, idle: bool = False) -> None:
         """One small ask against what Myelin already holds. Not idle: adjust
         the standing checklist for what arrived. Idle (the list is clear): the
@@ -6397,7 +6523,7 @@ class Fabric:
             if rendered:
                 base.append("## Messages that landed\n" + rendered)
 
-        async def _ask(parts: list[str], prompt: str) -> int | None:
+        async def _ask(parts: list[str], prompt: str, *, triage: bool = False) -> int | None:
             """One ask; returns how many pending tasks it added, None if no budget."""
             context = "\n\n---\n\n".join(parts)
             self.session_manager.validate_agent(agent.id, context)
@@ -6426,7 +6552,9 @@ class Fabric:
                     agent.id, approval.backend, response.tokens_in, response.tokens_out
                 )
                 agent.spend_consciousness()
-            agent.update_plan(response.content)
+            placed = self._plan_with_arrivals(agent, response.content) if triage else None
+            # A reply that is a checklist after all is taken as one.
+            agent.update_plan(placed if placed is not None else response.content)
             if idle:
                 # The rung asked for exactly ONE item. A model that answers with
                 # a paragraph of status lines ('Agent messages dispatched to…',
@@ -6452,14 +6580,7 @@ class Fabric:
 
         try:
             if not idle:
-                await _ask(
-                    base,
-                    "Something arrived since your checklist was made (above). Adjust "
-                    "the checklist for it and nothing else: ADD what it requires, "
-                    "REPRIORITISE if it changes what matters most, DROP what it "
-                    "supersedes. Keep every other item exactly as it is — do not "
-                    "re-plan your day. Output ONLY the full updated checklist.",
-                )
+                await _ask(base, self._ARRIVAL_TRIAGE_PROMPT, triage=True)
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S  # something landed
                 return
 
@@ -8019,12 +8140,23 @@ class Fabric:
             found += [r for r in got if kind in (getattr(r, "tags", None) or [])][:2]
         if not found:
             return ""
-        parts = [str(getattr(r, "content", ""))[:1800] for r in found]
+        # Each note once, oldest first: the same note came back twice in one
+        # block, and two notes on one task disagreed with nothing to say
+        # which stood (Mini-2, 2026-11-17).
+        found.sort(key=lambda r: str(getattr(r, "created_at", "") or ""))
+        parts: list[str] = []
+        for r in found:
+            text = str(getattr(r, "content", ""))[:1800]
+            if text and " ".join(text.split()) not in {" ".join(p.split()) for p in parts}:
+                parts.append(text)
+        if not parts:
+            return ""
         return (
             "## 🧭 What you already know about work like this\n"
             "From your own memory: how you did similar work before, and how you got out of "
             "trouble. Start from it. It was true when written; if the world now says "
-            "otherwise, trust the world and write the correction back.\n\n" + "\n\n".join(parts)
+            "otherwise, trust the world and write the correction back. Notes are oldest "
+            "first: where two disagree, the later one is the correction.\n\n" + "\n\n".join(parts)
         )
 
     def _chat_resolve(self, name: Any) -> str | None:

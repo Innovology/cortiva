@@ -100,3 +100,57 @@ async def test_a_session_that_used_no_tools_is_not_done_and_gets_no_second_sessi
     )
     await f._reap_dev_sessions(agent2)
     assert t2.status == "done" and agent2.tasks_completed_today == 1
+
+
+def _result(desc: str, **kw) -> SessionResult:
+    from cortiva.core.agent import _task_key
+
+    meta = {"task_key": _task_key(desc), "description": desc, "priority": 0}
+    return SessionResult(agent_id="a1", task_id="task-4", ok=True, tools_used=6, meta=meta, **kw)
+
+
+@pytest.mark.asyncio
+async def test_a_result_finds_its_task_after_the_plan_was_rewritten(tmp_path: Path):
+    """``task-4`` is a line number. The plan gained a line while the session
+    worked, so the fourth line is now somebody else's task."""
+    f = _fabric(tmp_path)
+    other = Task(id="task-4", description="Reply to the founder")
+    mine = Task(id="task-5", description="Fix asset routing on admin")
+    agent = _agent(other, mine)
+    f.dev_sessions._completed["a1"].append(_result("Fix asset routing on admin", outcome="fixed"))
+    await f._reap_dev_sessions(agent)
+    assert mine.status == "done" and mine.outcome == "fixed"
+    assert other.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_a_result_for_a_subtask_is_applied(tmp_path: Path):
+    f = _fabric(tmp_path)
+    leaf = Task(id="task-2", description="Send the reply")
+    agent = _agent(Task(id="task-1", description="Handle the directive", subtasks=[leaf]))
+    f.dev_sessions._completed["a1"].append(_result("Send the reply", outcome="sent"))
+    await f._reap_dev_sessions(agent)
+    assert leaf.status == "done"
+
+
+@pytest.mark.asyncio
+async def test_work_done_for_a_task_the_plan_dropped_is_still_recorded(tmp_path: Path):
+    f = _fabric(tmp_path)
+    agent = _agent(Task(id="task-1", description="Something else"))
+    agent.directory = tmp_path
+    f.dev_sessions._completed["a1"].append(_result("Track the PR to merge", outcome="merged"))
+    await f._reap_dev_sessions(agent)
+    assert agent.tasks_completed_today == 1
+    assert "track the pr to merge" in (tmp_path / "done.jsonl").read_text()
+    remembered = await f.memory.search("a1", "Track the PR to merge")
+    assert any("merged" in r.content for r in remembered)
+    assert agent.task_queue.tasks[0].status == "pending"
+
+
+def test_a_running_session_is_known_by_its_task_not_its_line(tmp_path: Path):
+    f = _fabric(tmp_path)
+    f._terminal_context_for_session = MagicMock(side_effect=AssertionError("relaunched"))
+    f.dev_sessions._in_flight_tasks["a1"].add("fix asset routing on admin")
+    moved = Task(id="task-9", description="Fix asset routing on admin")
+    assert f._dispatch_dev_session(SimpleNamespace(id="a1"), moved) is True
+    assert moved.status == "in_progress"

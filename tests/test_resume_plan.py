@@ -127,7 +127,8 @@ async def test_a_replan_on_inbound_change_is_a_small_adjustment(tmp_path: Path) 
     t, ctx, prompt = seen[-1]
     assert t == "replan"
     assert "Your current checklist" in ctx and "Lead form" in ctx
-    assert "Adjust the checklist for it and nothing else" in prompt
+    # One judgement, the agent's own: now, or the queue. Never a rebuilt plan.
+    assert "NOW:" in prompt and "QUEUE:" in prompt and "Do not rewrite the checklist" in prompt
     assert "Company directory" not in ctx and "What actually moved" not in ctx
     assert len(ctx) < len(plan_ctx) / 2, (len(ctx), len(plan_ctx))
 

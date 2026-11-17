@@ -331,3 +331,97 @@ def test_the_debrief_carries_the_reviewers_verdict_and_allows_writing_nothing():
     assert "--kind procedure" in p and "--kind recovery" in p
     assert "If it was not achieved, write no procedure" in p
     assert "none given" in Fabric._debrief_prompt("x", "")
+
+
+class TestArrivalTriage:
+    """Something lands on a full plate: the agent calls it now or queue,
+    and the checklist is otherwise left as it was."""
+
+    def _agent(self, f):
+        from cortiva.core.agent import Agent
+
+        agent = Agent(id="amara", directory=f.agents_dir / "amara")
+        agent.persist_runtime_state = lambda: None
+        agent.update_plan(
+            "# amara — Plan\n\n- [x] Ship the fix\n- [ ] Write the report\n- [ ] Review PR 12\n"
+        )
+        return agent
+
+    def _open(self, text):
+        return [ln for ln in text.splitlines() if ln.startswith("- [")]
+
+    def test_now_goes_to_the_head_and_queue_to_the_foot(self, tmp_path):
+        f = _fab(tmp_path)
+        agent = self._agent(f)
+        out = f._plan_with_arrivals(
+            agent, "NOW: Restart the lead form — it cannot wait\n- QUEUE: Answer Yuki on pricing\n"
+        )
+        assert self._open(out) == [
+            "- [ ] **[CRITICAL]** Restart the lead form",
+            "- [x] Ship the fix",
+            "- [ ] Write the report",
+            "- [ ] Review PR 12",
+            "- [ ] Answer Yuki on pricing",
+        ]
+        agent.update_plan(out)
+        assert agent.next_task().description == "Restart the lead form"
+
+    def test_none_leaves_the_checklist_as_it_was(self, tmp_path):
+        f = _fab(tmp_path)
+        agent = self._agent(f)
+        out = f._plan_with_arrivals(agent, "NONE — nothing that arrived needs work from you")
+        assert self._open(out) == [
+            "- [x] Ship the fix",
+            "- [ ] Write the report",
+            "- [ ] Review PR 12",
+        ]
+
+    def test_an_item_already_queued_is_not_added_twice_and_now_moves_it_up(self, tmp_path):
+        f = _fab(tmp_path)
+        agent = self._agent(f)
+        same = f._plan_with_arrivals(agent, "QUEUE: review PR 12")
+        assert self._open(same).count("- [ ] Review PR 12") == 1 and len(self._open(same)) == 3
+        up = f._plan_with_arrivals(agent, "**NOW**: Review PR 12")
+        assert self._open(up) == [
+            "- [ ] **[CRITICAL]** Review PR 12",
+            "- [x] Ship the fix",
+            "- [ ] Write the report",
+        ]
+
+    def test_a_reply_that_is_a_checklist_is_not_a_verdict(self, tmp_path):
+        f = _fab(tmp_path)
+        agent = self._agent(f)
+        assert f._plan_with_arrivals(agent, "- [ ] Write the report\n- [ ] Something new") is None
+
+
+def test_know_how_is_handed_once_each_and_oldest_first(tmp_path):
+    f = _fab(tmp_path)
+    f._ipc_socket_path = "/tmp/x.sock"
+    rows = [
+        SimpleNamespace(
+            content="How to recover — X\nrevert it",
+            tags=["session", "recovery"],
+            created_at="2026-11-17T12:26",
+        ),
+        SimpleNamespace(
+            content="How to recover — X\nedit the file",
+            tags=["session", "recovery"],
+            created_at="2026-11-17T12:25",
+        ),
+        SimpleNamespace(
+            content="How to recover — X\nrevert it",
+            tags=["session", "recovery"],
+            created_at="2026-11-17T12:26",
+        ),
+    ]
+
+    async def search(agent_id, query, *, limit=10, tags=None, **_):
+        return rows
+
+    f.memory = SimpleNamespace(search=search)
+    block = asyncio.run(
+        f._know_how_for(f.agents["amara"], SimpleNamespace(id="task-1", description="X"))
+    )
+    assert block.count("revert it") == 1
+    assert block.index("edit the file") < block.index("revert it")
+    assert "the later one is the correction" in block
