@@ -4233,6 +4233,7 @@ class Fabric:
             from cortiva.core import teamchat as _tc
 
             prompt += "\n\n" + _tc.session_guide(self.agents_dir, agent.id)
+            prompt += "\n\n" + _tc.memory_guide(agent.id)
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
         envelope = self.isolation.prepare_terminal_env(agent_id=agent.id, cmd=[], cwd=cwd)
@@ -7822,6 +7823,115 @@ class Fabric:
             self._chat_note(who, "read " + _tc.line(m))
         return {"ok": True, "messages": got, "text": _tc.digest(got)}
 
+    # ------------------------------------------------------------------
+    # The agent's own memory, for its work sessions
+    # ------------------------------------------------------------------
+    # A session is the agent's hands, and for planning it may be its head.
+    # It reaches the agent's memory and identity by asking for what it
+    # needs, when it needs it, and writes back what it decided and learned:
+    # small asks, not a 20,000-character dump in the prompt. The token
+    # decides whose memory; a session can read and write only its own
+    # agent's.
+
+    _SESSION_NOTE_KINDS: dict[str, float] = {
+        # kind -> importance. Not all 8.0: a week of lessons stored at one
+        # weight could not be told apart (Mini-2, Nov 2026).
+        "lesson": 7.0,
+        "decision": 6.5,
+        "fact": 6.0,
+        "plan": 6.0,
+    }
+    _SESSION_IDENTITY_FILES = ("soul", "identity", "responsibilities", "skills", "plan")
+
+    @staticmethod
+    def _memory_row(rec: Any) -> dict[str, Any]:
+        created = getattr(rec, "created_at", None)
+        return {
+            "at": created.isoformat()[:16] if created is not None else "",
+            "importance": getattr(rec, "importance", 0.0),
+            "tags": list(getattr(rec, "tags", []) or []),
+            "content": str(getattr(rec, "content", ""))[:1200],
+        }
+
+    async def _ipc_memory_search(
+        self, token: str = "", query: str = "", limit: int = 8, **_: Any
+    ) -> dict[str, Any]:
+        """Search the session's own agent's memory; with no query, recall
+        what matters most."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {
+                "ok": False,
+                "error": "no memory access: this session has no valid token",
+            }
+        n = min(max(int(limit or 8), 1), 20)
+        if str(query or "").strip():
+            found = await self.memory.search(who[0], str(query), limit=n)
+        else:
+            found = await self.memory.recall(who[0], limit=n, min_importance=6.0)
+        rows = [self._memory_row(r) for r in found]
+        text = "\n".join(f"- [{r['at']}] {r['content']}" for r in rows) or "nothing found"
+        return {"ok": True, "memories": rows, "text": text}
+
+    async def _ipc_memory_note(
+        self, token: str = "", kind: str = "fact", text: str = "", **_: Any
+    ) -> dict[str, Any]:
+        """Write one thing the session decided or learned into its agent's
+        memory, marked as coming from a session and for which task."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {
+                "ok": False,
+                "error": "no memory access: this session has no valid token",
+            }
+        kind = str(kind or "fact").strip().lower()
+        if kind not in self._SESSION_NOTE_KINDS:
+            return {
+                "ok": False,
+                "error": f"kind must be one of: {', '.join(self._SESSION_NOTE_KINDS)}",
+            }
+        body = " ".join(str(text or "").split())
+        if len(body) < 12:
+            return {
+                "ok": False,
+                "error": "say what was decided or learned, in a sentence",
+            }
+        rec = await self.memory.store(
+            agent_id=who[0],
+            content=body[:1500],
+            tags=["session", kind],
+            importance=self._SESSION_NOTE_KINDS[kind],
+            metadata={"task_id": who[1], "source": "work_session"},
+        )
+        logger.info("Memory: %s session noted a %s", who[0], kind)
+        return {"ok": True, "id": getattr(rec, "id", "")}
+
+    async def _ipc_memory_identity(
+        self, token: str = "", part: str = "", **_: Any
+    ) -> dict[str, Any]:
+        """Read one part of the agent's identity. Read-only: who the agent
+        is does not change because a session said so."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {
+                "ok": False,
+                "error": "no memory access: this session has no valid token",
+            }
+        part = str(part or "").strip().lower()
+        if part not in self._SESSION_IDENTITY_FILES:
+            return {
+                "ok": False,
+                "error": f"part must be one of: {', '.join(self._SESSION_IDENTITY_FILES)}",
+            }
+        agent = self.agents.get(who[0])
+        if agent is None:
+            return {"ok": False, "error": "agent not found"}
+        return {
+            "ok": True,
+            "part": part,
+            "text": agent.read_identity(part) or "(empty)",
+        }
+
     def _chat_resolve(self, name: Any) -> str | None:
         """An agent id from an id or a first name, as colleagues are known."""
         want = str(name or "").strip().lower().split("@")[0]
@@ -11254,6 +11364,9 @@ class Fabric:
         server.register("agent.cycle", _handle_agent_cycle)
         server.register("chat.send", self._ipc_chat_send)
         server.register("chat.read", self._ipc_chat_read)
+        server.register("memory.search", self._ipc_memory_search)
+        server.register("memory.note", self._ipc_memory_note)
+        server.register("memory.identity", self._ipc_memory_identity)
         server.register("agent.move", _handle_agent_move)
         server.register("budget", _handle_budget)
         server.register("model.perf", _handle_model_perf)
