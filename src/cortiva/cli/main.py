@@ -1468,6 +1468,42 @@ def cmd_chat(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_memory(args: argparse.Namespace) -> None:
+    """The agent's own memory, from inside one of its work sessions."""
+    import os
+    from pathlib import Path
+
+    from cortiva.core.ipc import FabricClient
+
+    token = os.environ.get("CORTIVA_CHAT_TOKEN", "")
+    sock = os.environ.get("CORTIVA_FABRIC_SOCK", "")
+    if not token or not sock:
+        print("Memory is not available here: no session token.")
+        sys.exit(1)
+    client = FabricClient(socket_path=Path(sock))
+    try:
+        if args.memory_command == "search":
+            resp = client.send_sync(
+                "memory.search",
+                token=token,
+                query=" ".join(args.query),
+                limit=args.limit,
+            )
+        elif args.memory_command == "identity":
+            resp = client.send_sync("memory.identity", token=token, part=args.part)
+        else:
+            resp = client.send_sync(
+                "memory.note", token=token, kind=args.kind, text=" ".join(args.text)
+            )
+        if not resp.get("ok"):
+            print(f"failed: {resp.get('error', 'unknown error')}")
+            sys.exit(1)
+        print(resp.get("text") or "noted")
+    except Exception as exc:
+        print(f"Memory is unreachable: {exc}")
+        sys.exit(1)
+
+
 def cmd_agent_sleep(args: argparse.Namespace) -> None:
     """Put an agent to sleep via the running daemon."""
     from cortiva.core.ipc import FabricClient
@@ -2010,6 +2046,18 @@ def build_parser() -> argparse.ArgumentParser:
     chat_read = chat_sub.add_parser("read", help="Read what is waiting for you")
     chat_read.add_argument("--wait", type=float, default=0, help="Seconds to wait for a reply")
 
+    # memory (used by an agent's work session)
+    mem_top = subparsers.add_parser("memory", help="Your own memory, from a work session")
+    mem_sub = mem_top.add_subparsers(dest="memory_command")
+    mem_search = mem_sub.add_parser("search", help="Find what you know about something")
+    mem_search.add_argument("query", nargs="*", help="What you want to know")
+    mem_search.add_argument("--limit", type=int, default=8)
+    mem_ident = mem_sub.add_parser("identity", help="Read part of who you are")
+    mem_ident.add_argument("part", help="soul, identity, responsibilities, skills or plan")
+    mem_note = mem_sub.add_parser("note", help="Write back a decision, fact or lesson")
+    mem_note.add_argument("--kind", default="fact", help="lesson, decision, fact or plan")
+    mem_note.add_argument("text", nargs="*", help="One sentence")
+
     # agent
     agent_parser = subparsers.add_parser("agent", help="Agent management")
     agent_sub = agent_parser.add_subparsers(dest="agent_command")
@@ -2184,6 +2232,11 @@ def main() -> None:
             cmd_chat(args)
         else:
             parser.parse_args(["chat", "--help"])
+    elif args.command == "memory":
+        if args.memory_command in ("search", "identity", "note"):
+            cmd_memory(args)
+        else:
+            parser.parse_args(["memory", "--help"])
     elif args.command == "agent":
         if args.agent_command == "create":
             cmd_agent_create(args)

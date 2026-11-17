@@ -183,3 +183,83 @@ def test_a_kind_the_model_invented_still_arrives(tmp_path):
     f = _fab(tmp_path)
     assert f._chat_from_mind(f.agents["amara"], {"to": "cto", "content": "hi", "kind": "memo"})
     assert [m["kind"] for m in tc.unread(tmp_path, "cto")] == ["say"]
+
+
+# ---------------------------------------------------------------------------
+# A session's access to its agent's memory
+# ---------------------------------------------------------------------------
+
+
+class _Mem:
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    async def store(self, agent_id, content, *, tags=None, importance=5.0, metadata=None):
+        row = SimpleNamespace(
+            id=f"m{len(self.rows)}",
+            agent_id=agent_id,
+            content=content,
+            tags=tags or [],
+            importance=importance,
+            metadata=metadata or {},
+            created_at=None,
+        )
+        self.rows.append(row)
+        return row
+
+    async def search(self, agent_id, query, *, limit=10, **_):
+        return [
+            r for r in self.rows if r.agent_id == agent_id and query.lower() in r.content.lower()
+        ][:limit]
+
+    async def recall(self, agent_id, *, limit=20, min_importance=0.0):
+        return [r for r in self.rows if r.agent_id == agent_id and r.importance >= min_importance][
+            :limit
+        ]
+
+
+def test_a_session_reads_and_writes_only_its_own_agents_memory(tmp_path):
+    f = _fab(tmp_path)
+    f.memory = _Mem()
+    a, c = _token(f, "amara"), _token(f, "cto")
+    out = asyncio.run(
+        f._ipc_memory_note(token=a, kind="decision", text="Use the host rule, not a second app.")
+    )
+    assert out["ok"]
+    row = f.memory.rows[0]
+    assert row.agent_id == "amara" and row.tags == ["session", "decision"]
+    assert row.importance == 6.5 and row.metadata["task_id"] == "task-1"
+    mine = asyncio.run(f._ipc_memory_search(token=a, query="host rule"))
+    assert "Use the host rule" in mine["text"]
+    theirs = asyncio.run(f._ipc_memory_search(token=c, query="host rule"))
+    assert theirs["text"] == "nothing found"
+
+
+def test_memory_needs_a_token_a_known_kind_and_a_real_sentence(tmp_path):
+    f = _fab(tmp_path)
+    f.memory = _Mem()
+    a = _token(f, "amara")
+    assert not asyncio.run(f._ipc_memory_search(token="forged", query="x"))["ok"]
+    assert not asyncio.run(f._ipc_memory_note(token=a, kind="vibe", text="a long enough text"))[
+        "ok"
+    ]
+    assert not asyncio.run(f._ipc_memory_note(token=a, kind="fact", text="done"))["ok"]
+    assert f.memory.rows == []
+
+
+def test_identity_is_readable_and_only_the_known_parts(tmp_path):
+    f = _fab(tmp_path)
+    f.agents["amara"].read_identity = lambda part: f"<{part}>"
+    a = _token(f, "amara")
+    assert asyncio.run(f._ipc_memory_identity(token=a, part="soul"))["text"] == "<soul>"
+    assert not asyncio.run(f._ipc_memory_identity(token=a, part="../../etc/passwd"))["ok"]
+
+
+def test_a_memory_whose_date_is_a_string_is_still_returned(tmp_path):
+    f = _fab(tmp_path)
+    f.memory = _Mem()
+    a = _token(f, "amara")
+    asyncio.run(f._ipc_memory_note(token=a, kind="fact", text="PR cycle time baseline is 4h."))
+    f.memory.rows[0].created_at = "2026-11-17T03:11:55.123456+00:00"
+    out = asyncio.run(f._ipc_memory_search(token=a, query="baseline"))
+    assert out["ok"] and "[2026-11-17T03:11] PR cycle time baseline" in out["text"]

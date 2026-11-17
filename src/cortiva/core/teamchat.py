@@ -253,3 +253,20 @@ def session_guide(agents_dir: Path, agent_id: str) -> str:
         "- Ask a colleague when they know something you would otherwise spend minutes "
         "finding. Do not use chat to report status nobody asked for."
     )
+
+
+def memory_guide(agent_id: str) -> str:
+    """How a work session reaches its agent's own memory and identity."""
+    return (
+        "## 🧠 Your memory\n"
+        f"You are working as {agent_id}, and {agent_id}'s memory is yours to use. Ask it "
+        "for what you need when you need it:\n"
+        '- `cortiva memory search "<what you want to know>"` finds what you have learned or '
+        "done about something. With no query it returns what matters most to you now.\n"
+        "- `cortiva memory identity <soul|identity|responsibilities|skills|plan>` reads who "
+        "you are and what you hold yourself to.\n"
+        '- `cortiva memory note --kind <lesson|decision|fact|plan> "<one sentence>"` writes '
+        "back something worth keeping: a decision and its reason, a fact you had to find "
+        "out, a lesson. Write what a colleague could act on, not a record that you worked.\n"
+        "Search before you investigate something you may already know."
+    )
