@@ -4240,6 +4240,12 @@ class Fabric:
 
             prompt += "\n\n" + _tc.session_guide(self.agents_dir, agent.id)
             prompt += "\n\n" + _tc.memory_guide(agent.id)
+            from cortiva.core import measures as _me
+
+            prompt += "\n\n" + _me.guide()
+            numbers = self._measures_context(agent)
+            if numbers:
+                prompt += "\n\n" + numbers
         cwd = agent.directory / "workspace"
         cwd.mkdir(parents=True, exist_ok=True)
         envelope = self.isolation.prepare_terminal_env(agent_id=agent.id, cmd=[], cwd=cwd)
@@ -6670,6 +6676,25 @@ class Fabric:
                 logger.info("Idle: %s took a step on the mission", agent.id)
                 return
 
+            # Someone who leads others and holds no number the system can
+            # read is asked for it, once a day until there is one.
+            if self._owes_a_number(agent):
+                self._number_was_asked(agent)
+                added = await _ask(
+                    base,
+                    "You lead others, and the system can read no number you are held "
+                    "to. Add exactly ONE item: work out the number your work is judged "
+                    "by and what drives it, level by level, and declare each one from "
+                    "a work session with `cortiva measure declare`. Where nothing "
+                    "exposes a driver yet, declare it without a source, "
+                    "so the gap is on the record for whoever can build it. If you are "
+                    "held to no number, output the checklist unchanged.",
+                )
+                if added:
+                    agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
+                    logger.info("Idle: %s was asked for the number it is held to", agent.id)
+                    return
+
             # Rung 1 — bring forward. Only when there is something to bring.
             later = self._later_this_week_context(agent)
             if later:
@@ -6699,6 +6724,7 @@ class Fabric:
                 )
             ]
             for block in (
+                self._measures_context(agent),
                 self._team_truth_context(agent),
                 self._recurring_steps_context(agent),
                 self._factory_context(agent),
@@ -7818,7 +7844,8 @@ class Fabric:
         # above, neither is the agent's to resolve, and every place that must
         # carry one (plan, execute, weekly plan, reassess) must carry the other.
         mission = self._mission_context(agent)
-        return "\n\n---\n\n".join(b for b in (orders, mission) if b)
+        numbers = self._measures_context(agent)
+        return "\n\n---\n\n".join(b for b in (orders, mission, numbers) if b)
 
     def _missions_for(self, agent: Agent) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """(missions this agent is on, what the fabric last observed)."""
@@ -7830,6 +7857,136 @@ class Fabric:
         except Exception:
             logger.debug("mission load failed for %s", agent.id, exc_info=True)
             return [], {}
+
+    # ------------------------------------------------------------------
+    # Numbers the company is held to (see cortiva.core.measures)
+    # ------------------------------------------------------------------
+
+    def _measures_context(self, agent: Agent) -> str:
+        """Every declared number as the fabric last read it."""
+        try:
+            from cortiva.core import measures as _me
+
+            declared = _me.load(self.agents_dir)
+            if not declared:
+                return ""
+            return _me.context_block(declared, _me.load_state(self.agents_dir), agent.id)
+        except Exception:
+            logger.debug("measures context failed for %s", agent.id, exc_info=True)
+            return ""
+
+    _MEASURE_ASK_EVERY_S = 24 * 3600.0
+
+    def _owes_a_number(self, agent: Agent) -> bool:
+        """True when this agent leads others, holds no number the system can
+        read, and has not been asked for one in the last day. The ask is the
+        system's step: offered as an instruction, a tool goes unused."""
+        try:
+            from cortiva.core import measures as _me
+
+            if not any(
+                str(c.get("reports_to") or "") == agent.id for c in self._load_directory_cards()
+            ):
+                return False
+            if any(str(m.get("owner")) == agent.id for m in _me.load(self.agents_dir)):
+                return False
+            asked = (_me.load_state(self.agents_dir).get("_asked") or {}).get(agent.id)
+            return not asked or time.time() - float(asked) > self._MEASURE_ASK_EVERY_S
+        except Exception:
+            logger.debug("number check failed for %s", agent.id, exc_info=True)
+            return False
+
+    def _number_was_asked(self, agent: Agent) -> None:
+        from cortiva.core import measures as _me
+
+        state = _me.load_state(self.agents_dir)
+        state.setdefault("_asked", {})[agent.id] = time.time()
+        _me._write_json(self.agents_dir / _me.STATE_FILE, state)
+
+    async def _ipc_measure_declare(
+        self,
+        token: str = "",
+        name: str = "",
+        what: str = "",
+        url: str = "",
+        path: str = "",
+        drives: str = "",
+        better: str = "up",
+        **_: Any,
+    ) -> dict[str, Any]:
+        """A work session declares a number its agent is held to."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        from cortiva.core import measures as _me
+
+        ok, said = _me.declare(
+            self.agents_dir,
+            who[0],
+            name=name,
+            what=what,
+            url=url,
+            path=path,
+            drives=drives,
+            better=better,
+        )
+        if not ok:
+            return {"ok": False, "error": said}
+        row = next((m for m in _me.load(self.agents_dir) if m["id"] == said), {})
+        value, note = await asyncio.to_thread(_me.read_one, row)
+        logger.info("Numbers: %s declared '%s' (%s)", who[0], said, note or f"reads {value}")
+        self._measure_probed_at = 0.0  # read it into the record on the next tick
+        return {
+            "ok": True,
+            "text": f"declared '{said}': "
+            + (f"the system reads {value:g} from it now" if value is not None else note),
+        }
+
+    async def _ipc_measure_list(self, token: str = "", **_: Any) -> dict[str, Any]:
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        agent = self.agents.get(who[0])
+        text = self._measures_context(agent) if agent is not None else ""
+        return {"ok": True, "text": text or "No numbers have been declared."}
+
+    def _kick_measure_probe(self) -> None:
+        """Read every declared number if a read is due and none is running.
+        Network calls, so off the loop; the heartbeat never waits."""
+        from cortiva.core import measures as _me
+
+        running = getattr(self, "_measure_probe_task", None)
+        if running is not None and not running.done():
+            return
+        now = time.monotonic()
+        last = getattr(self, "_measure_probed_at", 0.0)
+        if last and now - last < _me.PROBE_INTERVAL_S:
+            return
+        if not (self.agents_dir / _me.MEASURES_FILE).exists():
+            return
+        self._measure_probed_at = now
+
+        async def _run() -> None:
+            try:
+                moved = await asyncio.to_thread(_me.probe, self.agents_dir)
+            except Exception:
+                logger.debug("measure probe failed", exc_info=True)
+                return
+            owners = {str(m["id"]): str(m.get("owner")) for m in _me.load(self.agents_dir)}
+            for mid, before, value in moved:
+                logger.info("Numbers: '%s' moved from %s to %s", mid, before, value)
+                self._emit(
+                    "measure.moved",
+                    measure_id=mid,
+                    owner=owners.get(mid, ""),
+                    before=before,
+                    value=value,
+                )
+
+        try:
+            self._measure_probe_task = asyncio.get_running_loop().create_task(_run())
+        except RuntimeError:
+            logger.debug("no running loop for the measure probe", exc_info=True)
 
     def _mission_context(self, agent: Agent) -> str:
         """The end state of each mission this agent is on, as the fabric
@@ -10939,6 +11096,7 @@ class Fabric:
         """
         # Observe mission end states off the loop; a wake only reads the file.
         self._kick_mission_probe()
+        self._kick_measure_probe()
 
         # Process scheduled actions
         due = self.scheduler.tick()
@@ -11659,6 +11817,8 @@ class Fabric:
         server.register("memory.search", self._ipc_memory_search)
         server.register("memory.note", self._ipc_memory_note)
         server.register("memory.identity", self._ipc_memory_identity)
+        server.register("measure.declare", self._ipc_measure_declare)
+        server.register("measure.list", self._ipc_measure_list)
         server.register("agent.move", _handle_agent_move)
         server.register("budget", _handle_budget)
         server.register("model.perf", _handle_model_perf)
