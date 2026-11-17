@@ -372,3 +372,5 @@ async def test_the_number_owed_is_placed_on_the_checklist_by_the_system(tmp_path
     last = agent.task_queue.tasks[-1]
     assert last.status == "pending" and "cortiva measure declare" in last.description
     assert f._owes_a_number(agent) is False
+    # It names a command, so it goes to a work session, not the mind.
+    assert f._is_terminal_task(last.description)

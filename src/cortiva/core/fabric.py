@@ -3988,6 +3988,10 @@ class Fabric:
             "project board",
             "milestone",
             "pull request",
+            # A task that names a command to run needs hands. Left to the
+            # mind, the leader's number was written out as prose and ticked
+            # done with nothing declared (Mini-2, 2026-11-17).
+            "`cortiva ",
         }
     )
 
@@ -6709,7 +6713,7 @@ class Fabric:
                 return
 
             # Someone who leads others and holds no number the system can
-            # read is asked for it, once a day until there is one.
+            # read is given it as work, again every two hours until there is one.
             if self._owes_a_number(agent):
                 # The item is placed, not asked for. Asked to add it, one
                 # agent handed its checklist back without it and the other
@@ -7905,7 +7909,9 @@ class Fabric:
             logger.debug("measures context failed for %s", agent.id, exc_info=True)
             return ""
 
-    _MEASURE_ASK_EVERY_S = 24 * 3600.0
+    # Placed again while no number stands: an item ticked with nothing
+    # declared is not the end of it.
+    _MEASURE_ASK_EVERY_S = 2 * 3600.0
     _NUMBER_ITEM = (
         "Declare the number my work is judged by, then what drives it, level by level, "
         "each with `cortiva measure declare` (one with no source yet is declared without "
@@ -7914,7 +7920,7 @@ class Fabric:
 
     def _owes_a_number(self, agent: Agent) -> bool:
         """True when this agent leads others, holds no number the system can
-        read, and has not been asked for one in the last day. The ask is the
+        read, and has not been given it as work in the last two hours. The ask is the
         system's step: offered as an instruction, a tool goes unused."""
         try:
             from cortiva.core import measures as _me
