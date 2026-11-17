@@ -30,7 +30,7 @@ from cortiva.adapters.protocols import (
 )
 from cortiva.core import factory as _factory
 from cortiva.core import model_meter as _mm
-from cortiva.core.agent import Agent, AgentState, Task, TaskQueue, _task_key
+from cortiva.core.agent import Agent, AgentState, Task, TaskQueue, _parse_plan, _task_key
 from cortiva.core.approval import ApprovalQueue
 from cortiva.core.balancer import ClusterMetrics, CommunicationTracker
 from cortiva.core.budget import ConsciousnessBudgetManager
@@ -6615,7 +6615,7 @@ class Fabric:
                 context=context,
                 prompt=prompt,
                 priority=Priority.HIGH,
-                metadata={"call_type": "replan", "light": True, "idle": idle},
+                metadata={"call_type": "replan", "light": True, "idle": idle, "quick": triage},
             )
             self._meter_tokens(agent, "replan", response)
             if self.budget_manager and approval and approval.backend:
@@ -6624,6 +6624,17 @@ class Fabric:
                 )
                 agent.spend_consciousness()
             placed = self._plan_with_arrivals(agent, response.content) if triage else None
+            if placed is None and not _parse_plan(response.content or "").tasks:
+                # No verdict and no checklist: the model ran out before it
+                # answered. The plan the agent has is kept, not replaced by
+                # nothing.
+                logger.warning(
+                    "Agent %s: the %s ask came back with nothing usable; checklist kept",
+                    agent.id,
+                    "arrival" if triage else "idle",
+                )
+                self._last_plan_ts[agent.id] = time.time()
+                return 0
             # A reply that is a checklist after all is taken as one.
             agent.update_plan(placed if placed is not None else response.content)
             if idle:

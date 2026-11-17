@@ -43,3 +43,31 @@ def test_server_usage_is_preferred_when_present() -> None:
     a, _ = _adapter(SimpleNamespace(prompt_tokens=1234, completion_tokens=56, total_tokens=1290))
     r = asyncio.run(a.think("cto", "c" * 400, "p" * 40))
     assert (r.tokens_in, r.tokens_out) == (1234, 56)
+
+
+def test_a_quick_judgement_is_asked_without_thinking_and_falls_back_if_refused() -> None:
+    a, completions = _adapter(None)
+    sent: list[dict] = []
+    plain = completions.create
+
+    class BadRequestError(Exception):
+        pass
+
+    def create(**kwargs):
+        sent.append(kwargs)
+        if "extra_body" in kwargs and len(sent) == 2:
+            raise BadRequestError("unknown field")
+        return plain(**kwargs)
+
+    completions.create = create
+    asyncio.run(a.think("cto", "c", "p", metadata={"quick": True}))
+    assert sent[0]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    asyncio.run(a.think("cto", "c", "p"))
+    assert "extra_body" not in sent[1]
+    # A server that refuses the switch is asked the ordinary way, then never offered it.
+    sent.clear()
+    sent.append({})
+    asyncio.run(a.think("cto", "c", "p", metadata={"quick": True}))
+    assert "extra_body" in sent[1] and "extra_body" not in sent[2]
+    asyncio.run(a.think("cto", "c", "p", metadata={"quick": True}))
+    assert "extra_body" not in sent[3]
