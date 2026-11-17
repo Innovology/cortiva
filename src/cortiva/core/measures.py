@@ -14,7 +14,8 @@ own agents.
 Files, beside the agent directories:
 
 - ``.measures.json``       what was declared
-- ``.measure_state.json``  what the fabric last read
+- ``.measure_state.json``  what the fabric last read, and under ``_placed`` when
+  each lead was last given the declaring of its number as work
 """
 
 from __future__ import annotations

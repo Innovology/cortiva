@@ -7925,7 +7925,7 @@ class Fabric:
                 return False
             if any(str(m.get("owner")) == agent.id for m in _me.load(self.agents_dir)):
                 return False
-            asked = (_me.load_state(self.agents_dir).get("_asked") or {}).get(agent.id)
+            asked = (_me.load_state(self.agents_dir).get("_placed") or {}).get(agent.id)
             return not asked or time.time() - float(asked) > self._MEASURE_ASK_EVERY_S
         except Exception:
             logger.debug("number check failed for %s", agent.id, exc_info=True)
@@ -7935,7 +7935,7 @@ class Fabric:
         from cortiva.core import measures as _me
 
         state = _me.load_state(self.agents_dir)
-        state.setdefault("_asked", {})[agent.id] = time.time()
+        state.setdefault("_placed", {})[agent.id] = time.time()
         _me._write_json(self.agents_dir / _me.STATE_FILE, state)
 
     async def _ipc_measure_declare(
