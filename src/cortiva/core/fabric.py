@@ -8801,12 +8801,14 @@ class Fabric:
         )
         try:
             found = await self.memory.search(
-                agent.id, heard[:600] or "where we stand, our numbers, our mission", limit=6
+                agent.id, heard[:600] or "where we stand, our numbers, our mission", limit=40
             )
             rows = [self._memory_row(r) for r in found]
             # What was said in this room is above already; recall is for
-            # what the agent knew before it walked in.
-            rows = [r for r in rows if "allhands" not in r["tags"]]
+            # what the agent knew before it walked in. Asked for six, the
+            # search came back with six records of earlier meetings and
+            # everyone spoke from nothing (Mini-2, 2026-11-18, the fourth).
+            rows = [r for r in rows if "allhands" not in r["tags"]][:6]
             self._allhands_recalled = len(rows)
             if rows:
                 parts.append(
