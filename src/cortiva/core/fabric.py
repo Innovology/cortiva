@@ -5883,6 +5883,10 @@ class Fabric:
                 reason = "a directory entry, not a task"
             elif self._PLACEHOLDER_RE.search(text):
                 reason = "a placeholder, not a task"
+            elif re.fullmatch(r"(?:\*{0,2}\[\w+\]\*{0,2}\s*)?<[^<>]{1,60}>", text):
+                # "<their ask>": the blank in the instructions' own example,
+                # handed back as a critical task (ceo, amara; Mini-2, 2026-11-18).
+                reason = "a blank from the instructions, not a task"
             if not reason:
                 continue
             t.status = "skipped"
