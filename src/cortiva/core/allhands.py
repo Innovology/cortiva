@@ -40,48 +40,60 @@ SAID_CHARS = 2400
 OPENING = (
     "You are opening today's all-hands. Everyone working today will hear this, "
     "think about what it means for them, and then question and challenge it one "
-    "at a time. In under 300 words, as yourself, in plain prose: where things "
-    "stand against the numbers and the mission as the system shows them above; "
-    "what you intend to do about it; and the one or two places where you most "
-    "want the room's ideas. Be honest. Where what you have said or believed "
-    "differs from what the system shows, say so: a gap named here is one the "
-    "room can close."
+    "at a time. In under 300 words, as yourself, in plain prose. Start with the "
+    "number you are held to and what the system reads for it today, then the "
+    "stage furthest down that shows nothing: that is where the organisation "
+    "actually stands. Then what you intend to do about it, and the one place "
+    "where you most want the room's ideas. Be honest. Where what you have said "
+    "or believed differs from what the system shows, say so. Do not lean on "
+    "anyone listed as not currently working."
 )
 
 FLOOR = (
     "{convener} has opened the all-hands, and the colleagues before you have "
     "spoken (above). First think about what this means for you: your role, what "
     "you remember, what you hold to be true, what you have promised. Then "
-    "answer in under 250 words, as yourself: what you need made clear; what "
-    "you challenge, with the fact or experience of yours behind it; and any "
-    "suggestion, naming the number or the mission condition it would move. Do "
-    "not repeat what a colleague has raised unless you disagree with the answer "
-    "they were given. If you have nothing to add, say so in one line."
+    "answer in under 250 words, as yourself. A challenge must rest on something "
+    "specific you can point to: a line from what you remember (above), a number "
+    "as the system shows it, or a fact you hold. Quote it. 'In my experience' "
+    "with nothing behind it is not a challenge; if you have nothing specific, "
+    "ask the question you would need answered. Say what you need made clear, "
+    "what you challenge, and at most one suggestion, naming the number it would "
+    "move and how the system would see it move. Do not propose a new form, "
+    "template or checklist where a standing order forbids it. Do not repeat a "
+    "colleague unless you disagree with the answer they were given. If you have "
+    "nothing to add, say so in one line."
 )
 
 ANSWER = (
     "{speaker} has spoken (above, last). Answer them directly in under 200 "
-    "words. For each challenge or suggestion say whether you accept it or "
-    "decline it, and why. Where you were wrong, say so. Do not defend a "
+    "words. Answer any question first. For each challenge or suggestion say "
+    "whether you accept it or decline it, and why. Accepting everything is not "
+    "an answer: the people in this room can carry only so much, so if you "
+    "accept something say what gives way for it, and decline what does not move "
+    "the number you are held to. Where you were wrong, say so. Do not defend a "
     "position that the facts above do not support."
 )
 
 CLOSING = (
     "The floor has finished; everything said is above. Read the room and give "
-    "your position now, in under 300 words: what changed because of what you "
-    "heard, and who changed it; what you are deciding; which suggestions you "
-    "are adopting, naming whose each was and the number it should move; and "
-    "what is still open."
+    "your position now, in under 300 words. Choose at most two things to be "
+    "done before the next all-hands. For each: whose idea it was, the number it "
+    "moves, and how the system will see that it moved. Then say plainly what, "
+    "of everything proposed, is not being done now, and why. Then what changed "
+    "in your own view because of what you heard, and who changed it. Do not "
+    "hand work to anyone listed as not currently working."
 )
 
 TAKE = (
     "The all-hands has ended. {convener}'s closing position is above, with what "
     "colleagues have already taken on. The call is yours and nobody else's: is "
-    "there work from this meeting that you take on yourself? Reply with one "
-    "line per item, at most two, and nothing else:\n"
+    "there work from this meeting that you take on yourself and will do before "
+    "the next one? One piece of work has one owner: do not take what a "
+    "colleague has already taken, even in other words. Reply with one line per "
+    "item, at most two, and nothing else:\n"
     "TAKE: <the task, one line>\n"
-    "NONE — nothing of yours comes out of this\n"
-    "Do not take what a colleague has already taken."
+    "NONE — nothing of yours comes out of this"
 )
 
 
@@ -164,6 +176,31 @@ def takes(reply: str) -> list[str]:
     return out[:MAX_TAKES]
 
 
+_SMALL = frozenset(
+    "the a an and or of to for in on with by from at as is are be this that my our "
+    "your their it its into via per up out all any new before after next".split()
+)
+
+
+def _words(item: str) -> set[str]:
+    return {
+        w for w in re.findall(r"[a-z0-9]+", str(item).lower()) if len(w) > 2 and w not in _SMALL
+    }
+
+
+def already_taken(item: str, taken: list[dict[str, Any]]) -> str:
+    """Whose it already is, when most of this item's words are in one
+    someone took before; empty when it is new work."""
+    mine = _words(item)
+    if len(mine) < 3:
+        return ""
+    for t in taken:
+        theirs = _words(str(t.get("item")))
+        if theirs and len(mine & theirs) / min(len(mine), len(theirs)) >= 0.6:
+            return str(t.get("agent"))
+    return ""
+
+
 def due(agents_dir: Path, now: datetime | None = None) -> bool:
     """True when a time is set, it has passed today, and today's has not
     been started."""
@@ -205,7 +242,11 @@ def transcript(record: dict[str, Any], names: dict[str, str]) -> str:
     if record.get("opening"):
         parts.append(f"### {who(str(record.get('convener')))} opened\n{record['opening']}")
     for turn in record.get("turns") or []:
-        parts.append(f"### {who(str(turn.get('agent')))} said\n{turn.get('said') or '(nothing)'}")
+        brought = turn.get("recalled")
+        note = f" (brought {brought} memories)" if brought is not None else ""
+        parts.append(
+            f"### {who(str(turn.get('agent')))} said{note}\n{turn.get('said') or '(nothing)'}"
+        )
         if turn.get("answer"):
             parts.append(f"### {who(str(record.get('convener')))} answered\n{turn['answer']}")
     if record.get("closing"):
@@ -215,6 +256,12 @@ def transcript(record: dict[str, Any], names: dict[str, str]) -> str:
     taken = [f"- {who(str(t.get('agent')))}: {t.get('item')}" for t in record.get("taken") or []]
     if taken:
         parts.append("### Taken on\n" + "\n".join(taken))
+    refused = [
+        f"- {who(str(t.get('agent')))}: {t.get('item')} (already {who(str(t.get('owner')))}'s)"
+        for t in record.get("not_placed") or []
+    ]
+    if refused:
+        parts.append("### Not placed: one owner each\n" + "\n".join(refused))
     return "\n\n".join(parts)
 
 

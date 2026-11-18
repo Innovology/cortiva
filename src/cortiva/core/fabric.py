@@ -8028,6 +8028,7 @@ class Fabric:
         except Exception:
             logger.debug("all-hands: no inner state for %s", agent.id, exc_info=True)
         turns = record.get("turns") or []
+        self._allhands_recalled = 0
         heard = " ".join(
             str(x) for x in ((turns[-1].get("said") if turns else ""), record.get("opening")) if x
         )
@@ -8039,6 +8040,7 @@ class Fabric:
             # What was said in this room is above already; recall is for
             # what the agent knew before it walked in.
             rows = [r for r in rows if "allhands" not in r["tags"]]
+            self._allhands_recalled = len(rows)
             if rows:
                 parts.append(
                     "## What you remember that bears on this\n"
@@ -8046,7 +8048,12 @@ class Fabric:
                 )
         except Exception:
             logger.debug("all-hands: recall failed for %s", agent.id, exc_info=True)
-        blocks = [self._measures_context(agent), self._mission_brief(agent)]
+        blocks = [
+            self._measures_context(agent),
+            self._mission_brief(agent),
+            self._standing_orders_context(agent),
+            self._inactive_context(agent),
+        ]
         if convening:
             blocks.append(self._team_truth_context(agent))
         try:
@@ -8151,14 +8158,14 @@ class Fabric:
         )
         for aid in speakers:
             agent = self.agents[aid]
+            floor_context = await self._allhands_context(agent, record, names, convening=False)
+            recalled = self._allhands_recalled
             spoke = _ah.said(
                 await self._allhands_say(
-                    agent,
-                    await self._allhands_context(agent, record, names, convening=False),
-                    _ah.FLOOR.format(convener=name(head)),
+                    agent, floor_context, _ah.FLOOR.format(convener=name(head))
                 )
             )
-            turn: dict[str, Any] = {"agent": aid, "said": spoke}
+            turn: dict[str, Any] = {"agent": aid, "said": spoke, "recalled": recalled}
             record["turns"].append(turn)
             save()
             answer = ""
@@ -8209,9 +8216,16 @@ class Fabric:
                 agent,
                 await self._allhands_context(agent, record, names, convening=aid == head),
                 _ah.TAKE.format(convener=name(head)),
-                quick=True,
             )
-            items = _ah.takes(reply)
+            items = []
+            for item in _ah.takes(reply):
+                owner = _ah.already_taken(item, record["taken"])
+                if owner and owner != aid:
+                    record.setdefault("not_placed", []).append(
+                        {"agent": aid, "item": item, "owner": owner}
+                    )
+                else:
+                    items.append(item)
             if items and agent.task_queue is not None:
                 placed = self._plan_with_arrivals(
                     agent,

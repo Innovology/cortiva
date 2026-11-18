@@ -28,6 +28,12 @@ def test_what_someone_takes_is_read_from_one_line_each() -> None:
     assert ah.takes("TAKE: NONE") == []
 
 
+def test_one_piece_of_work_has_one_owner() -> None:
+    taken = [{"agent": "abe", "item": "Provision the stock counter template update by Thursday"}]
+    assert ah.already_taken("Implement the stock counter template update", taken) == "abe"
+    assert ah.already_taken("Write to the three largest customers", taken) == ""
+
+
 def test_it_is_due_once_its_time_has_passed_and_only_once_a_day(tmp_path: Path) -> None:
     assert ah.due(tmp_path) is False  # no time set
     assert ah.schedule(tmp_path, "9am")[0] is False
@@ -140,6 +146,6 @@ async def test_someone_who_says_nothing_gets_no_answer_and_the_meeting_goes_on(
     model.think = _think
     await f._run_allhands("2026-03-02")
     record = ah.load(f.agents_dir, "2026-03-02")
-    assert record["turns"] == [{"agent": "abe", "said": ""}]
+    assert record["turns"] == [{"agent": "abe", "said": "", "recalled": 0}]
     assert record["closing"] == "Something said." and "ended_at" in record
     assert not any("has spoken" in a for a in asked)
