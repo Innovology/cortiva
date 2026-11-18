@@ -6033,6 +6033,21 @@ class Fabric:
             cache[key] = (now, out)
             return out
 
+        def _reviews_it(repo: str, num: str) -> bool:
+            # Asked to review it, or has reviewed it: the code owner who
+            # lands a colleague's pull request is doing her own work. Her
+            # "review and merge #346" was struck three times as not hers
+            # while it waited on her alone (Mini-2, 2026-11-18).
+            from cortiva.core import ledger as _lg
+
+            key = f"reviews:{agent.id}:{repo}#{num}"
+            hit = cache.get(key)
+            if hit and now - hit[0] < self._REF_CACHE_TTL_S:
+                return bool(hit[1])
+            yes = _lg.involved(repo, num, login, token)
+            cache[key] = (now, {"yes": True} if yes else None)
+            return yes
+
         struck = 0
         for t in agent.task_queue.tasks:
             if t.status != "pending" or self._already_struck(t):
@@ -6057,7 +6072,7 @@ class Fabric:
                     if not found:
                         continue
                     author = str(found.get("author") or "")
-                    if not author or author.lower() == login.lower():
+                    if not author or author.lower() == login.lower() or _reviews_it(r, num):
                         hers = {**found, "repo": r}
                         break  # a bare number is hers in some repo — that is the one
                     foreign.append({**found, "repo": r})
@@ -6699,6 +6714,12 @@ class Fabric:
             if not idle:
                 await _ask(base, self._ARRIVAL_TRIAGE_PROMPT, triage=True)
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S  # something landed
+                return
+
+            # A pull request that waits on this person is their next item,
+            # ahead of anything the model might name.
+            if await self._place_what_github_waits_for(agent):
+                agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
                 return
 
             # Rung 0 — the mission. A clear checklist while the mission is
@@ -7937,6 +7958,135 @@ class Fabric:
         except Exception:
             logger.debug("measures context failed for %s", agent.id, exc_info=True)
             return ""
+
+    # GitHub is read for each person at most this often, and the same step
+    # is placed again at most this often while it is still owed.
+    _GITHUB_READ_EVERY_S = 600.0
+    _GITHUB_PLACE_EVERY_S = 3600.0
+    _GITHUB_STRUCK_EVERY_S = 24 * 3600.0
+
+    async def _github_login_is_theirs(self, agent: Agent, token: str) -> bool:
+        """False when this agent holds a GitHub token that another agent
+        holds too and the login is named after the other one. GitHub then
+        shows one person, and that person's work is placed once, on them.
+        The CEO held the CTO's token and was shown all five of the CTO's
+        steps as her own (Mini-2, 2026-11-18)."""
+        from cortiva.core.grounding import agent_github_token, github_login
+
+        sharers = [
+            a
+            for a in self.agents.values()
+            if a.id != agent.id and agent_github_token(a.directory) == token
+        ]
+        if not sharers:
+            return True
+        logins: dict[str, str] = getattr(self, "_github_logins", {})
+        self._github_logins = logins
+        if token not in logins:
+            logins[token] = await asyncio.to_thread(github_login, token)
+        login = logins[token].lower()
+        if not login:
+            return False
+        names = {
+            str(c.get("id")): str(c.get("name") or "").split(" ")[0].lower()
+            for c in self._load_directory_cards()
+        }
+
+        def _named(a: Agent) -> bool:
+            first = names.get(a.id, "")
+            return len(first) >= 3 and first in login
+
+        if _named(agent):
+            return True
+        holder = next((a for a in sharers if _named(a)), None)
+        if holder is None:
+            # Named after none of them: the first by id, so it is still placed once.
+            return agent.id == min([agent.id, *(a.id for a in sharers)])
+        warned: set[str] = getattr(self, "_github_shared_warned", set())
+        self._github_shared_warned = warned
+        if agent.id not in warned:
+            warned.add(agent.id)
+            logger.warning(
+                "Agent %s holds the GitHub token of %s (%s): what GitHub shows as waiting "
+                "on that login is placed on %s only",
+                agent.id,
+                holder.id,
+                login,
+                holder.id,
+            )
+        return False
+
+    async def _place_what_github_waits_for(self, agent: Agent) -> bool:
+        """Place the one step GitHub shows this person owes on an open pull
+        request: a review, a second look after the author pushed, failing
+        checks or requested changes on their own, a merge. True when an item
+        was placed or opened again.
+
+        The state is read, not asked for. Mail announced each of these once;
+        the items were ticked or struck and five people then idled for four
+        and a half hours beside three pull requests that each waited on one
+        of them (Mini-2, 2026-11-18)."""
+        from cortiva.core import ledger as _lg
+        from cortiva.core.grounding import agent_github_token
+
+        if agent.task_queue is None:
+            return False
+        token = agent_github_token(agent.directory)
+        if not token:
+            return False
+        if not await self._github_login_is_theirs(agent, token):
+            return False
+        seen: dict[str, tuple[float, list[dict[str, Any]]]] = getattr(self, "_github_seen", {})
+        self._github_seen = seen
+        placed_at: dict[str, dict[str, float]] = getattr(self, "_github_placed", {})
+        self._github_placed = placed_at
+        now = time.time()
+        hit = seen.get(agent.id)
+        if hit and now - hit[0] < self._GITHUB_READ_EVERY_S:
+            waiting = hit[1]
+        else:
+            try:
+                waiting = await asyncio.to_thread(_lg.waiting_on, token) or []
+            except Exception:
+                logger.debug("GitHub read failed for %s", agent.id, exc_info=True)
+                return False
+            seen[agent.id] = (now, waiting)
+        mine = placed_at.setdefault(agent.id, {})
+        for w in waiting:
+            if now < mine.get(w["key"], 0.0):
+                continue
+            key = _task_key(w["item"])
+            same = [t for t in agent.task_queue.tasks if _task_key(t.description) == key]
+            if any(t.status in ("pending", "in_progress", "acknowledged") for t in same):
+                continue
+            mine[w["key"]] = now + self._GITHUB_PLACE_EVERY_S
+            if same:
+                # Ticked, and GitHub still shows it owed: opened again.
+                same[0].status = "pending"
+                logger.info(
+                    "GitHub waits on %s: %s ticked and still owed, reopened", agent.id, w["key"]
+                )
+            else:
+                placed = self._plan_with_arrivals(
+                    agent, "ADD: " + w["item"], limit=1, why="GitHub waits"
+                )
+                if placed is None:
+                    continue
+                agent.update_plan(placed)
+            self._strike_under_standing_orders(agent)
+            if not any(
+                t.status == "pending" and _task_key(t.description) == key
+                for t in agent.task_queue.tasks
+            ):
+                # A standing order covers it: it stays struck, and the next one is taken.
+                self._write_plan(agent)
+                mine[w["key"]] = now + self._GITHUB_STRUCK_EVERY_S
+                continue
+            self._write_plan(agent)
+            self._last_plan_ts[agent.id] = time.time()
+            logger.info("GitHub waits on %s: %s placed as work", agent.id, w["key"])
+            return True
+        return False
 
     # Placed again while no number stands: an item ticked with nothing
     # declared is not the end of it.
