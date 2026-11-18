@@ -149,3 +149,27 @@ async def test_someone_who_says_nothing_gets_no_answer_and_the_meeting_goes_on(
     assert record["turns"] == [{"agent": "abe", "said": "", "recalled": 0}]
     assert record["closing"] == "Something said." and "ended_at" in record
     assert not any("has spoken" in a for a in asked)
+
+
+def test_the_system_states_each_persons_number_and_whether_it_feeds_the_heads(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from cortiva.core import measures as me
+    from tests.test_teamchat import _fab
+
+    f = _fab(tmp_path)
+    d = f.agents_dir
+    assert me.declare(d, "head", name="Orders shipped", what="orders out of the door each week")[0]
+    assert me.declare(d, "head", name="Orders packed", drives="Orders shipped")[0]
+    assert me.declare(d, "abe", name="Stock accuracy", drives="Orders packed")[0]
+    assert me.declare(d, "cal", name="Desk reply time", better="down")[0]
+    names = {"head": "Hana (Head)"}
+    head = f._allhands_number(SimpleNamespace(id="head"), "head", names)
+    assert "**Orders shipped**" in head and "reads nothing" in head and "Orders packed" not in head
+    abe = f._allhands_number(SimpleNamespace(id="abe"), "head", names)
+    assert "**Stock accuracy**" in abe and "feeds **Orders shipped**, which Hana (Head)" in abe
+    cal = f._allhands_number(SimpleNamespace(id="cal"), "head", names)
+    assert "feeds no number that Hana (Head) is held to" in cal
+    assert "declared none" in f._allhands_number(SimpleNamespace(id="dee"), "head", names)

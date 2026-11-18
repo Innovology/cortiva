@@ -8000,6 +8000,46 @@ class Fabric:
             names[str(c.get("id"))] = f"{name} ({role})" if role else name
         return names
 
+    def _allhands_number(self, agent: Agent, head: str, names: dict[str, str]) -> str:
+        """The number this agent is held to, stated by the system: the
+        highest one it owns, what the system reads for it, and whether it
+        feeds a number of the convener's. Left to pick from the whole tree,
+        the convener opened on a colleague's lowest driver (Mini-2,
+        2026-11-18)."""
+        from cortiva.core import measures as _me
+
+        declared = _me.load(self.agents_dir)
+        if not declared:
+            return ""
+        by_id = {str(m["id"]): m for m in declared}
+        owned = [(d, m) for d, m in _me.tree(declared) if str(m.get("owner")) == agent.id]
+        if not owned:
+            return "## The number you are held to\nYou have declared none."
+        top = min(owned, key=lambda dm: dm[0])[1]
+        entry = _me.load_state(self.agents_dir).get(str(top["id"]))
+        entry = entry if isinstance(entry, dict) else {}
+        value = entry.get("value")
+        reads = (
+            f"the system reads {_me._fmt(float(value))}"
+            if value is not None
+            else f"the system reads nothing ({entry.get('note') or 'not read yet'})"
+        )
+        lines = [
+            "## The number you are held to",
+            f"**{top.get('name')}**: {top.get('what') or 'no description'}. Today {reads}.",
+        ]
+        root, seen = top, {str(top["id"])}
+        while str(root.get("drives") or "") in by_id and str(root.get("drives")) not in seen:
+            root = by_id[str(root["drives"])]
+            seen.add(str(root["id"]))
+        if agent.id != head:
+            who = names.get(head) or head
+            if str(root.get("owner")) == head:
+                lines.append(f"It feeds **{root.get('name')}**, which {who} is held to.")
+            else:
+                lines.append(f"As declared, it feeds no number that {who} is held to.")
+        return "\n".join(lines)
+
     async def _allhands_context(
         self, agent: Agent, record: dict[str, Any], names: dict[str, str], *, convening: bool
     ) -> str:
@@ -8017,6 +8057,12 @@ class Fabric:
             text = str(identity.get(key, "")).strip()
             if text:
                 parts.append(f"## {title}\n{text[:cap]}")
+        try:
+            number = self._allhands_number(agent, str(record.get("convener") or ""), names)
+            if number:
+                parts.append(number)
+        except Exception:
+            logger.debug("all-hands: no number for %s", agent.id, exc_info=True)
         try:
             parts.append("## How you feel\n" + self._render_mood(self._read_emotion(agent)))
         except Exception:
