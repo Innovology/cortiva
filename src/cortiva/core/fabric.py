@@ -6630,12 +6630,21 @@ class Fabric:
             before = sum(1 for t in queue_tasks if t.status == "pending")
             before_keys = {_task_key(t.description) for t in queue_tasks if t.status == "pending"}
             self._meter_model_call(agent, "replan")
+            asked_at = time.monotonic()
             response = await self.consciousness.think(
                 agent_id=agent.id,
                 context=context,
                 prompt=prompt,
                 priority=Priority.HIGH,
                 metadata={"call_type": "replan", "light": True, "idle": idle, "quick": True},
+            )
+            self._shadow_signal(
+                "triage" if triage else "idle",
+                agent,
+                context,
+                prompt,
+                str(response.content or ""),
+                time.monotonic() - asked_at,
             )
             self._meter_tokens(agent, "replan", response)
             if self.budget_manager and approval and approval.backend:
@@ -7970,6 +7979,32 @@ class Fabric:
     # ------------------------------------------------------------------
 
     _ALLHANDS_MAX_TOKENS = 8192
+
+    def _shadow_signal(
+        self, job: str, agent: Agent, context: str, prompt: str, answer: str, seconds: float
+    ) -> None:
+        """Put a question just answered by the large model to the job's small
+        model as well, off the heartbeat, and record both. Nothing acts on
+        the small model's answer."""
+        try:
+            from cortiva.core import signals as _sg
+
+            if _sg.model_for(self.agents_dir, job) is None:
+                return
+            system = (
+                "You are an autonomous agent in an organisation. Your identity, "
+                "responsibilities and current state are in the context below. Act as "
+                "this agent.\n\n" + context
+            )
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    _sg.shadow, self.agents_dir, job, agent.id, system, prompt, answer, seconds
+                )
+            )
+            self._shadow_tasks = [t for t in getattr(self, "_shadow_tasks", []) if not t.done()]
+            self._shadow_tasks.append(task)
+        except Exception:
+            logger.debug("shadow signal failed for %s", agent.id, exc_info=True)
 
     def _allhands_people(self) -> tuple[str, list[str]]:
         """Of those working, the one at the head of the organisation, and
