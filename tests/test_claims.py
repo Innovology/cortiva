@@ -67,8 +67,10 @@ def test_each_persons_record_counts_what_was_checked_and_what_was_false(tmp_path
 
 
 class _Model:
+    said = "STATED"
+
     async def think(self, agent_id, context, prompt, **kwargs):
-        return ConsciousResponse(content="NONE", tokens_in=1, tokens_out=1, model="m")
+        return ConsciousResponse(content=self.said, tokens_in=1, tokens_out=1, model="m")
 
     async def reflect(self, agent_id, context, day_summary):
         return ConsciousResponse(content="ok", tokens_in=1, tokens_out=1, model="m")
@@ -208,7 +210,14 @@ async def test_checks_still_running_are_not_a_false_statement_and_a_wrong_call_i
     assert claims.records(f.agents_dir) == []  # nothing can be said yet, so nothing is kept
     # A call the first version made wrongly is taken back once the same head is seen passing.
     claims.record(
-        f.agents_dir, by="cto", to="yuki", ref="o/r#353", kind="green", true=False, shown="open"
+        f.agents_dir,
+        by="cto",
+        to="yuki",
+        ref="o/r#353",
+        kind="green",
+        true=False,
+        shown="open",
+        words="PR #353: CI is green.",
     )
     from cortiva.core.agent import Task
 
@@ -222,4 +231,67 @@ async def test_checks_still_running_are_not_a_false_statement_and_a_wrong_call_i
     assert await f._check_what_colleagues_stated(yuki, []) == 0
     assert claims.standing(f.agents_dir)["cto"]["false"] == 0
     assert yuki.task_queue.tasks[0].status == "skipped"
-    assert "the statement was right" in yuki.task_queue.tasks[0].description
+    assert "the system was wrong" in yuki.task_queue.tasks[0].description
+
+
+def test_a_command_or_quoted_word_is_not_the_writers_statement() -> None:
+    asked = (
+        "PR #353: all 14 CI checks green. Run: gh pr review 353 --repo o/r --approve "
+        "--body 'Approved — static metric files, all CI green.'"
+    )
+    assert claims.extract(asked) == [("", 353, "green")]
+    assert claims.extract("PR #353 — reply with `approved` when you are done.") == []
+    assert "Answer STATED or NOT" in claims.judge_prompt(asked, 353, "approved")
+
+
+@pytest.mark.asyncio
+async def test_a_pattern_alone_accuses_nobody_and_a_wrong_call_already_raised_is_retracted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A request to approve was read as a claim that it was approved, and the
+    recipient put it to the sender, who had said no such thing."""
+    model = _Model()
+    f = Fabric(agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=model)
+    yuki = f.register_agent("yuki")
+    f.register_agent("cto")
+    (yuki.directory / "credentials.json").write_text('{"GH_TOKEN": "t"}')
+    yuki.task_queue = TaskQueue(tasks=[])
+    f._chat_resolve = lambda name: "cto"
+    f._known_repos = lambda: ["o/r"]
+    f._load_directory_cards = lambda: [{"id": "cto", "name": "Samantha", "role": "CTO"}]
+    f._STATEMENT_SECOND_LOOK_S = 0.0
+    monkeypatch.setattr(ledger, "read_pull", lambda repo, number, token: dict(_OPEN))
+    inbox = yuki.directory / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "m.json").write_text(
+        json.dumps(
+            {
+                "from": "samantha@x",
+                "subject": "",
+                "text": "PR #345 was approved, I am told.",
+                "message_id": "m",
+                "received_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    )
+    model.said = "NOT"  # the model, reading the whole message, does not agree
+    assert await f._check_what_colleagues_stated(yuki, []) == 0
+    assert claims.records(f.agents_dir) == [] and yuki.task_queue.tasks == []
+    # A mark made on a pattern alone, already raised with the person, is retracted.
+    from cortiva.core.agent import Task
+
+    claims.record(
+        f.agents_dir, by="cto", to="yuki", ref="o/r#353", kind="approved", true=False, shown="open"
+    )
+    yuki.task_queue.tasks.append(
+        Task(
+            id="x",
+            description="Samantha told you o/r#353 is approved. GitHub shows: open",
+            status="done",
+        )
+    )
+    assert await f._check_what_colleagues_stated(yuki, []) == 0
+    assert claims.standing(f.agents_dir) == {}
+    head = yuki.task_queue.tasks[0].description
+    assert head.startswith("The system was wrong about o/r#353: Samantha did not")
+    assert "Tell Samantha that it is withdrawn" in head

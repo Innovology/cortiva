@@ -8106,6 +8106,9 @@ class Fabric:
             if not _cl.unseen(self.agents_dir, f"{agent.id}:{mid}"):
                 continue
             for repo, number, kind in said:
+                # A pattern proposes; a model reading the whole message must agree.
+                if not await self._statement_was_made(agent, text, number, kind):
+                    continue
                 pull = await self._read_pull_for(repo, number, token)
                 if pull is None or not _cl.knowable(kind, pull):
                     continue  # it could not be read, or cannot yet be said: not false
@@ -8120,12 +8123,49 @@ class Fabric:
                     true=ok,
                     shown=_cl.shows(pull),
                     pending=not ok,
+                    words=text,
                 )
         return await self._second_look_at_statements(agent, token)
 
     _STATEMENT_SECOND_LOOK_S = 180.0
     _STATEMENT_GIVE_UP_S = 3600.0
     _STATEMENT_CORRECT_WITHIN_S = 6 * 3600.0
+
+    async def _statement_was_made(self, agent: Agent, text: str, number: int, kind: str) -> bool:
+        """Whether a model, reading the whole message, agrees the writer
+        stated this as fact. The job's small model answers when one is
+        configured (``statement`` in the signals file), otherwise the
+        agent's own. No answer is no statement.
+
+        Patterns alone read a request to approve, with a command carrying
+        the word, as a claim that it was approved; the recipient put it to
+        the sender, who had said no such thing (Mini-2, 2026-11-18)."""
+        from cortiva.core import claims as _cl
+        from cortiva.core import signals as _sg
+
+        prompt = _cl.judge_prompt(text, number, kind)
+        answer = ""
+        try:
+            entry = _sg.model_for(self.agents_dir, "statement")
+            if entry is not None:
+                answer, _ = await asyncio.to_thread(
+                    _sg.ask, entry, _cl.JUDGE_SYSTEM, prompt, max_tokens=6
+                )
+            else:
+                self._meter_model_call(agent, "statement")
+                response = await self.consciousness.think(
+                    agent_id=agent.id,
+                    context=_cl.JUDGE_SYSTEM,
+                    prompt=prompt,
+                    priority=Priority.HIGH,
+                    max_tokens=1024,
+                    metadata={"call_type": "statement", "quick": True},
+                )
+                answer = str(response.content or "")
+        except Exception:
+            logger.debug("statement judge failed for %s", agent.id, exc_info=True)
+            return False
+        return answer.strip().upper().startswith("STATED")
 
     async def _read_pull_for(self, repo: str, number: int, token: str) -> dict[str, Any] | None:
         from cortiva.core import ledger as _lg
@@ -8164,6 +8204,15 @@ class Fabric:
                 continue
             kind, ref = str(c.get("kind")), str(c.get("ref"))
             repo, _, number = ref.rpartition("#")
+            if not c.get("words"):
+                # Kept before the words were: it rests on a pattern alone,
+                # and a mark the system cannot show the words for is not kept.
+                _cl.settle(self.agents_dir, c["id"], drop=True)
+                self._withdraw_statement_item(agent, ref, str(c.get("by")), names)
+                logger.info(
+                    "Statement mark against %s about %s dropped: no words kept", c.get("by"), ref
+                )
+                continue
             if c.get("pending"):
                 if age < self._STATEMENT_SECOND_LOOK_S:
                     continue
@@ -8189,7 +8238,7 @@ class Fabric:
                 same_head = str(pull.get("pushed") or "") <= str(c.get("at"))
                 if same_head and _cl.holds(kind, pull):
                     _cl.settle(self.agents_dir, c["id"], true=True, looked_again=True)
-                    self._withdraw_statement_item(agent, ref)
+                    self._withdraw_statement_item(agent, ref, str(c.get("by")), names)
                     logger.info(
                         "Statement by %s to %s about %s holds on a second look: corrected",
                         c.get("by"),
@@ -8236,27 +8285,44 @@ class Fabric:
                 )
         return len(false)
 
-    def _withdraw_statement_item(self, agent: Agent, ref: str) -> None:
-        """Strike a call-out the system got wrong, saying so."""
+    def _withdraw_statement_item(
+        self, agent: Agent, ref: str, by: str, names: dict[str, str]
+    ) -> None:
+        """Take back a call-out the system got wrong, saying so. Not yet
+        raised, the item is struck. Already raised with the person, the
+        recipient is given the retraction to make."""
         if agent.task_queue is None:
             return
+        raised = False
         changed = False
         for t in agent.task_queue.tasks:
             text = t.description or ""
-            if (
-                t.status == "pending"
-                and self._STATEMENT_MARK in text
-                and ref.lower() in text.lower()
-                and not self._already_struck(t)
-            ):
+            if self._STATEMENT_MARK not in text or ref.lower() not in text.lower():
+                continue
+            if self._already_struck(t) or "system was wrong" in text:
+                continue
+            if t.status == "pending":
                 t.status = "skipped"
                 t.description = (
-                    f"{text} *(struck: on a second look GitHub shows the statement was "
-                    "right; nothing to raise)*"
+                    f"{text} *(struck: the system was wrong to raise this; nothing to put to them)*"
                 )
                 changed = True
+            elif t.status == "done":
+                raised = True
         if changed:
             self._write_plan(agent)
+        if raised:
+            who = names.get(by, by).split(" (")[0]
+            item = (
+                f"The system was wrong about {ref}: {who} did not make the false statement "
+                f"you were asked to raise. Tell {who} that it is withdrawn"
+            )
+            placed = self._plan_with_arrivals(
+                agent, "NOW: " + item, limit=1, why="Statement withdrawn"
+            )
+            if placed is not None:
+                agent.update_plan(placed)
+                self._write_plan(agent)
 
     def _statements_context(self, agent: Agent) -> str:
         """Each person's record of checked statements over the last week,
