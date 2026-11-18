@@ -977,6 +977,9 @@ class Fabric:
         unverified_ctx = self._unverified_context(agent)
         if unverified_ctx:
             context = context + "\n\n---\n\n" + unverified_ctx
+        statements_ctx = self._statements_context(agent)
+        if statements_ctx:
+            context = context + "\n\n---\n\n" + statements_ctx
         held_ctx = self._held_mail_context(agent)
         if held_ctx:
             context = context + "\n\n---\n\n" + held_ctx
@@ -5883,6 +5886,10 @@ class Fabric:
                 reason = "a directory entry, not a task"
             elif self._PLACEHOLDER_RE.search(text):
                 reason = "a placeholder, not a task"
+            elif re.fullmatch(r"(?:\*{0,2}\[\w+\]\*{0,2}\s*)?<[^<>]{1,60}>", text):
+                # "<their ask>": the blank in the instructions' own example,
+                # handed back as a critical task (ceo, amara; Mini-2, 2026-11-18).
+                reason = "a blank from the instructions, not a task"
             if not reason:
                 continue
             t.status = "skipped"
@@ -6033,6 +6040,21 @@ class Fabric:
             cache[key] = (now, out)
             return out
 
+        def _reviews_it(repo: str, num: str) -> bool:
+            # Asked to review it, or has reviewed it: the code owner who
+            # lands a colleague's pull request is doing her own work. Her
+            # "review and merge #346" was struck three times as not hers
+            # while it waited on her alone (Mini-2, 2026-11-18).
+            from cortiva.core import ledger as _lg
+
+            key = f"reviews:{agent.id}:{repo}#{num}"
+            hit = cache.get(key)
+            if hit and now - hit[0] < self._REF_CACHE_TTL_S:
+                return bool(hit[1])
+            yes = _lg.involved(repo, num, login, token)
+            cache[key] = (now, {"yes": True} if yes else None)
+            return yes
+
         struck = 0
         for t in agent.task_queue.tasks:
             if t.status != "pending" or self._already_struck(t):
@@ -6057,7 +6079,7 @@ class Fabric:
                     if not found:
                         continue
                     author = str(found.get("author") or "")
-                    if not author or author.lower() == login.lower():
+                    if not author or author.lower() == login.lower() or _reviews_it(r, num):
                         hers = {**found, "repo": r}
                         break  # a bare number is hers in some repo — that is the one
                     foreign.append({**found, "repo": r})
@@ -6111,7 +6133,9 @@ class Fabric:
         for t in agent.task_queue.tasks:
             if t.status != "pending" or self._already_struck(t):
                 continue
-            order = _so.matching_order(orders, t.description or "")
+            order = _so.matching_order(
+                orders, f"{t.description or ''} {self._covered_titles_named(t.description)}"
+            )
             if order is None:
                 continue
             by = (order.get("issued_by") or {}).get("name") or "leadership"
@@ -6581,6 +6605,10 @@ class Fabric:
         # What arrived / what stands over the plan — the only reasons to change it.
         await self._ground_inbox(agent)
         await self._ground_directives(agent)
+        try:
+            await self._check_what_colleagues_stated(agent, messages)
+        except Exception:
+            logger.debug("statement check failed for %s", agent.id, exc_info=True)
         if idle:
             blocks: tuple[str, ...] = (
                 self._email_inbox_context(agent),
@@ -6589,6 +6617,7 @@ class Fabric:
                 self._github_feedback_context(agent),
                 self._held_mail_context(agent),
                 self._unverified_context(agent),
+                self._statements_context(agent),
                 self._inactive_context(agent),
                 self._team_chat_context(agent),
             )
@@ -6601,6 +6630,7 @@ class Fabric:
             blocks = (
                 self._email_inbox_context(agent),
                 self._arrivals_context(agent, since),
+                self._statements_context(agent),
                 self._held_mail_context(agent),
                 self._team_chat_context(agent),
             )
@@ -6698,7 +6728,17 @@ class Fabric:
         try:
             if not idle:
                 await _ask(base, self._ARRIVAL_TRIAGE_PROMPT, triage=True)
+                # Someone whose checklist never clears is still shown what
+                # GitHub waits on them for. A pull request sat seven hours on
+                # one person who was never idle (Mini-2, 2026-11-18).
+                await self._place_what_github_waits_for(agent, leading=False)
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S  # something landed
+                return
+
+            # A pull request that waits on this person is their next item,
+            # ahead of anything the model might name.
+            if await self._place_what_github_waits_for(agent):
+                agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
                 return
 
             # Rung 0 — the mission. A clear checklist while the mission is
@@ -6759,6 +6799,11 @@ class Fabric:
                     agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
                     logger.info("Idle: %s was given the number it is held to as work", agent.id)
                     return
+
+            # A number with a source that reads nothing is its owner's work too.
+            if self._place_a_source_that_reads_nothing(agent):
+                agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
+                return
 
             # Rung 1 — bring forward. Only when there is something to bring.
             later = self._later_this_week_context(agent)
@@ -7938,6 +7983,596 @@ class Fabric:
             logger.debug("measures context failed for %s", agent.id, exc_info=True)
             return ""
 
+    # GitHub is read for each person at most this often, and the same step
+    # is placed again at most this often while it is still owed.
+    _GITHUB_READ_EVERY_S = 600.0
+    _GITHUB_PLACE_EVERY_S = 3600.0
+    _GITHUB_STRUCK_EVERY_S = 24 * 3600.0
+
+    async def _github_login_is_theirs(self, agent: Agent, token: str) -> bool:
+        """False when this agent holds a GitHub token that another agent
+        holds too and the login is named after the other one. GitHub then
+        shows one person, and that person's work is placed once, on them.
+        The CEO held the CTO's token and was shown all five of the CTO's
+        steps as her own (Mini-2, 2026-11-18)."""
+        from cortiva.core.grounding import agent_github_token, github_login
+
+        sharers = [
+            a
+            for a in self.agents.values()
+            if a.id != agent.id and agent_github_token(a.directory) == token
+        ]
+        if not sharers:
+            return True
+        logins: dict[str, str] = getattr(self, "_github_logins", {})
+        self._github_logins = logins
+        if token not in logins:
+            logins[token] = await asyncio.to_thread(github_login, token)
+        login = logins[token].lower()
+        if not login:
+            return False
+        names = {
+            str(c.get("id")): str(c.get("name") or "").split(" ")[0].lower()
+            for c in self._load_directory_cards()
+        }
+
+        def _named(a: Agent) -> bool:
+            first = names.get(a.id, "")
+            return len(first) >= 3 and first in login
+
+        if _named(agent):
+            return True
+        holder = next((a for a in sharers if _named(a)), None)
+        if holder is None:
+            # Named after none of them: the first by id, so it is still placed once.
+            return agent.id == min([agent.id, *(a.id for a in sharers)])
+        warned: set[str] = getattr(self, "_github_shared_warned", set())
+        self._github_shared_warned = warned
+        if agent.id not in warned:
+            warned.add(agent.id)
+            logger.warning(
+                "Agent %s holds the GitHub token of %s (%s): what GitHub shows as waiting "
+                "on that login is placed on %s only",
+                agent.id,
+                holder.id,
+                login,
+                holder.id,
+            )
+        return False
+
+    # ------------------------------------------------------------------
+    # What colleagues state as fact is checked, and kept against them.
+    # ------------------------------------------------------------------
+
+    _STATEMENT_MARK = "GitHub shows: "
+    _STATEMENT_MAX_AGE_S = 24 * 3600.0
+
+    def _known_repos(self) -> list[str]:
+        """Repositories the system has already read pull requests from."""
+        repos: list[str] = []
+        for _, waiting in getattr(self, "_github_seen", {}).values():
+            for w in waiting:
+                if w["repo"] not in repos:
+                    repos.append(str(w["repo"]))
+        for repo, _ in getattr(self, "_github_covered", {}):
+            if repo not in [r.lower() for r in repos]:
+                repos.append(repo)
+        return repos[:3]
+
+    async def _check_what_colleagues_stated(self, agent: Agent, messages: list[Any]) -> int:
+        """Check what colleagues have just told this agent about pull
+        requests against GitHub, with this agent's own access. A false
+        statement goes to the head of the recipient's checklist to be put to
+        the person who made it, is kept against that person, and is felt by
+        them. Returns how many false statements were found.
+
+        One person told their manager a pull request was "reviewed, approved
+        and merged" when it was none of the three, ticked the task, and
+        nothing looked (Mini-2, 2026-11-18)."""
+        from datetime import UTC, datetime
+
+        from cortiva.core import claims as _cl
+        from cortiva.core.grounding import agent_github_token
+
+        token = agent_github_token(agent.directory)
+        if not token or agent.task_queue is None:
+            return 0
+        heard: list[tuple[str, str, str]] = []  # (message id, sender, text)
+        inbox = agent.directory / "inbox"
+        now = datetime.now(UTC)
+        for path in sorted(inbox.glob("*.json")) if inbox.is_dir() else []:
+            try:
+                mail = json.loads(path.read_text(encoding="utf-8"))
+                at = datetime.fromisoformat(str(mail.get("received_at")).replace("Z", "+00:00"))
+            except (OSError, ValueError):
+                continue
+            if (now - at).total_seconds() > self._STATEMENT_MAX_AGE_S:
+                continue
+            heard.append(
+                (
+                    str(mail.get("message_id") or path.name),
+                    str(mail.get("from") or ""),
+                    f"{mail.get('subject', '')}\n{mail.get('text', '')}",
+                )
+            )
+        for m in messages or []:
+            if (getattr(m, "metadata", None) or {}).get("chat"):
+                heard.append((f"chat:{m.id}", str(m.sender), str(m.content)))
+        for mid, sender, text in heard:
+            said = _cl.extract(text)[:4]
+            by = self._chat_resolve(re.sub(r"^.*<|>.*$", "", sender))
+            if not said or by is None or by == agent.id:
+                continue
+            if not _cl.unseen(self.agents_dir, f"{agent.id}:{mid}"):
+                continue
+            for repo, number, kind in said:
+                # A pattern proposes; a model reading the whole message must agree.
+                if not await self._statement_was_made(agent, text, number, kind):
+                    continue
+                pull = await self._read_pull_for(repo, number, token)
+                if pull is None or not _cl.knowable(kind, pull):
+                    continue  # it could not be read, or cannot yet be said: not false
+                ok = _cl.holds(kind, pull)
+                # Found false, it waits for a second look before it counts.
+                _cl.record(
+                    self.agents_dir,
+                    by=by,
+                    to=agent.id,
+                    ref=f"{pull['repo']}#{number}",
+                    kind=kind,
+                    true=ok,
+                    shown=_cl.shows(pull),
+                    pending=not ok,
+                    words=text,
+                )
+        return await self._second_look_at_statements(agent, token)
+
+    _STATEMENT_SECOND_LOOK_S = 180.0
+    _STATEMENT_GIVE_UP_S = 3600.0
+    _STATEMENT_CORRECT_WITHIN_S = 6 * 3600.0
+
+    async def _statement_was_made(self, agent: Agent, text: str, number: int, kind: str) -> bool:
+        """Whether a model, reading the whole message, agrees the writer
+        stated this as fact. The job's small model answers when one is
+        configured (``statement`` in the signals file), otherwise the
+        agent's own. No answer is no statement.
+
+        Patterns alone read a request to approve, with a command carrying
+        the word, as a claim that it was approved; the recipient put it to
+        the sender, who had said no such thing (Mini-2, 2026-11-18)."""
+        from cortiva.core import claims as _cl
+        from cortiva.core import signals as _sg
+
+        prompt = _cl.judge_prompt(text, number, kind)
+        answer = ""
+        try:
+            entry = _sg.model_for(self.agents_dir, "statement")
+            if entry is not None:
+                answer, _ = await asyncio.to_thread(
+                    _sg.ask, entry, _cl.JUDGE_SYSTEM, prompt, max_tokens=6
+                )
+            else:
+                self._meter_model_call(agent, "statement")
+                response = await self.consciousness.think(
+                    agent_id=agent.id,
+                    context=_cl.JUDGE_SYSTEM,
+                    prompt=prompt,
+                    priority=Priority.HIGH,
+                    max_tokens=1024,
+                    metadata={"call_type": "statement", "quick": True},
+                )
+                answer = str(response.content or "")
+        except Exception:
+            logger.debug("statement judge failed for %s", agent.id, exc_info=True)
+            return False
+        return answer.strip().upper().startswith("STATED")
+
+    async def _read_pull_for(self, repo: str, number: int, token: str) -> dict[str, Any] | None:
+        from cortiva.core import ledger as _lg
+
+        for candidate in [repo] if repo else self._known_repos():
+            try:
+                return await asyncio.to_thread(_lg.read_pull, candidate, number, token)
+            except Exception:
+                continue
+        return None
+
+    async def _second_look_at_statements(self, agent: Agent, token: str) -> int:
+        """Look again at each statement to this agent that a first look found
+        false. Still false three minutes on, it is put to the person who made
+        it, felt by them and counted. True on the second look, it counts as
+        true. A statement about checks already counted false is corrected
+        when the same head is later seen passing. Returns how many were
+        confirmed false.
+
+        The first version accused on one look: a person who said the checks
+        were passing was called out seven seconds before the last one
+        finished (Mini-2, 2026-11-18)."""
+        from datetime import UTC, datetime
+
+        from cortiva.core import claims as _cl
+
+        now = datetime.now(UTC)
+        names = self._allhands_names()
+        false: dict[tuple[str, str], tuple[list[str], str]] = {}
+        for c in _cl.records(self.agents_dir):
+            if c.get("to") != agent.id or c.get("true") or not c.get("id"):
+                continue
+            try:
+                age = (now - datetime.fromisoformat(str(c.get("at")))).total_seconds()
+            except ValueError:
+                continue
+            kind, ref = str(c.get("kind")), str(c.get("ref"))
+            repo, _, number = ref.rpartition("#")
+            if not c.get("words"):
+                # Kept before the words were: it rests on a pattern alone,
+                # and a mark the system cannot show the words for is not kept.
+                _cl.settle(self.agents_dir, c["id"], drop=True)
+                self._withdraw_statement_item(agent, ref, str(c.get("by")), names)
+                logger.info(
+                    "Statement mark against %s about %s dropped: no words kept", c.get("by"), ref
+                )
+                continue
+            if c.get("pending"):
+                if age < self._STATEMENT_SECOND_LOOK_S:
+                    continue
+                pull = await self._read_pull_for(repo, int(number), token)
+                if pull is None or not _cl.knowable(kind, pull):
+                    if age > self._STATEMENT_GIVE_UP_S:
+                        _cl.settle(self.agents_dir, c["id"], drop=True)
+                    continue
+                if _cl.holds(kind, pull):
+                    _cl.settle(self.agents_dir, c["id"], pending=False, true=True)
+                    continue
+                shown = _cl.shows(pull)
+                _cl.settle(self.agents_dir, c["id"], pending=False, shown=shown)
+                false.setdefault((str(c.get("by")), ref), ([], shown))[0].append(_cl.SAID[kind])
+            elif (
+                kind == "green"
+                and not c.get("looked_again")
+                and age < self._STATEMENT_CORRECT_WITHIN_S
+            ):
+                pull = await self._read_pull_for(repo, int(number), token)
+                if pull is None or not _cl.knowable(kind, pull):
+                    continue
+                same_head = str(pull.get("pushed") or "") <= str(c.get("at"))
+                if same_head and _cl.holds(kind, pull):
+                    _cl.settle(self.agents_dir, c["id"], true=True, looked_again=True)
+                    self._withdraw_statement_item(agent, ref, str(c.get("by")), names)
+                    logger.info(
+                        "Statement by %s to %s about %s holds on a second look: corrected",
+                        c.get("by"),
+                        agent.id,
+                        ref,
+                    )
+                else:
+                    _cl.settle(self.agents_dir, c["id"], looked_again=True)
+        for (by, ref), (kinds, shown) in false.items():
+            who = names.get(by, by).split(" (")[0]
+            stated = " and ".join([", ".join(kinds[:-1]), kinds[-1]] if kinds[1:] else kinds)
+            item = (
+                f"{who} told you {ref} is {stated}. {self._STATEMENT_MARK}{shown}. Tell "
+                f"{who} what GitHub shows, and ask for it to be done or the statement "
+                "withdrawn"
+            )
+            placed = self._plan_with_arrivals(
+                agent, "NOW: " + item, limit=1, why="Statement checked"
+            )
+            if placed is not None:
+                agent.update_plan(placed)
+                self._write_plan(agent)
+            logger.warning(
+                "Statement by %s to %s is false on two looks: %s said to be %s; GitHub shows %s",
+                by,
+                agent.id,
+                ref,
+                stated,
+                shown,
+            )
+            self._emit("statement.false", agent_id=by, to=agent.id, ref=ref)
+            manager = getattr(self, "plugin_manager", None)
+            if manager is not None:
+                # Being found out is felt by the person who said it.
+                await manager.dispatch_hook(
+                    by,
+                    "feedback",
+                    {
+                        "valence": -1.0,
+                        "authority_weight": 1.0,
+                        "severity": 0.8,
+                        "entity_id": agent.id,
+                    },
+                )
+        return len(false)
+
+    def _withdraw_statement_item(
+        self, agent: Agent, ref: str, by: str, names: dict[str, str]
+    ) -> None:
+        """Take back a call-out the system got wrong, saying so. Not yet
+        raised, the item is struck. Already raised with the person, the
+        recipient is given the retraction to make."""
+        if agent.task_queue is None:
+            return
+        raised = False
+        changed = False
+        for t in agent.task_queue.tasks:
+            text = t.description or ""
+            if self._STATEMENT_MARK not in text or ref.lower() not in text.lower():
+                continue
+            if self._already_struck(t) or "system was wrong" in text:
+                continue
+            if t.status == "pending":
+                t.status = "skipped"
+                t.description = (
+                    f"{text} *(struck: the system was wrong to raise this; nothing to put to them)*"
+                )
+                changed = True
+            elif t.status == "done":
+                raised = True
+        if changed:
+            self._write_plan(agent)
+        if raised:
+            who = names.get(by, by).split(" (")[0]
+            item = (
+                f"The system was wrong about {ref}: {who} did not make the false statement "
+                f"you were asked to raise. Tell {who} that it is withdrawn"
+            )
+            placed = self._plan_with_arrivals(
+                agent, "NOW: " + item, limit=1, why="Statement withdrawn"
+            )
+            if placed is not None:
+                agent.update_plan(placed)
+                self._write_plan(agent)
+
+    def _statements_context(self, agent: Agent) -> str:
+        """Each person's record of checked statements over the last week,
+        shown to everyone, the person themselves included."""
+        try:
+            from cortiva.core import claims as _cl
+
+            rows = _cl.standing(self.agents_dir)
+        except Exception:
+            return ""
+        rows = {k: v for k, v in rows.items() if v["false"]}
+        if not rows:
+            return ""
+        names = self._allhands_names()
+        lines = [
+            "## Statements the system checked against GitHub, last 7 days",
+            "",
+            "What a colleague tells you about a pull request is read back from "
+            "GitHub with your own access. This is each person's record, and "
+            "everyone is shown it.",
+            "",
+        ]
+        for who, row in sorted(rows.items(), key=lambda kv: -kv[1]["false"]):
+            latest = row["latest"] or {}
+            told = names.get(str(latest.get("to")), str(latest.get("to"))).split(" (")[0]
+            was = _cl.SAID.get(str(latest.get("kind")), str(latest.get("kind")))
+            detail = (
+                f"{row['false']} of {row['checked']} checked statements were false. Latest: "
+                f"told {told} that {latest.get('ref')} was {was}; GitHub showed "
+                f"{latest.get('shown')}."
+            )
+            if who == agent.id:
+                lines.append(
+                    f"- **You**: {detail} Colleagues see this line and rely on you less "
+                    "for it. Before you state that something is reviewed, approved, "
+                    "merged or passing, look at GitHub and say what it shows."
+                )
+            else:
+                lines.append(
+                    f"- {names.get(who, who)}: {detail} Look for yourself before you "
+                    "act on or pass on what they tell you."
+                )
+        return "\n".join(lines)
+
+    # A step owed this long goes to the head of the checklist.
+    _GITHUB_HEAD_AFTER_S = 3 * 3600.0
+
+    async def _place_what_github_waits_for(self, agent: Agent, *, leading: bool = True) -> bool:
+        """Place the one step GitHub shows this person owes on an open pull
+        request: a review, a second look after the author pushed, failing
+        checks or requested changes on their own, a merge. True when an item
+        was placed or opened again.
+
+        The state is read, not asked for. Mail announced each of these once;
+        the items were ticked or struck and five people then idled for four
+        and a half hours beside three pull requests that each waited on one
+        of them (Mini-2, 2026-11-18)."""
+        if agent.task_queue is None:
+            return False
+        from cortiva.core import ledger as _lg
+
+        waiting = await self._github_waiting(agent)
+        if waiting is None:
+            return leading and await self._place_the_oldest_wait_in_the_team(agent)
+        placed_at: dict[str, dict[str, float]] = getattr(self, "_github_placed", {})
+        self._github_placed = placed_at
+        now = time.time()
+        mine = placed_at.setdefault(agent.id, {})
+        for w in waiting:
+            if now < mine.get(w["key"], 0.0):
+                continue
+            key = _task_key(w["item"])
+            same = [t for t in agent.task_queue.tasks if _task_key(t.description) == key]
+            if any(t.status in ("pending", "in_progress", "acknowledged") for t in same):
+                continue
+            mine[w["key"]] = now + self._GITHUB_PLACE_EVERY_S
+            if same:
+                # Ticked, and GitHub still shows it owed: opened again.
+                same[0].status = "pending"
+                logger.info(
+                    "GitHub waits on %s: %s ticked and still owed, reopened", agent.id, w["key"]
+                )
+            else:
+                hours = _lg.hours_since(str(w.get("since") or "")) or 0.0
+                verb = "NOW" if hours * 3600.0 >= self._GITHUB_HEAD_AFTER_S else "ADD"
+                placed = self._plan_with_arrivals(
+                    agent, f"{verb}: {w['item']}", limit=1, why="GitHub waits"
+                )
+                if placed is None:
+                    continue
+                agent.update_plan(placed)
+            self._strike_under_standing_orders(agent)
+            if not any(
+                t.status == "pending" and _task_key(t.description) == key
+                for t in agent.task_queue.tasks
+            ):
+                # A standing order covers it: it stays struck, and the next one is taken.
+                self._write_plan(agent)
+                mine[w["key"]] = now + self._GITHUB_STRUCK_EVERY_S
+                continue
+            self._write_plan(agent)
+            self._last_plan_ts[agent.id] = time.time()
+            logger.info("GitHub waits on %s: %s placed as work", agent.id, w["key"])
+            return True
+        return leading and await self._place_the_oldest_wait_in_the_team(agent)
+
+    async def _github_waiting(self, agent: Agent) -> list[dict[str, Any]] | None:
+        """What GitHub shows as waiting on this agent, read at most every ten
+        minutes. ``None`` when it cannot be known or the login is another's."""
+        from cortiva.core import ledger as _lg
+        from cortiva.core.grounding import agent_github_token
+
+        token = agent_github_token(agent.directory)
+        if not token or not await self._github_login_is_theirs(agent, token):
+            return None
+        seen: dict[str, tuple[float, list[dict[str, Any]]]] = getattr(self, "_github_seen", {})
+        self._github_seen = seen
+        now = time.time()
+        hit = seen.get(agent.id)
+        if hit and now - hit[0] < self._GITHUB_READ_EVERY_S:
+            return hit[1]
+        try:
+            waiting = await asyncio.to_thread(_lg.waiting_on, token)
+        except Exception:
+            logger.debug("GitHub read failed for %s", agent.id, exc_info=True)
+            return None
+        if waiting is None:
+            return None
+        waiting = self._without_what_standing_orders_cover(waiting)
+        seen[agent.id] = (now, waiting)
+        return waiting
+
+    def _without_what_standing_orders_cover(
+        self, waiting: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Drop the steps on pull requests a standing order covers, and keep
+        their titles so a task that names one by number alone is struck too.
+        Shown a nine-hour wait on a pull request the founder had ordered
+        stopped, the head of the team told its reviewer to approve it at
+        once (Mini-2, 2026-11-18)."""
+        try:
+            from cortiva.core import standing_orders as _so
+
+            orders = _so.load(self.agents_dir)
+        except Exception:
+            orders = []
+        covered: dict[tuple[str, int], str] = getattr(self, "_github_covered", {})
+        self._github_covered = covered
+        kept: list[dict[str, Any]] = []
+        for w in waiting:
+            text = f"{w.get('item', '')} {w.get('title', '')}"
+            if orders and _so.matching_order(orders, text) is not None:
+                covered[(str(w["repo"]).lower(), int(w["number"]))] = str(w.get("title") or "")
+            else:
+                kept.append(w)
+        return kept
+
+    def _covered_titles_named(self, text: str) -> str:
+        """The titles of pull requests under a standing order that this task
+        names by number."""
+        covered: dict[tuple[str, int], str] = getattr(self, "_github_covered", {})
+        if not covered or self._STATEMENT_MARK in (text or ""):
+            return ""
+        out: list[str] = []
+        for m in self._TASK_REF_RE.finditer(text or ""):
+            repo = str(m.group("repo") or "").lower()
+            for (r, n), title in covered.items():
+                if n == int(m.group("num")) and (not repo or r == repo):
+                    out.append(title)
+        return " ".join(out)
+
+    async def _team_waits(self, ids: list[str]) -> list[tuple[float, str, dict[str, Any]]]:
+        """Every step GitHub shows as owed by these people, longest wait
+        first, as (hours, agent id, step)."""
+        from cortiva.core import ledger as _lg
+
+        out: list[tuple[float, str, dict[str, Any]]] = []
+        for rid in ids:
+            try:
+                other = self.get_agent(rid)
+            except Exception:
+                continue
+            for w in await self._github_waiting(other) or []:
+                hours = _lg.hours_since(str(w.get("since") or ""))
+                if hours is not None:
+                    out.append((hours, rid, w))
+        out.sort(key=lambda x: -x[0])
+        return out
+
+    async def _team_waits_context(self, ids: list[str], names: dict[str, str]) -> str:
+        """Who owes which step on which pull request and for how long, as
+        GitHub shows it. The head of an organisation reads this before
+        anything anyone tells her."""
+        waits = await self._team_waits(ids)
+        if not waits:
+            return ""
+        lines = [
+            "## What is waiting on whom, read from GitHub by the system just now",
+            "",
+            "Each line is one step one person owes. Work stands still until that "
+            "person takes it. Longest wait first.",
+            "",
+        ]
+        for hours, rid, w in waits[:8]:
+            lines.append(f"- {names.get(rid, rid)} {w['what']}: waiting {hours:.1f} hours")
+        return "\n".join(lines)
+
+    # A step a report has owed this long is the manager's to ask about, and
+    # the same one is asked about again at most this often.
+    _GITHUB_CHASE_AFTER_S = 3 * 3600.0
+    _GITHUB_CHASE_EVERY_S = 4 * 3600.0
+
+    async def _place_the_oldest_wait_in_the_team(self, agent: Agent) -> bool:
+        """For someone who leads others: the step a report has owed longest,
+        once it has waited three hours, is placed on the leader's checklist
+        as something to ask about and settle. The head of the team spent a
+        day reviewing mail from one report while that report's pull request
+        sat on two failing checks for six hours (Mini-2, 2026-11-18)."""
+        if agent.task_queue is None:
+            return False
+        reports = self._active_reports(agent)
+        if not reports:
+            return False
+        placed_at: dict[str, dict[str, float]] = getattr(self, "_github_placed", {})
+        self._github_placed = placed_at
+        mine = placed_at.setdefault(agent.id, {})
+        now = time.time()
+        names = self._allhands_names()
+        for hours, rid, w in await self._team_waits(reports):
+            if hours * 3600.0 < self._GITHUB_CHASE_AFTER_S:
+                break
+            key = f"ask:{rid}:{w['key']}"
+            if now < mine.get(key, 0.0):
+                continue
+            who = names.get(rid, rid).split(" (")[0]
+            item = (
+                f"{who} {w['what']} and it has waited {hours:.0f} hours: ask {who} what is "
+                "in the way, and settle with them today how it gets done"
+            )
+            mine[key] = now + self._GITHUB_CHASE_EVERY_S
+            placed = self._plan_with_arrivals(agent, "ADD: " + item, limit=1, why="Team waits")
+            if placed is None:
+                continue
+            agent.update_plan(placed)
+            self._write_plan(agent)
+            self._last_plan_ts[agent.id] = time.time()
+            logger.info("Team waits: %s is given %s's %s to ask about", agent.id, rid, w["key"])
+            return True
+        return False
+
     # Placed again while no number stands: an item ticked with nothing
     # declared is not the end of it.
     _MEASURE_ASK_EVERY_S = 2 * 3600.0
@@ -7965,6 +8600,57 @@ class Fabric:
         except Exception:
             logger.debug("number check failed for %s", agent.id, exc_info=True)
             return False
+
+    def _place_a_source_that_reads_nothing(self, agent: Agent) -> bool:
+        """Place, for a number's owner, the work of making its declared
+        source return a value: again every two hours while it reads nothing,
+        and opened again if ticked. Two numbers were declared with addresses
+        that answered and returned no value, and the owner's checklist held
+        nothing about it (Mini-2, 2026-11-18)."""
+        from cortiva.core import measures as _me
+
+        if agent.task_queue is None:
+            return False
+        try:
+            state = _me.load_state(self.agents_dir)
+            declared = _me.load(self.agents_dir)
+        except Exception:
+            return False
+        asked = state.setdefault("_source_placed", {})
+        now = time.time()
+        for m in declared:
+            url = str((m.get("source") or {}).get("url") or "")
+            mid = str(m.get("id") or "")
+            read = state.get(mid) or {}
+            if str(m.get("owner")) != agent.id or not url or read.get("value") is not None:
+                continue
+            if now - float(asked.get(mid) or 0.0) < self._MEASURE_ASK_EVERY_S:
+                continue
+            item = (
+                f"The number {m.get('name') or mid} is yours and the system reads no value "
+                f"from its source ({read.get('note') or 'nothing read'}; {url}): make the "
+                "source return a number, then confirm it with `cortiva measure list`"
+            )
+            key = _task_key(item)
+            same = [t for t in agent.task_queue.tasks if _task_key(t.description) == key]
+            if any(t.status in ("pending", "in_progress", "acknowledged") for t in same):
+                continue
+            if same:
+                same[0].status = "pending"
+            else:
+                placed = self._plan_with_arrivals(
+                    agent, "ADD: " + item, limit=1, why="Source reads nothing"
+                )
+                if placed is None:
+                    continue
+                agent.update_plan(placed)
+            asked[mid] = now
+            _me._write_json(self.agents_dir / _me.STATE_FILE, state)
+            self._write_plan(agent)
+            self._last_plan_ts[agent.id] = time.time()
+            logger.info("Numbers: %s is given the source of '%s' as work", agent.id, mid)
+            return True
+        return False
 
     def _number_was_asked(self, agent: Agent) -> None:
         from cortiva.core import measures as _me
@@ -8115,12 +8801,14 @@ class Fabric:
         )
         try:
             found = await self.memory.search(
-                agent.id, heard[:600] or "where we stand, our numbers, our mission", limit=6
+                agent.id, heard[:600] or "where we stand, our numbers, our mission", limit=40
             )
             rows = [self._memory_row(r) for r in found]
             # What was said in this room is above already; recall is for
-            # what the agent knew before it walked in.
-            rows = [r for r in rows if "allhands" not in r["tags"]]
+            # what the agent knew before it walked in. Asked for six, the
+            # search came back with six records of earlier meetings and
+            # everyone spoke from nothing (Mini-2, 2026-11-18, the fourth).
+            rows = [r for r in rows if "allhands" not in r["tags"]][:6]
             self._allhands_recalled = len(rows)
             if rows:
                 parts.append(
@@ -8134,9 +8822,18 @@ class Fabric:
             self._mission_brief(agent),
             self._standing_orders_context(agent),
             self._inactive_context(agent),
+            self._statements_context(agent),
         ]
         if convening:
             blocks.append(self._team_truth_context(agent))
+            try:
+                blocks.append(
+                    await self._team_waits_context(
+                        [p for p in record.get("floor") or [] if p != agent.id], names
+                    )
+                )
+            except Exception:
+                logger.debug("all-hands: no GitHub waits for %s", agent.id, exc_info=True)
         try:
             blocks.append(self._commitment_salience_context(agent)[:1500])
         except Exception:
@@ -11404,6 +12101,9 @@ class Fabric:
         unverified_ctx = self._unverified_context(agent)
         if unverified_ctx:
             context = context + "\n\n---\n\n" + unverified_ctx
+        statements_ctx = self._statements_context(agent)
+        if statements_ctx:
+            context = context + "\n\n---\n\n" + statements_ctx
         held_ctx = self._held_mail_context(agent)
         if held_ctx:
             context = context + "\n\n---\n\n" + held_ctx

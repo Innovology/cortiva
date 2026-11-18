@@ -271,9 +271,11 @@ def test_lines_that_are_not_tasks_are_struck(tmp_path) -> None:
                 description="Fix the lead form 500 on innovology.io and verify the pipeline screen",
             ),
             Task(id="f", description="**[HIGH]** Land PR #301 after review"),
+            Task(id="g", description="<their ask>"),
         ]
     )
-    assert fabric._strike_non_tasks(agent) == 3
+    assert fabric._strike_non_tasks(agent) == 4
+    assert "blank from the instructions" in agent.task_queue.tasks[-1].description
     by = {t.id: t for t in agent.task_queue.tasks}
     assert by["a"].status == by["b"].status == by["c"].status == "skipped"
     assert "directory entry" in by["a"].description and "placeholder" in by["c"].description
