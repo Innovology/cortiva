@@ -215,3 +215,32 @@ async def test_a_login_two_agents_hold_is_placed_on_the_one_it_is_named_after(
     assert await f._place_what_github_waits_for(ceo) is False
     assert ceo.task_queue.tasks == []
     assert await f._place_what_github_waits_for(cto) is True
+
+
+def test_one_review_of_the_head_as_it_stands_is_enough() -> None:
+    """One approval lands a pull request here. With two people asked, the
+    second was shown a review a colleague had already given."""
+    both = _pull(
+        requested=["samantha", "yuki"],
+        decisions={"yuki": ("CHANGES_REQUESTED", "2026-11-18T19:01:10Z")},
+    )
+    assert ledger.owed(both, "samantha") is None
+    assert ledger.owed(both, "amara")[0] == "changes"
+    # Nobody has decided on this head: each person asked is shown it.
+    fresh = _pull(requested=["samantha", "yuki"])
+    assert ledger.owed(fresh, "samantha")[0] == "review"
+    assert ledger.owed(fresh, "yuki")[0] == "review"
+    # Her own older request for changes still blocks: that one is hers to lift.
+    hers = _pull(
+        decisions={
+            "samantha": ("CHANGES_REQUESTED", "2026-11-18T12:28:55Z"),
+            "yuki": ("APPROVED", "2026-11-18T19:01:10Z"),
+        }
+    )
+    assert ledger.owed(hers, "samantha")[0] == "review_again"
+
+
+def test_a_conflict_with_main_is_the_authors_and_reviewers_wait() -> None:
+    stuck = _pull(requested=["yuki"], mergeable_state="dirty")
+    assert ledger.owed(stuck, "amara")[0] == "conflicts"
+    assert ledger.owed(stuck, "yuki") is None

@@ -17,7 +17,7 @@ API = "https://api.github.com"
 # Reviews that decide something; a comment leaves the earlier decision standing.
 _DECIDING = ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")
 # Closest to landing first: a merge, then what unblocks a colleague, then one's own repairs.
-_ORDER = ("merge", "review_again", "review", "changes", "checks")
+_ORDER = ("merge", "review_again", "review", "conflicts", "changes", "checks")
 
 
 def _search(query: str, token: str, timeout: float, limit: int) -> list[tuple[str, int]]:
@@ -87,26 +87,42 @@ def owed(pull: dict[str, Any], login: str) -> tuple[str, str] | None:
     if pull["draft"]:
         return None
     if author.lower() != me:
-        # A reviewer waits for green: the author's repair comes first.
-        if pull["failing"] or pull["running"]:
+        # A reviewer waits for a head that can land: the author's repair comes first.
+        if pull["failing"] or pull["running"] or pull["mergeable_state"] == "dirty":
             return None
         mine = decisions.get(me)
         asked = me in {r.lower() for r in pull["requested"]}
         whose = f"({author}'s: {pull['title']})"
-        if asked and mine is None:
-            return (
-                "review",
-                f"{ref} {whose} waits for your review: review it on GitHub and approve it "
-                "or ask for changes",
-            )
-        changed = mine is not None and mine[0] == "CHANGES_REQUESTED" and pull["pushed"] > mine[1]
-        if (asked and mine is not None) or changed:
-            return (
-                "review_again",
-                f"{ref} {whose} changed since your review: review it again on GitHub and "
-                "approve it if your points are met",
-            )
-        return None
+        again = (
+            "review_again",
+            f"{ref} {whose} changed since your review: review it again on GitHub and "
+            "approve it if your points are met",
+        )
+        # Their own request for changes still stands against an older head:
+        # it blocks the merge until they look again, whoever else approves.
+        if mine is not None and mine[0] == "CHANGES_REQUESTED" and pull["pushed"] > mine[1]:
+            return again
+        # One review of the head as it stands is enough. A second person asked
+        # to review what a colleague has already decided on is a queue, not a check.
+        decided = any(
+            who != me and state in ("APPROVED", "CHANGES_REQUESTED") and at >= pull["pushed"]
+            for who, (state, at) in decisions.items()
+        )
+        if not asked or decided:
+            return None
+        if mine is not None:
+            return again
+        return (
+            "review",
+            f"{ref} {whose} waits for your review: review it on GitHub and approve it "
+            "or ask for changes",
+        )
+    if pull["mergeable_state"] == "dirty":
+        return (
+            "conflicts",
+            f"{ref} is yours and conflicts with the main branch on GitHub: bring it up to "
+            "date, resolve the conflicts and push",
+        )
     if pull["failing"]:
         names = "; ".join(pull["failing"][:4])
         return (
