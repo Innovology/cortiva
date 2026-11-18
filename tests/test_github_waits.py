@@ -275,3 +275,37 @@ async def test_a_step_a_report_has_owed_for_hours_is_the_leaders_to_ask_about(
     monkeypatch.setattr(ledger, "hours_since", lambda stamp: 0.4)
     f._github_placed["ceo"].clear()
     assert await f._place_what_github_waits_for(ceo) is False
+
+
+@pytest.mark.asyncio
+async def test_a_pull_request_a_standing_order_covers_is_nobodys_wait(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Shown a nine-hour wait on a pull request the founder had ordered
+    stopped, the head told its reviewer to approve it at once."""
+    from cortiva.core import standing_orders
+
+    stopped = {
+        **_AGAIN,
+        "key": "o/r#345:review",
+        "number": 345,
+        "title": "mandatory spec fields in PR template",
+        "item": "o/r#345 (amara's: mandatory spec fields in PR template) waits for your review",
+        "since": "2026-11-18T10:31:43Z",
+        "what": "has not reviewed o/r#345",
+    }
+    f, cto = _rig(tmp_path, monkeypatch, [stopped])
+    order = {"text": "Stop building red tape", "issued_by": {"name": "the founder"}}
+    monkeypatch.setattr(standing_orders, "load", lambda agents_dir: [order])
+    monkeypatch.setattr(
+        standing_orders,
+        "matching_order",
+        lambda orders, text: orders[0] if "pr template" in text.lower() else None,
+    )
+    assert await f._github_waiting(cto) == []
+    assert await f._place_what_github_waits_for(cto) is False
+    assert await f._team_waits(["cto"]) == []
+    # Named by number alone, the task is struck all the same.
+    cto.task_queue.tasks.append(Task(id="z", description="Review and approve PR #345 immediately"))
+    assert f._strike_under_standing_orders(cto) == 1
+    assert "standing order from the founder" in cto.task_queue.tasks[-1].description

@@ -6130,7 +6130,9 @@ class Fabric:
         for t in agent.task_queue.tasks:
             if t.status != "pending" or self._already_struck(t):
                 continue
-            order = _so.matching_order(orders, t.description or "")
+            order = _so.matching_order(
+                orders, f"{t.description or ''} {self._covered_titles_named(t.description)}"
+            )
             if order is None:
                 continue
             by = (order.get("issued_by") or {}).get("name") or "leadership"
@@ -8097,8 +8099,48 @@ class Fabric:
             return None
         if waiting is None:
             return None
+        waiting = self._without_what_standing_orders_cover(waiting)
         seen[agent.id] = (now, waiting)
         return waiting
+
+    def _without_what_standing_orders_cover(
+        self, waiting: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Drop the steps on pull requests a standing order covers, and keep
+        their titles so a task that names one by number alone is struck too.
+        Shown a nine-hour wait on a pull request the founder had ordered
+        stopped, the head of the team told its reviewer to approve it at
+        once (Mini-2, 2026-11-18)."""
+        try:
+            from cortiva.core import standing_orders as _so
+
+            orders = _so.load(self.agents_dir)
+        except Exception:
+            orders = []
+        covered: dict[tuple[str, int], str] = getattr(self, "_github_covered", {})
+        self._github_covered = covered
+        kept: list[dict[str, Any]] = []
+        for w in waiting:
+            text = f"{w.get('item', '')} {w.get('title', '')}"
+            if orders and _so.matching_order(orders, text) is not None:
+                covered[(str(w["repo"]).lower(), int(w["number"]))] = str(w.get("title") or "")
+            else:
+                kept.append(w)
+        return kept
+
+    def _covered_titles_named(self, text: str) -> str:
+        """The titles of pull requests under a standing order that this task
+        names by number."""
+        covered: dict[tuple[str, int], str] = getattr(self, "_github_covered", {})
+        if not covered:
+            return ""
+        out: list[str] = []
+        for m in self._TASK_REF_RE.finditer(text or ""):
+            repo = str(m.group("repo") or "").lower()
+            for (r, n), title in covered.items():
+                if n == int(m.group("num")) and (not repo or r == repo):
+                    out.append(title)
+        return " ".join(out)
 
     async def _team_waits(self, ids: list[str]) -> list[tuple[float, str, dict[str, Any]]]:
         """Every step GitHub shows as owed by these people, longest wait

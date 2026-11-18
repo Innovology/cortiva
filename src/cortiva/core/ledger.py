@@ -213,6 +213,7 @@ def waiting_on(token: str, *, limit: int = 8, timeout: float = 8.0) -> list[dict
                         "repo": repo,
                         "number": number,
                         "item": step[1],
+                        "title": pull["title"],
                         "since": since(pull, step[0]),
                         "what": _WHAT[step[0]].format(ref=f"{repo}#{number}"),
                     }
