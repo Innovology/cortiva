@@ -1504,6 +1504,27 @@ def cmd_memory(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_allhands(args: argparse.Namespace) -> None:
+    """The all-hands: hold one now, see the last one, or set its time."""
+    from cortiva.core.ipc import FabricClient
+
+    client = FabricClient()
+    try:
+        if args.allhands_command == "start":
+            resp = client.send_sync("allhands.start")
+        elif args.allhands_command == "schedule":
+            resp = client.send_sync("allhands.schedule", at=args.at)
+        else:
+            resp = client.send_sync("allhands.status")
+        if not resp.get("ok"):
+            print(f"failed: {resp.get('error', 'unknown error')}")
+            sys.exit(1)
+        print(resp.get("text") or "ok")
+    except Exception as exc:
+        print(f"The fabric is unreachable: {exc}")
+        sys.exit(1)
+
+
 def cmd_measure(args: argparse.Namespace) -> None:
     """Numbers the company is held to, from inside a work session."""
     import os
@@ -2083,6 +2104,14 @@ def build_parser() -> argparse.ArgumentParser:
     chat_read.add_argument("--wait", type=float, default=0, help="Seconds to wait for a reply")
 
     # memory (used by an agent's work session)
+    allhands_top = subparsers.add_parser(
+        "allhands", help="The all-hands: the head's position, heard and answered by everyone"
+    )
+    allhands_sub = allhands_top.add_subparsers(dest="allhands_command")
+    allhands_sub.add_parser("start", help="Hold one now")
+    allhands_sub.add_parser("status", help="The last one held, as minutes")
+    allhands_sched = allhands_sub.add_parser("schedule", help="Set the daily time, UTC")
+    allhands_sched.add_argument("--at", default="", help="HH:MM; leave empty to stop")
     measure_top = subparsers.add_parser(
         "measure", help="Numbers the company is held to, from a work session"
     )
@@ -2281,6 +2310,11 @@ def main() -> None:
             cmd_chat(args)
         else:
             parser.parse_args(["chat", "--help"])
+    elif args.command == "allhands":
+        if args.allhands_command in ("start", "status", "schedule"):
+            cmd_allhands(args)
+        else:
+            parser.parse_args(["allhands", "--help"])
     elif args.command == "measure":
         if args.measure_command in ("declare", "list"):
             cmd_measure(args)
