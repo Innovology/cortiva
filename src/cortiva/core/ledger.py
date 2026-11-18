@@ -149,6 +149,40 @@ def owed(pull: dict[str, Any], login: str) -> tuple[str, str] | None:
     return None
 
 
+# The same step, said about the person who owes it.
+_WHAT = {
+    "review": "has not reviewed {ref}",
+    "review_again": "has not looked again at {ref} since its author changed it",
+    "conflicts": "has not resolved the conflict between {ref} and the main branch",
+    "checks": "has not repaired the failing checks on {ref}",
+    "changes": "has not made the changes a reviewer asked for on {ref}",
+    "merge": "has not merged {ref}, which is approved and green",
+}
+
+
+def since(pull: dict[str, Any], kind: str) -> str:
+    """When the step became owed: the review that asked for changes, the
+    approval that made it mergeable, otherwise the last push."""
+    states = {"changes": "CHANGES_REQUESTED", "merge": "APPROVED"}
+    if kind in states:
+        at = [t for state, t in pull["decisions"].values() if state == states[kind]]
+        if at:
+            return str(max(at))
+    return str(pull["pushed"])
+
+
+def hours_since(stamp: str) -> float | None:
+    from datetime import UTC, datetime
+
+    try:
+        then = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - then).total_seconds() / 3600.0)
+
+
 def waiting_on(token: str, *, limit: int = 8, timeout: float = 8.0) -> list[dict[str, Any]] | None:
     """Every open pull request that waits on the token's own user, nearest to
     landing first. Each is ``{key, kind, repo, number, item}``. ``None`` when
@@ -169,7 +203,8 @@ def waiting_on(token: str, *, limit: int = 8, timeout: float = 8.0) -> list[dict
                     refs.append(ref)
         out: list[dict[str, Any]] = []
         for repo, number in refs[: limit * 2]:
-            step = owed(read_pull(repo, number, token, timeout), login)
+            pull = read_pull(repo, number, token, timeout)
+            step = owed(pull, login)
             if step:
                 out.append(
                     {
@@ -178,6 +213,8 @@ def waiting_on(token: str, *, limit: int = 8, timeout: float = 8.0) -> list[dict
                         "repo": repo,
                         "number": number,
                         "item": step[1],
+                        "since": since(pull, step[0]),
+                        "what": _WHAT[step[0]].format(ref=f"{repo}#{number}"),
                     }
                 )
     except Exception:

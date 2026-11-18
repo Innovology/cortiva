@@ -8030,31 +8030,14 @@ class Fabric:
         the items were ticked or struck and five people then idled for four
         and a half hours beside three pull requests that each waited on one
         of them (Mini-2, 2026-11-18)."""
-        from cortiva.core import ledger as _lg
-        from cortiva.core.grounding import agent_github_token
-
         if agent.task_queue is None:
             return False
-        token = agent_github_token(agent.directory)
-        if not token:
-            return False
-        if not await self._github_login_is_theirs(agent, token):
-            return False
-        seen: dict[str, tuple[float, list[dict[str, Any]]]] = getattr(self, "_github_seen", {})
-        self._github_seen = seen
+        waiting = await self._github_waiting(agent)
+        if waiting is None:
+            return await self._place_the_oldest_wait_in_the_team(agent)
         placed_at: dict[str, dict[str, float]] = getattr(self, "_github_placed", {})
         self._github_placed = placed_at
         now = time.time()
-        hit = seen.get(agent.id)
-        if hit and now - hit[0] < self._GITHUB_READ_EVERY_S:
-            waiting = hit[1]
-        else:
-            try:
-                waiting = await asyncio.to_thread(_lg.waiting_on, token) or []
-            except Exception:
-                logger.debug("GitHub read failed for %s", agent.id, exc_info=True)
-                return False
-            seen[agent.id] = (now, waiting)
         mine = placed_at.setdefault(agent.id, {})
         for w in waiting:
             if now < mine.get(w["key"], 0.0):
@@ -8089,6 +8072,110 @@ class Fabric:
             self._write_plan(agent)
             self._last_plan_ts[agent.id] = time.time()
             logger.info("GitHub waits on %s: %s placed as work", agent.id, w["key"])
+            return True
+        return await self._place_the_oldest_wait_in_the_team(agent)
+
+    async def _github_waiting(self, agent: Agent) -> list[dict[str, Any]] | None:
+        """What GitHub shows as waiting on this agent, read at most every ten
+        minutes. ``None`` when it cannot be known or the login is another's."""
+        from cortiva.core import ledger as _lg
+        from cortiva.core.grounding import agent_github_token
+
+        token = agent_github_token(agent.directory)
+        if not token or not await self._github_login_is_theirs(agent, token):
+            return None
+        seen: dict[str, tuple[float, list[dict[str, Any]]]] = getattr(self, "_github_seen", {})
+        self._github_seen = seen
+        now = time.time()
+        hit = seen.get(agent.id)
+        if hit and now - hit[0] < self._GITHUB_READ_EVERY_S:
+            return hit[1]
+        try:
+            waiting = await asyncio.to_thread(_lg.waiting_on, token)
+        except Exception:
+            logger.debug("GitHub read failed for %s", agent.id, exc_info=True)
+            return None
+        if waiting is None:
+            return None
+        seen[agent.id] = (now, waiting)
+        return waiting
+
+    async def _team_waits(self, ids: list[str]) -> list[tuple[float, str, dict[str, Any]]]:
+        """Every step GitHub shows as owed by these people, longest wait
+        first, as (hours, agent id, step)."""
+        from cortiva.core import ledger as _lg
+
+        out: list[tuple[float, str, dict[str, Any]]] = []
+        for rid in ids:
+            try:
+                other = self.get_agent(rid)
+            except Exception:
+                continue
+            for w in await self._github_waiting(other) or []:
+                hours = _lg.hours_since(str(w.get("since") or ""))
+                if hours is not None:
+                    out.append((hours, rid, w))
+        out.sort(key=lambda x: -x[0])
+        return out
+
+    async def _team_waits_context(self, ids: list[str], names: dict[str, str]) -> str:
+        """Who owes which step on which pull request and for how long, as
+        GitHub shows it. The head of an organisation reads this before
+        anything anyone tells her."""
+        waits = await self._team_waits(ids)
+        if not waits:
+            return ""
+        lines = [
+            "## What is waiting on whom, read from GitHub by the system just now",
+            "",
+            "Each line is one step one person owes. Work stands still until that "
+            "person takes it. Longest wait first.",
+            "",
+        ]
+        for hours, rid, w in waits[:8]:
+            lines.append(f"- {names.get(rid, rid)} {w['what']}: waiting {hours:.1f} hours")
+        return "\n".join(lines)
+
+    # A step a report has owed this long is the manager's to ask about, and
+    # the same one is asked about again at most this often.
+    _GITHUB_CHASE_AFTER_S = 3 * 3600.0
+    _GITHUB_CHASE_EVERY_S = 4 * 3600.0
+
+    async def _place_the_oldest_wait_in_the_team(self, agent: Agent) -> bool:
+        """For someone who leads others: the step a report has owed longest,
+        once it has waited three hours, is placed on the leader's checklist
+        as something to ask about and settle. The head of the team spent a
+        day reviewing mail from one report while that report's pull request
+        sat on two failing checks for six hours (Mini-2, 2026-11-18)."""
+        if agent.task_queue is None:
+            return False
+        reports = self._active_reports(agent)
+        if not reports:
+            return False
+        placed_at: dict[str, dict[str, float]] = getattr(self, "_github_placed", {})
+        self._github_placed = placed_at
+        mine = placed_at.setdefault(agent.id, {})
+        now = time.time()
+        names = self._allhands_names()
+        for hours, rid, w in await self._team_waits(reports):
+            if hours * 3600.0 < self._GITHUB_CHASE_AFTER_S:
+                break
+            key = f"ask:{rid}:{w['key']}"
+            if now < mine.get(key, 0.0):
+                continue
+            who = names.get(rid, rid).split(" (")[0]
+            item = (
+                f"{who} {w['what']} and it has waited {hours:.0f} hours: ask {who} what is "
+                "in the way, and settle with them today how it gets done"
+            )
+            mine[key] = now + self._GITHUB_CHASE_EVERY_S
+            placed = self._plan_with_arrivals(agent, "ADD: " + item, limit=1, why="Team waits")
+            if placed is None:
+                continue
+            agent.update_plan(placed)
+            self._write_plan(agent)
+            self._last_plan_ts[agent.id] = time.time()
+            logger.info("Team waits: %s is given %s's %s to ask about", agent.id, rid, w["key"])
             return True
         return False
 
@@ -8291,6 +8378,14 @@ class Fabric:
         ]
         if convening:
             blocks.append(self._team_truth_context(agent))
+            try:
+                blocks.append(
+                    await self._team_waits_context(
+                        [p for p in record.get("floor") or [] if p != agent.id], names
+                    )
+                )
+            except Exception:
+                logger.debug("all-hands: no GitHub waits for %s", agent.id, exc_info=True)
         try:
             blocks.append(self._commitment_salience_context(agent)[:1500])
         except Exception:

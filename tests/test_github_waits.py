@@ -244,3 +244,34 @@ def test_a_conflict_with_main_is_the_authors_and_reviewers_wait() -> None:
     stuck = _pull(requested=["yuki"], mergeable_state="dirty")
     assert ledger.owed(stuck, "amara")[0] == "conflicts"
     assert ledger.owed(stuck, "yuki") is None
+
+
+@pytest.mark.asyncio
+async def test_a_step_a_report_has_owed_for_hours_is_the_leaders_to_ask_about(
+    tmp_path: Path, monkeypatch
+) -> None:
+    owed_six_hours = {
+        **_AGAIN,
+        "since": "2026-11-18T12:30:56Z",
+        "what": "has not repaired the failing checks on o/r#350",
+    }
+    f, cto = _rig(tmp_path, monkeypatch, [owed_six_hours])
+    ceo = f.register_agent("ceo")  # no GitHub token of her own
+    ceo.task_queue = TaskQueue(tasks=[])
+    f._active_reports = lambda agent: ["cto"] if agent.id == "ceo" else []
+    f._load_directory_cards = lambda: [{"id": "cto", "name": "Samantha", "role": "CTO"}]
+    monkeypatch.setattr(ledger, "hours_since", lambda stamp: 6.6)
+    assert await f._place_what_github_waits_for(ceo) is True
+    item = ceo.task_queue.tasks[-1].description
+    assert item.startswith("Samantha has not repaired the failing checks on o/r#350")
+    assert "7 hours" in item and "ask Samantha what is in the way" in item
+    # Asked about once, not on every pass.
+    ceo.task_queue.tasks[-1].status = "done"
+    assert await f._place_what_github_waits_for(ceo) is False
+    # The head of the meeting is shown the same thing, stated by the system.
+    shown = await f._team_waits_context(["cto"], f._allhands_names())
+    assert "Samantha (CTO) has not repaired the failing checks on o/r#350: waiting 6.6" in shown
+    # A wait of minutes is nobody's to chase.
+    monkeypatch.setattr(ledger, "hours_since", lambda stamp: 0.4)
+    f._github_placed["ceo"].clear()
+    assert await f._place_what_github_waits_for(ceo) is False
