@@ -47,7 +47,9 @@ def test_what_was_stated_is_held_against_what_github_shows() -> None:
     assert not claims.holds("approved", _OPEN)
     assert not claims.holds("reviewed", _OPEN)
     assert claims.holds("green", _OPEN)
-    assert claims.shows(_OPEN) == "open, no approval, no review"
+    assert claims.shows(_OPEN) == "open, no approval, no review, checks passing"
+    running = {**_OPEN, "running": True}
+    assert not claims.knowable("green", running) and claims.knowable("merged", running)
     done = {**_OPEN, "merged": True, "state": "closed"}
     assert all(claims.holds(k, done) for k in claims.SAID)
     approved = {**_OPEN, "reviewers": ["yuki"], "decisions": {"yuki": ("APPROVED", "t")}}
@@ -109,10 +111,15 @@ async def test_a_false_statement_is_put_to_the_person_who_made_it_and_kept_again
             }
         )
     )
+    # One look is not enough to say someone made it up.
+    assert await f._check_what_colleagues_stated(ceo, []) == 0
+    assert ceo.task_queue.tasks == [] and claims.standing(f.agents_dir) == {}
+    f._STATEMENT_SECOND_LOOK_S = 0.0  # three minutes on, it is still not so
     assert await f._check_what_colleagues_stated(ceo, []) == 1
     head = ceo.task_queue.tasks[0].description
     assert head.startswith("Samantha told you o/r#345 is ")
     assert "GitHub shows: open, no approval, no review" in head and "Tell Samantha" in head
+    assert len(f.plugin_manager.felt) == 1
     # Kept against the person who said it, and felt by them.
     row = claims.standing(f.agents_dir)["cto"]
     assert (row["checked"], row["false"]) == (3, 3)
@@ -166,3 +173,53 @@ async def test_a_true_statement_counts_for_the_person_and_one_that_cannot_be_rea
     assert await f._check_what_colleagues_stated(ceo, []) == 0
     assert claims.standing(f.agents_dir)["cto"]["checked"] == 1
     assert ceo.task_queue.tasks == []
+
+
+@pytest.mark.asyncio
+async def test_checks_still_running_are_not_a_false_statement_and_a_wrong_call_is_withdrawn(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A person who said the checks were passing was called out seven
+    seconds before the last one finished."""
+    f = Fabric(agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=_Model())
+    yuki = f.register_agent("yuki")
+    f.register_agent("cto")
+    (yuki.directory / "credentials.json").write_text('{"GH_TOKEN": "t"}')
+    yuki.task_queue = TaskQueue(tasks=[])
+    f._chat_resolve = lambda name: "cto"
+    f._known_repos = lambda: ["o/r"]
+    f._STATEMENT_SECOND_LOOK_S = 0.0
+    inbox = yuki.directory / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "m.json").write_text(
+        json.dumps(
+            {
+                "from": "samantha@x",
+                "subject": "o/r#353 ready",
+                "text": "PR #353: CI is green.",
+                "message_id": "m",
+                "received_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    )
+    state = {**_OPEN, "number": 353, "running": True, "pushed": "2026-11-18T22:19:43Z"}
+    monkeypatch.setattr(ledger, "read_pull", lambda repo, number, token: dict(state))
+    assert await f._check_what_colleagues_stated(yuki, []) == 0
+    assert claims.records(f.agents_dir) == []  # nothing can be said yet, so nothing is kept
+    # A call the first version made wrongly is taken back once the same head is seen passing.
+    claims.record(
+        f.agents_dir, by="cto", to="yuki", ref="o/r#353", kind="green", true=False, shown="open"
+    )
+    from cortiva.core.agent import Task
+
+    yuki.task_queue.tasks.append(
+        Task(
+            id="x",
+            description="Samantha told you o/r#353 is passing its checks. GitHub shows: open",
+        )
+    )
+    state["running"] = False
+    assert await f._check_what_colleagues_stated(yuki, []) == 0
+    assert claims.standing(f.agents_dir)["cto"]["false"] == 0
+    assert yuki.task_queue.tasks[0].status == "skipped"
+    assert "the statement was right" in yuki.task_queue.tasks[0].description

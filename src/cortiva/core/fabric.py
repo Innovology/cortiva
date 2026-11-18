@@ -8072,7 +8072,6 @@ class Fabric:
         from datetime import UTC, datetime
 
         from cortiva.core import claims as _cl
-        from cortiva.core import ledger as _lg
         from cortiva.core.grounding import agent_github_token
 
         token = agent_github_token(agent.directory)
@@ -8099,8 +8098,6 @@ class Fabric:
         for m in messages or []:
             if (getattr(m, "metadata", None) or {}).get("chat"):
                 heard.append((f"chat:{m.id}", str(m.sender), str(m.content)))
-        names = self._allhands_names()
-        found = 0
         for mid, sender, text in heard:
             said = _cl.extract(text)[:4]
             by = self._chat_resolve(re.sub(r"^.*<|>.*$", "", sender))
@@ -8108,63 +8105,158 @@ class Fabric:
                 continue
             if not _cl.unseen(self.agents_dir, f"{agent.id}:{mid}"):
                 continue
-            false: dict[str, tuple[list[str], str]] = {}
             for repo, number, kind in said:
-                pull = None
-                for candidate in [repo] if repo else self._known_repos():
-                    try:
-                        pull = await asyncio.to_thread(_lg.read_pull, candidate, number, token)
-                        break
-                    except Exception:
-                        continue
-                if pull is None:
-                    continue  # it could not be read: not the same as false
-                ref = f"{pull['repo']}#{number}"
+                pull = await self._read_pull_for(repo, number, token)
+                if pull is None or not _cl.knowable(kind, pull):
+                    continue  # it could not be read, or cannot yet be said: not false
                 ok = _cl.holds(kind, pull)
-                shown = _cl.shows(pull)
+                # Found false, it waits for a second look before it counts.
                 _cl.record(
-                    self.agents_dir, by=by, to=agent.id, ref=ref, kind=kind, true=ok, shown=shown
+                    self.agents_dir,
+                    by=by,
+                    to=agent.id,
+                    ref=f"{pull['repo']}#{number}",
+                    kind=kind,
+                    true=ok,
+                    shown=_cl.shows(pull),
+                    pending=not ok,
                 )
-                if not ok:
-                    false.setdefault(ref, ([], shown))[0].append(_cl.SAID[kind])
-            who = names.get(by, by).split(" (")[0]
-            for ref, (kinds, shown) in false.items():
-                found += 1
-                stated = " and ".join([", ".join(kinds[:-1]), kinds[-1]] if kinds[1:] else kinds)
-                item = (
-                    f"{who} told you {ref} is {stated}. {self._STATEMENT_MARK}{shown}. Tell "
-                    f"{who} what GitHub shows, and ask for it to be done or the statement "
-                    "withdrawn"
-                )
-                placed = self._plan_with_arrivals(
-                    agent, "NOW: " + item, limit=1, why="Statement checked"
-                )
-                if placed is not None:
-                    agent.update_plan(placed)
-                    self._write_plan(agent)
-                logger.warning(
-                    "Statement by %s to %s is false: %s said to be %s; GitHub shows %s",
-                    by,
-                    agent.id,
-                    ref,
-                    stated,
-                    shown,
-                )
-                self._emit("statement.false", agent_id=by, to=agent.id, ref=ref)
-                manager = getattr(self, "plugin_manager", None)
-                if manager is not None:
-                    # Being found out is felt by the person who said it.
-                    await manager.dispatch_hook(
-                        by,
-                        "feedback",
-                        {
-                            "valence": -1.0,
-                            "authority_weight": 1.0,
-                            "severity": 0.8,
-                            "entity_id": agent.id,
-                        },
+        return await self._second_look_at_statements(agent, token)
+
+    _STATEMENT_SECOND_LOOK_S = 180.0
+    _STATEMENT_GIVE_UP_S = 3600.0
+    _STATEMENT_CORRECT_WITHIN_S = 6 * 3600.0
+
+    async def _read_pull_for(self, repo: str, number: int, token: str) -> dict[str, Any] | None:
+        from cortiva.core import ledger as _lg
+
+        for candidate in [repo] if repo else self._known_repos():
+            try:
+                return await asyncio.to_thread(_lg.read_pull, candidate, number, token)
+            except Exception:
+                continue
+        return None
+
+    async def _second_look_at_statements(self, agent: Agent, token: str) -> int:
+        """Look again at each statement to this agent that a first look found
+        false. Still false three minutes on, it is put to the person who made
+        it, felt by them and counted. True on the second look, it counts as
+        true. A statement about checks already counted false is corrected
+        when the same head is later seen passing. Returns how many were
+        confirmed false.
+
+        The first version accused on one look: a person who said the checks
+        were passing was called out seven seconds before the last one
+        finished (Mini-2, 2026-11-18)."""
+        from datetime import UTC, datetime
+
+        from cortiva.core import claims as _cl
+
+        now = datetime.now(UTC)
+        names = self._allhands_names()
+        false: dict[tuple[str, str], tuple[list[str], str]] = {}
+        for c in _cl.records(self.agents_dir):
+            if c.get("to") != agent.id or c.get("true") or not c.get("id"):
+                continue
+            try:
+                age = (now - datetime.fromisoformat(str(c.get("at")))).total_seconds()
+            except ValueError:
+                continue
+            kind, ref = str(c.get("kind")), str(c.get("ref"))
+            repo, _, number = ref.rpartition("#")
+            if c.get("pending"):
+                if age < self._STATEMENT_SECOND_LOOK_S:
+                    continue
+                pull = await self._read_pull_for(repo, int(number), token)
+                if pull is None or not _cl.knowable(kind, pull):
+                    if age > self._STATEMENT_GIVE_UP_S:
+                        _cl.settle(self.agents_dir, c["id"], drop=True)
+                    continue
+                if _cl.holds(kind, pull):
+                    _cl.settle(self.agents_dir, c["id"], pending=False, true=True)
+                    continue
+                shown = _cl.shows(pull)
+                _cl.settle(self.agents_dir, c["id"], pending=False, shown=shown)
+                false.setdefault((str(c.get("by")), ref), ([], shown))[0].append(_cl.SAID[kind])
+            elif (
+                kind == "green"
+                and not c.get("looked_again")
+                and age < self._STATEMENT_CORRECT_WITHIN_S
+            ):
+                pull = await self._read_pull_for(repo, int(number), token)
+                if pull is None or not _cl.knowable(kind, pull):
+                    continue
+                same_head = str(pull.get("pushed") or "") <= str(c.get("at"))
+                if same_head and _cl.holds(kind, pull):
+                    _cl.settle(self.agents_dir, c["id"], true=True, looked_again=True)
+                    self._withdraw_statement_item(agent, ref)
+                    logger.info(
+                        "Statement by %s to %s about %s holds on a second look: corrected",
+                        c.get("by"),
+                        agent.id,
+                        ref,
                     )
-        return found
+                else:
+                    _cl.settle(self.agents_dir, c["id"], looked_again=True)
+        for (by, ref), (kinds, shown) in false.items():
+            who = names.get(by, by).split(" (")[0]
+            stated = " and ".join([", ".join(kinds[:-1]), kinds[-1]] if kinds[1:] else kinds)
+            item = (
+                f"{who} told you {ref} is {stated}. {self._STATEMENT_MARK}{shown}. Tell "
+                f"{who} what GitHub shows, and ask for it to be done or the statement "
+                "withdrawn"
+            )
+            placed = self._plan_with_arrivals(
+                agent, "NOW: " + item, limit=1, why="Statement checked"
+            )
+            if placed is not None:
+                agent.update_plan(placed)
+                self._write_plan(agent)
+            logger.warning(
+                "Statement by %s to %s is false on two looks: %s said to be %s; GitHub shows %s",
+                by,
+                agent.id,
+                ref,
+                stated,
+                shown,
+            )
+            self._emit("statement.false", agent_id=by, to=agent.id, ref=ref)
+            manager = getattr(self, "plugin_manager", None)
+            if manager is not None:
+                # Being found out is felt by the person who said it.
+                await manager.dispatch_hook(
+                    by,
+                    "feedback",
+                    {
+                        "valence": -1.0,
+                        "authority_weight": 1.0,
+                        "severity": 0.8,
+                        "entity_id": agent.id,
+                    },
+                )
+        return len(false)
+
+    def _withdraw_statement_item(self, agent: Agent, ref: str) -> None:
+        """Strike a call-out the system got wrong, saying so."""
+        if agent.task_queue is None:
+            return
+        changed = False
+        for t in agent.task_queue.tasks:
+            text = t.description or ""
+            if (
+                t.status == "pending"
+                and self._STATEMENT_MARK in text
+                and ref.lower() in text.lower()
+                and not self._already_struck(t)
+            ):
+                t.status = "skipped"
+                t.description = (
+                    f"{text} *(struck: on a second look GitHub shows the statement was "
+                    "right; nothing to raise)*"
+                )
+                changed = True
+        if changed:
+            self._write_plan(agent)
 
     def _statements_context(self, agent: Agent) -> str:
         """Each person's record of checked statements over the last week,

@@ -72,7 +72,9 @@ def extract(text: str) -> list[tuple[str, int, str]]:
                     if (repo, number, kind) not in out:
                         out.append((repo, number, kind))
                 break
-    return out
+    # Named once in full and once by number alone, it is one pull request.
+    full = {(number, kind) for repo, number, kind in out if repo}
+    return [c for c in out if c[0] or (c[1], c[2]) not in full]
 
 
 def holds(kind: str, pull: dict[str, Any]) -> bool:
@@ -103,7 +105,18 @@ def shows(pull: dict[str, Any]) -> str:
         parts.append("no review")
     if pull["failing"]:
         parts.append(f"{len(pull['failing'])} failing check(s)")
+    elif pull["running"]:
+        parts.append("checks still running")
+    else:
+        parts.append("checks passing")
     return ", ".join(parts)
+
+
+def knowable(kind: str, pull: dict[str, Any]) -> bool:
+    """False while GitHub cannot yet say: checks still running are neither
+    passing nor failing. A statement read in that moment was called false
+    seven seconds before the last check passed (Mini-2, 2026-11-18)."""
+    return not (kind == "green" and pull["running"] and not pull["failing"])
 
 
 def _load(agents_dir: Path) -> dict[str, Any]:
@@ -115,6 +128,8 @@ def _load(agents_dir: Path) -> dict[str, Any]:
         data = {}
     data.setdefault("seen", [])
     data.setdefault("checked", [])
+    for n, c in enumerate(data["checked"]):
+        c.setdefault("id", f"r{n}-{c.get('at', '')}")  # kept before records had ids
     return data
 
 
@@ -137,11 +152,25 @@ def unseen(agents_dir: Path, message_id: str) -> bool:
 
 
 def record(
-    agents_dir: Path, *, by: str, to: str, ref: str, kind: str, true: bool, shown: str
+    agents_dir: Path,
+    *,
+    by: str,
+    to: str,
+    ref: str,
+    kind: str,
+    true: bool,
+    shown: str,
+    pending: bool = False,
 ) -> None:
+    """Keep one checked statement. ``pending`` marks a first look that found
+    it false: it counts against nobody until a second look agrees."""
+    import uuid
+
     data = _load(agents_dir)
     data["checked"].append(
         {
+            "id": uuid.uuid4().hex,
+            "pending": bool(pending),
             "at": datetime.now(UTC).isoformat(),
             "by": by,
             "to": to,
@@ -151,6 +180,23 @@ def record(
             "shown": shown,
         }
     )
+    _save(agents_dir, data)
+
+
+def records(agents_dir: Path) -> list[dict[str, Any]]:
+    return list(_load(agents_dir)["checked"])
+
+
+def settle(agents_dir: Path, record_id: str, **changes: Any) -> None:
+    """Change one kept statement: a second look confirming or correcting it.
+    ``drop=True`` removes it."""
+    data = _load(agents_dir)
+    if changes.pop("drop", False):
+        data["checked"] = [c for c in data["checked"] if c.get("id") != record_id]
+    else:
+        for c in data["checked"]:
+            if c.get("id") == record_id:
+                c.update(changes)
     _save(agents_dir, data)
 
 
@@ -164,7 +210,7 @@ def standing(agents_dir: Path, days: int = 7) -> dict[str, dict[str, Any]]:
             at = datetime.fromisoformat(str(c.get("at")))
         except ValueError:
             continue
-        if at < since:
+        if at < since or c.get("pending"):
             continue
         row = out.setdefault(str(c.get("by")), {"checked": 0, "false": 0, "latest": None})
         row["checked"] += 1
