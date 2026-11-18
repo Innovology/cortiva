@@ -6719,6 +6719,10 @@ class Fabric:
         try:
             if not idle:
                 await _ask(base, self._ARRIVAL_TRIAGE_PROMPT, triage=True)
+                # Someone whose checklist never clears is still shown what
+                # GitHub waits on them for. A pull request sat seven hours on
+                # one person who was never idle (Mini-2, 2026-11-18).
+                await self._place_what_github_waits_for(agent, leading=False)
                 agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S  # something landed
                 return
 
@@ -8022,7 +8026,10 @@ class Fabric:
             )
         return False
 
-    async def _place_what_github_waits_for(self, agent: Agent) -> bool:
+    # A step owed this long goes to the head of the checklist.
+    _GITHUB_HEAD_AFTER_S = 3 * 3600.0
+
+    async def _place_what_github_waits_for(self, agent: Agent, *, leading: bool = True) -> bool:
         """Place the one step GitHub shows this person owes on an open pull
         request: a review, a second look after the author pushed, failing
         checks or requested changes on their own, a merge. True when an item
@@ -8034,9 +8041,11 @@ class Fabric:
         of them (Mini-2, 2026-11-18)."""
         if agent.task_queue is None:
             return False
+        from cortiva.core import ledger as _lg
+
         waiting = await self._github_waiting(agent)
         if waiting is None:
-            return await self._place_the_oldest_wait_in_the_team(agent)
+            return leading and await self._place_the_oldest_wait_in_the_team(agent)
         placed_at: dict[str, dict[str, float]] = getattr(self, "_github_placed", {})
         self._github_placed = placed_at
         now = time.time()
@@ -8056,8 +8065,10 @@ class Fabric:
                     "GitHub waits on %s: %s ticked and still owed, reopened", agent.id, w["key"]
                 )
             else:
+                hours = _lg.hours_since(str(w.get("since") or "")) or 0.0
+                verb = "NOW" if hours * 3600.0 >= self._GITHUB_HEAD_AFTER_S else "ADD"
                 placed = self._plan_with_arrivals(
-                    agent, "ADD: " + w["item"], limit=1, why="GitHub waits"
+                    agent, f"{verb}: {w['item']}", limit=1, why="GitHub waits"
                 )
                 if placed is None:
                     continue
@@ -8075,7 +8086,7 @@ class Fabric:
             self._last_plan_ts[agent.id] = time.time()
             logger.info("GitHub waits on %s: %s placed as work", agent.id, w["key"])
             return True
-        return await self._place_the_oldest_wait_in_the_team(agent)
+        return leading and await self._place_the_oldest_wait_in_the_team(agent)
 
     async def _github_waiting(self, agent: Agent) -> list[dict[str, Any]] | None:
         """What GitHub shows as waiting on this agent, read at most every ten

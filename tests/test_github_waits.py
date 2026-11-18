@@ -309,3 +309,15 @@ async def test_a_pull_request_a_standing_order_covers_is_nobodys_wait(
     cto.task_queue.tasks.append(Task(id="z", description="Review and approve PR #345 immediately"))
     assert f._strike_under_standing_orders(cto) == 1
     assert "standing order from the founder" in cto.task_queue.tasks[-1].description
+
+
+@pytest.mark.asyncio
+async def test_a_step_owed_for_hours_goes_to_the_head_even_when_the_checklist_is_not_clear(
+    tmp_path: Path, monkeypatch
+) -> None:
+    f, agent = _rig(tmp_path, monkeypatch, [{**_AGAIN, "since": "2026-11-18T12:30:56Z"}])
+    agent.task_queue = TaskQueue(tasks=[Task(id="a", description="Something else in hand")])
+    monkeypatch.setattr(ledger, "hours_since", lambda stamp: 7.0)
+    assert await f._place_what_github_waits_for(agent, leading=False) is True
+    assert "o/r#346" in agent.task_queue.tasks[0].description
+    assert "- [ ] **[CRITICAL]** o/r#346" in agent.read_identity("plan")
