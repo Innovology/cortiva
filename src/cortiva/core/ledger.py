@@ -41,9 +41,12 @@ def read_pull(repo: str, number: int, token: str, timeout: float = 8.0) -> dict[
     pull = grounding._github_get(f"{base}/pulls/{number}", token, timeout)
     sha = str((pull.get("head") or {}).get("sha") or "")
     decisions: dict[str, tuple[str, str]] = {}
+    reviewers: list[str] = []
     for r in grounding._github_get(f"{base}/pulls/{number}/reviews?per_page=100", token, timeout):
         state = str(r.get("state") or "")
         who = str((r.get("user") or {}).get("login") or "")
+        if who and state != "PENDING" and who not in reviewers:
+            reviewers.append(who)
         if who and state in _DECIDING:
             decisions[who] = (state, str(r.get("submitted_at") or ""))
     pushed = ""
@@ -68,6 +71,9 @@ def read_pull(repo: str, number: int, token: str, timeout: float = 8.0) -> dict[
         "title": " ".join(str(pull.get("title") or "").split())[:70],
         "author": str((pull.get("user") or {}).get("login") or ""),
         "draft": bool(pull.get("draft")),
+        "state": str(pull.get("state") or ""),
+        "merged": bool(pull.get("merged")),
+        "reviewers": reviewers,
         "requested": [str(u.get("login") or "") for u in pull.get("requested_reviewers") or []],
         "mergeable_state": str(pull.get("mergeable_state") or ""),
         "decisions": decisions,

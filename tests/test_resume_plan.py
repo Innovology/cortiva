@@ -395,3 +395,43 @@ async def test_the_number_item_ticked_with_nothing_declared_is_opened_again(
     await f._replan_light(agent, [], idle=True)
     assert len(agent.task_queue.tasks) == n and item.status == "pending"
     assert "- [ ] Declare the number" in agent.read_identity("plan")
+
+
+@pytest.mark.asyncio
+async def test_a_number_whose_source_reads_nothing_is_its_owners_work(tmp_path: Path) -> None:
+    """Two numbers were declared with addresses that answered and returned
+    no value, and nothing on the owner's checklist said so."""
+    from cortiva.core import measures
+
+    f = _fabric(tmp_path, _Model())
+    agent = f.register_agent("cto")
+    await f.wake("cto")
+    for t in agent.task_queue.tasks:
+        t.status = "done"
+    measures._write_json(
+        f.agents_dir / measures.MEASURES_FILE,
+        {
+            "measures": [
+                {
+                    "id": "cycle",
+                    "name": "cycle",
+                    "owner": "cto",
+                    "source": {"url": "https://x.example/cycle", "path": "value"},
+                }
+            ]
+        },
+    )
+    measures._write_json(
+        f.agents_dir / measures.STATE_FILE,
+        {"cycle": {"value": None, "note": "the source did not return a number"}},
+    )
+    assert f._place_a_source_that_reads_nothing(agent) is True
+    last = agent.task_queue.tasks[-1]
+    assert "the source did not return a number" in last.description
+    assert f._is_terminal_task(last.description)
+    assert f._place_a_source_that_reads_nothing(agent) is False  # asked, and still open
+    # Once it reads, there is nothing to place.
+    last.status = "done"
+    f._MEASURE_ASK_EVERY_S = 0.0
+    measures._write_json(f.agents_dir / measures.STATE_FILE, {"cycle": {"value": 4.2}})
+    assert f._place_a_source_that_reads_nothing(agent) is False
