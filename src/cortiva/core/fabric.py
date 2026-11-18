@@ -6428,7 +6428,8 @@ class Fabric:
         "something is delivered early, or a colleague waits. Make the call and get on."
     )
     _ARRIVAL_VERDICT_RE = re.compile(
-        r"^\s*(?:[-*\d.)]+\s*)?[*_`]*(NOW|QUEUE|ADD|NONE)\b[*_`]*\s*[:—–-]?\s*(.*)$", re.IGNORECASE
+        r"^\s*(?:[-*\d.)]+\s*)?[*_`]*(NOW|QUEUE|ADD|TAKE|NONE)\b[*_`]*\s*[:—–-]?\s*(.*)$",
+        re.IGNORECASE,
     )
     _ARRIVAL_MAX_ITEMS = 5
 
@@ -7962,6 +7963,345 @@ class Fabric:
         state = _me.load_state(self.agents_dir)
         state.setdefault("_placed", {})[agent.id] = time.time()
         _me._write_json(self.agents_dir / _me.STATE_FILE, state)
+
+    # ------------------------------------------------------------------
+    # The all-hands: one person's position, heard, thought about and
+    # answered by everyone working, each from their own memory and role.
+    # ------------------------------------------------------------------
+
+    _ALLHANDS_MAX_TOKENS = 8192
+
+    def _allhands_people(self) -> tuple[str, list[str]]:
+        """Of those working, the one at the head of the organisation, and
+        everyone else. Empty when fewer than two are working."""
+        inactive = self._inactive_agent_ids()
+        working = sorted(a for a in self.agents if a not in inactive)
+        if len(working) < 2:
+            return "", []
+        above = {
+            str(c.get("id")): str(c.get("reports_to") or "") for c in self._load_directory_cards()
+        }
+
+        def depth(aid: str) -> int:
+            n, cur, seen = 0, above.get(aid, ""), {aid}
+            while cur and cur not in seen and n < 20:
+                seen.add(cur)
+                n, cur = n + 1, above.get(cur, "")
+            return n
+
+        head = min(working, key=lambda a: (depth(a), a))
+        return head, [a for a in working if a != head]
+
+    def _allhands_names(self) -> dict[str, str]:
+        names: dict[str, str] = {}
+        for c in self._load_directory_cards():
+            role = str(c.get("role") or "")
+            name = str(c.get("name") or c.get("id") or "")
+            names[str(c.get("id"))] = f"{name} ({role})" if role else name
+        return names
+
+    async def _allhands_context(
+        self, agent: Agent, record: dict[str, Any], names: dict[str, str], *, convening: bool
+    ) -> str:
+        """What this agent brings into the room: its role, who it is, how it
+        feels, what it remembers that bears on what was just said, what it
+        holds to be true, what it has promised, and everything said so far."""
+        from cortiva.core import allhands as _ah
+
+        parts: list[str] = []
+        identity = agent.read_all_identity()
+        for key, title, cap in (
+            ("responsibilities", "Your role", 1500),
+            ("soul", "Who you are", 1200),
+        ):
+            text = str(identity.get(key, "")).strip()
+            if text:
+                parts.append(f"## {title}\n{text[:cap]}")
+        try:
+            parts.append("## How you feel\n" + self._render_mood(self._read_emotion(agent)))
+        except Exception:
+            logger.debug("all-hands: no mood for %s", agent.id, exc_info=True)
+        try:
+            inner = self.plugin_manager.collect_context(agent.id)
+            if inner:
+                parts.append(str(inner)[:3000])
+        except Exception:
+            logger.debug("all-hands: no inner state for %s", agent.id, exc_info=True)
+        turns = record.get("turns") or []
+        heard = " ".join(
+            str(x) for x in ((turns[-1].get("said") if turns else ""), record.get("opening")) if x
+        )
+        try:
+            found = await self.memory.search(
+                agent.id, heard[:600] or "where we stand, our numbers, our mission", limit=6
+            )
+            rows = [self._memory_row(r) for r in found]
+            # What was said in this room is above already; recall is for
+            # what the agent knew before it walked in.
+            rows = [r for r in rows if "allhands" not in r["tags"]]
+            if rows:
+                parts.append(
+                    "## What you remember that bears on this\n"
+                    + "\n".join(f"- [{r['at']}] {r['content'][:400]}" for r in rows)
+                )
+        except Exception:
+            logger.debug("all-hands: recall failed for %s", agent.id, exc_info=True)
+        blocks = [self._measures_context(agent), self._mission_brief(agent)]
+        if convening:
+            blocks.append(self._team_truth_context(agent))
+        try:
+            blocks.append(self._commitment_salience_context(agent)[:1500])
+        except Exception:
+            logger.debug("all-hands: no commitments for %s", agent.id, exc_info=True)
+        parts += [b for b in blocks if b]
+        plan = agent.read_identity("plan").strip()
+        if plan:
+            parts.append("## Your current checklist\n" + plan[:1500])
+        said = _ah.transcript(record, names)
+        if said:
+            parts.append("## The all-hands so far\n" + said)
+        return "\n\n---\n\n".join(parts)
+
+    async def _allhands_say(
+        self, agent: Agent, context: str, prompt: str, *, quick: bool = False
+    ) -> str:
+        """One piece of one agent's thinking. An empty answer is asked for
+        once more; twice empty, the agent has said nothing."""
+        for _ in range(2):
+            self._meter_model_call(agent, "allhands")
+            response = await self.consciousness.think(
+                agent_id=agent.id,
+                context=context,
+                prompt=prompt,
+                priority=Priority.HIGH,
+                max_tokens=4096 if quick else self._ALLHANDS_MAX_TOKENS,
+                metadata={"call_type": "allhands", "quick": quick},
+            )
+            self._meter_tokens(agent, "allhands", response)
+            text = str(response.content or "").strip()
+            if text:
+                return text
+        logger.warning("All-hands: %s came back with nothing, twice", agent.id)
+        return ""
+
+    async def _allhands_remember(self, who: list[str], content: str, kind: str, mid: str) -> None:
+        for aid in who:
+            try:
+                await self.memory.store(
+                    agent_id=aid,
+                    content=content[:3000],
+                    tags=["allhands", kind],
+                    importance=7.0,
+                    metadata={"source": "allhands", "meeting": mid},
+                )
+            except Exception:
+                logger.debug("all-hands: %s could not record", aid, exc_info=True)
+
+    async def _run_allhands(self, mid: str) -> None:
+        from datetime import UTC, datetime
+
+        from cortiva.core import allhands as _ah
+
+        head, floor = self._allhands_people()
+        if not head:
+            logger.info("All-hands: fewer than two people working; not held")
+            return
+        names = self._allhands_names()
+
+        def name(aid: str) -> str:
+            return names.get(aid) or aid
+
+        turn_of = int(mid[11:] or 1) - 1 if len(mid) > 10 else 0
+        speakers = _ah.order(floor, mid[:10])
+        speakers = speakers[turn_of % len(speakers) :] + speakers[: turn_of % len(speakers)]
+        everyone = [head, *speakers]
+        record: dict[str, Any] = {
+            "id": mid,
+            "day": mid[:10],
+            "started_at": datetime.now(UTC).isoformat(),
+            "convener": head,
+            "floor": speakers,
+            "turns": [],
+            "taken": [],
+        }
+        path = _ah.record_path(self.agents_dir, mid)
+
+        def save() -> None:
+            _ah._write(path, record)
+            _ah._write(path.with_suffix(".md"), _ah.minutes(record, names))
+
+        save()
+        logger.info("All-hands %s: %s opens, %d on the floor", mid, head, len(speakers))
+        convener = self.agents[head]
+        opening = _ah.said(
+            await self._allhands_say(
+                convener,
+                await self._allhands_context(convener, record, names, convening=True),
+                _ah.OPENING,
+            )
+        )
+        if not opening:
+            record["failed"] = "the opening came back empty"
+            save()
+            return
+        record["opening"] = opening
+        save()
+        await self._allhands_remember(
+            everyone, f"All-hands {mid}. {name(head)} opened:\n{opening}", "briefing", mid
+        )
+        for aid in speakers:
+            agent = self.agents[aid]
+            spoke = _ah.said(
+                await self._allhands_say(
+                    agent,
+                    await self._allhands_context(agent, record, names, convening=False),
+                    _ah.FLOOR.format(convener=name(head)),
+                )
+            )
+            turn: dict[str, Any] = {"agent": aid, "said": spoke}
+            record["turns"].append(turn)
+            save()
+            answer = ""
+            if spoke:
+                answer = _ah.said(
+                    await self._allhands_say(
+                        convener,
+                        await self._allhands_context(convener, record, names, convening=True),
+                        _ah.ANSWER.format(speaker=name(aid)),
+                    )
+                )
+                turn["answer"] = answer
+                save()
+            logger.info(
+                "All-hands %s: %s spoke (%d chars), %s answered (%d chars)",
+                mid,
+                aid,
+                len(spoke),
+                head,
+                len(answer),
+            )
+            await self._allhands_remember(
+                everyone,
+                f"All-hands {mid}. {name(aid)} said:\n{spoke or '(nothing)'}\n\n"
+                f"{name(head)} answered:\n{answer or '(nothing)'}",
+                "floor",
+                mid,
+            )
+        closing = _ah.said(
+            await self._allhands_say(
+                convener,
+                await self._allhands_context(convener, record, names, convening=True),
+                _ah.CLOSING,
+            )
+        )
+        record["closing"] = closing
+        save()
+        await self._allhands_remember(
+            everyone,
+            f"All-hands {mid}. {name(head)} closed with this position:\n{closing or '(nothing)'}",
+            "closing",
+            mid,
+        )
+        # What leaves the room is each person's own call, placed by the system.
+        for aid in [*speakers, head]:
+            agent = self.agents[aid]
+            reply = await self._allhands_say(
+                agent,
+                await self._allhands_context(agent, record, names, convening=aid == head),
+                _ah.TAKE.format(convener=name(head)),
+                quick=True,
+            )
+            items = _ah.takes(reply)
+            if items and agent.task_queue is not None:
+                placed = self._plan_with_arrivals(
+                    agent,
+                    "\n".join(f"TAKE: {i}" for i in items),
+                    limit=_ah.MAX_TAKES,
+                    why="All-hands",
+                )
+                if placed is not None:
+                    agent.update_plan(placed)
+                    self._write_plan(agent)
+                    self._last_plan_ts[agent.id] = time.time()
+            record["taken"] += [{"agent": aid, "item": i} for i in items]
+            save()
+        record["ended_at"] = datetime.now(UTC).isoformat()
+        save()
+        self._emit(
+            "allhands.held",
+            agent_id=head,
+            meeting=mid,
+            spoke=sum(1 for t in record["turns"] if t.get("said")),
+            taken=len(record["taken"]),
+        )
+        logger.info(
+            "All-hands %s: closed; %d of %d spoke, %d item(s) taken on",
+            mid,
+            sum(1 for t in record["turns"] if t.get("said")),
+            len(speakers),
+            len(record["taken"]),
+        )
+
+    def _start_allhands(self) -> tuple[bool, str]:
+        from datetime import UTC, datetime
+
+        from cortiva.core import allhands as _ah
+
+        running = getattr(self, "_allhands_task", None)
+        if running is not None and not running.done():
+            return False, "one is in progress"
+        if not self._allhands_people()[0]:
+            return False, "fewer than two people are working"
+        mid = _ah.next_id(self.agents_dir, datetime.now(UTC).strftime("%Y-%m-%d"))
+
+        async def _run() -> None:
+            try:
+                await self._run_allhands(mid)
+            except Exception:
+                logger.exception("All-hands %s stopped on an error", mid)
+
+        self._allhands_task = asyncio.create_task(_run())
+        return True, mid
+
+    def _kick_allhands(self) -> None:
+        """Hold today's all-hands once its time has come."""
+        now = time.monotonic()
+        if now - getattr(self, "_allhands_checked_at", 0.0) < 60.0:
+            return
+        self._allhands_checked_at = now
+        try:
+            from cortiva.core import allhands as _ah
+
+            if _ah.due(self.agents_dir):
+                self._start_allhands()
+        except Exception:
+            logger.debug("all-hands check failed", exc_info=True)
+
+    async def _ipc_allhands_start(self, **_: Any) -> dict[str, Any]:
+        ok, what = self._start_allhands()
+        return (
+            {"ok": ok, "text": f"all-hands {what} started"} if ok else {"ok": False, "error": what}
+        )
+
+    async def _ipc_allhands_status(self, **_: Any) -> dict[str, Any]:
+        from cortiva.core import allhands as _ah
+
+        record = _ah.latest(self.agents_dir)
+        running = getattr(self, "_allhands_task", None)
+        at = str(_ah.config(self.agents_dir).get("at") or "")
+        head = f"Held daily at {at} UTC." if at else "Not held on a schedule."
+        if running is not None and not running.done():
+            head += " One is in progress."
+        body = _ah.minutes(record, self._allhands_names()) if record else "None held yet."
+        return {"ok": True, "text": head + "\n\n" + body}
+
+    async def _ipc_allhands_schedule(self, at: str = "", **_: Any) -> dict[str, Any]:
+        from cortiva.core import allhands as _ah
+
+        ok, what = _ah.schedule(self.agents_dir, at)
+        if not ok:
+            return {"ok": False, "error": what}
+        return {"ok": True, "text": f"held daily at {what} UTC" if what else "no longer scheduled"}
 
     async def _ipc_measure_declare(
         self,
@@ -11157,6 +11497,7 @@ class Fabric:
         # Observe mission end states off the loop; a wake only reads the file.
         self._kick_mission_probe()
         self._kick_measure_probe()
+        self._kick_allhands()
 
         # Process scheduled actions
         due = self.scheduler.tick()
@@ -11879,6 +12220,9 @@ class Fabric:
         server.register("memory.identity", self._ipc_memory_identity)
         server.register("measure.declare", self._ipc_measure_declare)
         server.register("measure.list", self._ipc_measure_list)
+        server.register("allhands.start", self._ipc_allhands_start)
+        server.register("allhands.status", self._ipc_allhands_status)
+        server.register("allhands.schedule", self._ipc_allhands_schedule)
         server.register("agent.move", _handle_agent_move)
         server.register("budget", _handle_budget)
         server.register("model.perf", _handle_model_perf)
