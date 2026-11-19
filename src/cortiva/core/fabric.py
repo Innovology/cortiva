@@ -9223,6 +9223,7 @@ class Fabric:
         path: str = "",
         drives: str = "",
         better: str = "up",
+        token_file: str = "",
         **_: Any,
     ) -> dict[str, Any]:
         """A work session declares a number its agent is held to."""
@@ -9240,11 +9241,12 @@ class Fabric:
             path=path,
             drives=drives,
             better=better,
+            token_file=token_file,
         )
         if not ok:
             return {"ok": False, "error": said}
         row = next((m for m in _me.load(self.agents_dir) if m["id"] == said), {})
-        value, note = await asyncio.to_thread(_me.read_one, row)
+        value, note = await asyncio.to_thread(_me.read_one, row, None, self.agents_dir)
         logger.info("Numbers: %s declared '%s' (%s)", who[0], said, note or f"reads {value}")
         self._measure_probed_at = 0.0  # read it into the record on the next tick
         return {

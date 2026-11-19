@@ -1549,6 +1549,7 @@ def cmd_measure(args: argparse.Namespace) -> None:
                 path=args.path,
                 drives=args.drives,
                 better=args.better,
+                token_file=args.token_file,
             )
         else:
             resp = client.send_sync("measure.list", token=token)
@@ -2178,6 +2179,11 @@ def build_parser() -> argparse.ArgumentParser:
     measure_decl.add_argument("--path", default="")
     measure_decl.add_argument("--drives", default="", help="The number this one feeds")
     measure_decl.add_argument("--better", default="up", choices=["up", "down"])
+    measure_decl.add_argument(
+        "--token-file",
+        default="",
+        help="A file under your directory holding the credential the source needs",
+    )
 
     mission_top = subparsers.add_parser(
         "mission", help="Prove what is the team's to prove, from a work session"
