@@ -5206,6 +5206,18 @@ class Fabric:
             return False
         if station is None:
             return False
+        if not author and _factory.already_failed_on(
+            station, agent.directory, task.id, task.description
+        ):
+            # The station has not changed since it failed on this very task:
+            # the task is hers to do, and her floor report says why.
+            logger.info(
+                "Station %s unchanged since it failed on this task; %s has it: %s",
+                station.name,
+                agent.id,
+                task.description[:80],
+            )
+            return False
         run = await _factory.run_station(
             station,
             task_id=task.id,

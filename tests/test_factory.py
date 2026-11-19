@@ -4,7 +4,9 @@ them with no model ask, failures on her pile, the floor in her context."""
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -171,6 +173,42 @@ async def test_a_failing_station_is_an_exception_on_her_pile_not_a_think(tmp_pat
     assert task.status == "exception" and task.error == "[station digest] SMTP refused"
     assert model.calls == 0
     assert "last failure: SMTP refused" in fabric._factory_context(agent)
+
+
+def test_a_station_that_failed_on_a_task_does_not_take_it_again_until_it_is_changed(
+    tmp_path: Path,
+) -> None:
+    """Mini-2, 19 November 2026: one station, one task, the same 422 twelve times."""
+    d = _station(tmp_path, "sign-in-check", FAIL_BODY, matches=["sign-in check"])
+    st = fx.stations(tmp_path, ready_only=True)[0]
+    task = "Ask yuki what the sign-in check should post, so I can change it"
+    assert not fx.already_failed_on(st, tmp_path, "task-26", task)
+    for _ in range(3):
+        fx.record_run(tmp_path, fx.StationRun("sign-in-check", "task-26", task, False, error="422"))
+    assert fx.already_failed_on(st, tmp_path, "task-26", task)
+    assert not fx.already_failed_on(st, tmp_path, "task-27", "Run the sign-in check")
+    rep = fx.floor_report(tmp_path)
+    assert "it has failed 3 times running since" in rep
+    assert "each time with that same failure" in rep
+    assert "before the first of them" in rep
+    # She changes it: it is a different station now, and takes the task again.
+    later = time.time() + 5
+    os.utime(d / "run.py", (later, later))
+    assert not fx.already_failed_on(st, tmp_path, "task-26", task)
+    assert "times running" not in fx.floor_report(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_the_second_time_the_task_is_hers_not_the_stations(tmp_path: Path) -> None:
+    model = _Model()
+    fabric = Fabric(agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=model)
+    agent = _executing(fabric, "amara", "Send the weekly digest")
+    _station(agent.directory, "digest", FAIL_BODY, matches=["weekly digest"])
+    task = agent.task_queue.tasks[0]
+    assert await fabric._run_through_station(agent, task) is True
+    assert task.status == "exception"
+    assert await fabric._run_through_station(agent, task) is False
+    assert len(fx.runs(agent.directory)) == 1
 
 
 @pytest.mark.asyncio
