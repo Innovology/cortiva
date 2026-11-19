@@ -405,3 +405,23 @@ def test_the_short_context_says_what_the_mission_is_for(tmp_path):
     text = ms.brief(_write(tmp_path, m), {}, now=T0)
     assert "What it is for, in Alex's words: A qualified lead the founder can attempt" in text
     assert "restated" not in text
+
+
+def test_a_mission_carries_why_it_is_being_done(tmp_path):
+    """The end without the reason is a list to tick."""
+    m = _mission()
+    m["intent"] = "A qualified lead the founder can attempt to close."
+    missions = _write(tmp_path, m)
+    for text in (ms.brief(missions, {}, now=T0), ms.context_block(missions, {}, now=T0)):
+        assert "Why it is being done: Alex has not written a reason down." in text
+    assert ms.restate(tmp_path)[0] is False
+    why = "The company has no paying customer yet, and one closed lead is the first."
+    assert ms.restate(tmp_path, why=why, by="Alex", now=T0)[0]
+    missions = ms.load(tmp_path)
+    assert missions[0]["intent"].startswith("A qualified lead")  # untouched
+    for text in (ms.brief(missions, {}, now=T0), ms.context_block(missions, {}, now=T0)):
+        assert f"Why it is being done, in Alex's words: {why}" in text
+        assert "Alex restated why this mission is being done" in text
+        assert "No reason had been written down before." in text
+    assert ms.restate(tmp_path, why="Because the board asked for it by Friday.", now=T0)[0]
+    assert "The reason given before was" in ms.brief(ms.load(tmp_path), {}, now=T0)

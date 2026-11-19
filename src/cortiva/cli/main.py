@@ -1582,6 +1582,7 @@ def cmd_mission(args: argparse.Namespace) -> None:
         ok, said = _ms.restate(
             Path(args.agents_dir).expanduser(),
             intent=args.intent,
+            why=args.why,
             mission_id=args.mission,
             by=args.by,
         )
@@ -2228,7 +2229,8 @@ def build_parser() -> argparse.ArgumentParser:
     mission_restate = mission_sub.add_parser(
         "restate", help="Say again what the mission is for (whoever issued it, at the node)"
     )
-    mission_restate.add_argument("--intent", required=True)
+    mission_restate.add_argument("--intent", default="", help="What it is to reach")
+    mission_restate.add_argument("--why", default="", help="Why it is being done")
     mission_restate.add_argument("--mission", default="")
     mission_restate.add_argument("--by", default="", help="Your name, as the team knows you")
     mission_restate.add_argument("--agents-dir", default="~/.cortiva/agents")

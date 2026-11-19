@@ -590,12 +590,18 @@ def amend(
 def restate(
     agents_dir: Path,
     *,
-    intent: str,
+    intent: str = "",
+    why: str = "",
     mission_id: str = "",
     by: str = "",
     now: datetime | None = None,
 ) -> tuple[bool, str]:
-    """Whoever issued a mission says again what it is for.
+    """Whoever issued a mission says again what it is to reach, why it is
+    being done, or both.
+
+    The end without the reason is a list to tick: a team that knows why can
+    tell when its conditions no longer serve it, and one that does not
+    cannot.
 
     The first mission on Mini-2 was written down as "lead capture live":
     a form, a store and a notification. The person who issued it meant a
@@ -613,8 +619,11 @@ def restate(
         return False, "there is no mission register to change"
     items = raw.get("missions") if isinstance(raw, dict) else raw
     said = " ".join(str(intent or "").split())
-    if len(said) < 20:
-        return False, "say what the mission is for in a full sentence"
+    reason = " ".join(str(why or "").split())
+    if not said and not reason:
+        return False, "say what changes: --intent, --why, or both"
+    if (said and len(said) < 20) or (reason and len(reason) < 20):
+        return False, "say it in a full sentence"
     active = [
         m
         for m in (items if isinstance(items, list) else [])
@@ -633,10 +642,15 @@ def restate(
         {
             "by": by or _issuer(m),
             "at": (now or datetime.now(UTC)).isoformat(),
-            "was": str(m.get("intent") or ""),
+            "was": str(m.get("intent") or "") if said else "",
+            "why_was": str(m.get("why") or "") if reason else "",
+            "why_added": bool(reason and not m.get("why")),
         }
     )
-    m["intent"] = said[:600]
+    if said:
+        m["intent"] = said[:600]
+    if reason:
+        m["why"] = reason[:600]
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(raw, indent=2), encoding="utf-8")
@@ -660,9 +674,15 @@ def _restated_fact(m: dict[str, Any]) -> str:
         for a in _as_list(_dict(c).get("amended"))
         if isinstance(a, dict) and str(a.get("at") or "") > at
     ]
-    text = f"{last.get('by') or _issuer(m)} restated what this mission is for on {_clock(at)}."
+    only_why = not last.get("was") and (last.get("why_was") or last.get("why_added"))
+    what = "why this mission is being done" if only_why else "what this mission is for"
+    text = f"{last.get('by') or _issuer(m)} restated {what} on {_clock(at)}."
     if last.get("was"):
         text += f' Before that it read: "{last["was"]}".'
+    if last.get("why_was"):
+        text += f' The reason given before was: "{last["why_was"]}".'
+    elif last.get("why_added"):
+        text += " No reason had been written down before."
     text += (
         f" {len(since)} condition(s) have been reworded since."
         if since
@@ -670,6 +690,13 @@ def _restated_fact(m: dict[str, Any]) -> str:
         "none has been reworded since."
     )
     return text
+
+
+def _why_line(m: dict[str, Any]) -> str:
+    why = str(m.get("why") or "").strip()
+    if why:
+        return f"Why it is being done, in {_issuer(m)}'s words: {why}"
+    return f"Why it is being done: {_issuer(m)} has not written a reason down."
 
 
 def _amended_note(cond: dict[str, Any]) -> str:
@@ -1057,6 +1084,7 @@ def context_block(
         intent = str(m.get("intent") or "").strip()
         if intent:
             lines.append(f"Intent ({_issuer(m)}): {intent}\n")
+        lines.append(_why_line(m) + "\n")
         restated = _restated_fact(m)
         if restated:
             lines.append(restated + "\n")
@@ -1132,6 +1160,7 @@ def brief(
         intent = str(m.get("intent") or "").strip()
         if intent:
             out.append(f"What it is for, in {_issuer(m)}'s words: {intent}")
+        out.append(_why_line(m))
         restated = _restated_fact(m)
         if restated:
             out.append(restated)
