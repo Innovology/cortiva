@@ -418,6 +418,11 @@ class Fabric:
 
         for path in sorted(self.agents_dir.iterdir()):
             if path.is_dir() and not path.name.startswith("."):
+                if path.name not in self.agents and self._only_mail_left_for_a_name(path):
+                    logger.info(
+                        "%s holds only files left for that name; nobody here is it", path.name
+                    )
+                    continue
                 if path.name not in self.agents:
                     agent = Agent.from_directory(path)
                     agent.migrate_flat_layout()
@@ -440,6 +445,38 @@ class Fabric:
             self.refresh_org_from_agents()
 
         return discovered
+
+    @staticmethod
+    def _only_mail_left_for_a_name(path: Path) -> bool:
+        """A directory that holds nothing but an inbox is not a person.
+
+        Work sessions left notes for "samantha" and "maren" in directories
+        they made by first name; the people are `cto` and `ceo`. Each
+        directory was registered as an agent, so chat to "samantha" went to
+        the directory and not to her: 37 messages unread in three days, 8
+        more to "maren" (Mini-2, 17-19 November 2026)."""
+        try:
+            names = {p.name for p in path.iterdir() if not p.name.startswith(".")}
+        except OSError:
+            return False
+        return bool(names) and names <= {"inbox", "workspace"}
+
+    def _redeliver_chat_left_for_a_name(self) -> int:
+        """Chat waiting under a name that is not an agent's id goes to the
+        agent who answers to that name."""
+        from cortiva.core import teamchat as _tc
+
+        moved = 0
+        for name in _tc.unread_names(self.agents_dir):
+            if name in self.agents:
+                continue
+            rid = self._chat_resolve(name)
+            if rid is None:
+                continue
+            n = _tc.readdress(self.agents_dir, name, rid)
+            moved += n
+            logger.info("Chat: %d message(s) left for %s delivered to %s", n, name, rid)
+        return moved
 
     def refresh_org_from_agents(self) -> None:
         """Rebuild ``self.org`` from each agent's ``deploy.yaml``.
@@ -13450,6 +13487,10 @@ class Fabric:
 
         # Register local node
         self.discover_agents()
+        try:
+            self._redeliver_chat_left_for_a_name()
+        except Exception:
+            logger.debug("could not redeliver chat left for a name", exc_info=True)
         self._load_persisted_schedules()
         self._reconcile_orphaned_sessions()
         local_node = ClusterNode(
