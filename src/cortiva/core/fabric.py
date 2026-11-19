@@ -5640,9 +5640,7 @@ class Fabric:
 
     def _schedule_artifact_check(self, agent: Agent, c: Any) -> None:
         """Resolve a 'delivered' artifact off the event loop; no loop → skip."""
-        from cortiva.core.grounding import extract_github_refs
-
-        if not extract_github_refs(str(getattr(c, "artifact", "") or "")):
+        if "://" not in str(getattr(c, "artifact", "") or ""):
             return
         try:
             loop = asyncio.get_running_loop()
@@ -5653,8 +5651,9 @@ class Fabric:
     async def _verify_artifact(
         self, agent: Agent, commitment_id: str, artifact: str, promised_at: str
     ) -> dict[str, Any]:
-        """Test a delivered artifact against GitHub with the claimant's own
-        token and write the verdict onto the commitment. A failed check
+        """Read a delivered artifact (a GitHub link with the claimant's own
+        token, any other address as it stands) and write the verdict onto
+        the commitment. A failed check
         reopens the claim as unproven, with the reason the manager will see."""
         from cortiva.core import commitments as _cm
         from cortiva.core.grounding import agent_github_token, check_artifact
