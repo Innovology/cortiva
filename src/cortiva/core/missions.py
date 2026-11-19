@@ -984,17 +984,9 @@ def context_block(
                 if str((cond.get("check") or {}).get("type") or "") == "owner":
                     asked = _dict(entry.get("owner_asked"))
                     if str(cond["id"]) in asked.get("conditions", []):
-                        lines.append(
-                            f"  {_issuer(m)} was asked {_clock(asked.get('at', ''))} by "
-                            f"{asked.get('by', 'a teammate')}. That was the team's one ask. "
-                            "Do not ask again, do not chase a colleague about it, and treat "
-                            "any item on your list that asks again as already done."
-                        )
+                        lines.append(f"  {_asked_fact(m, asked, now)}.")
                     else:
-                        lines.append(
-                            f"  Make it true, then ask {_issuer(m)} ONCE to confirm it, saying "
-                            "exactly what to do and where to look. Do not ask before it is true."
-                        )
+                        lines.append(f"  {_not_asked_fact(m)}.")
         if entry and not entry.get("complete"):
             if entry.get("last_change_at"):
                 idle = _hours_between(entry["last_change_at"], now)
@@ -1038,12 +1030,11 @@ def brief(
         unmet = [c for c in m["end_state"] if not (conds.get(str(c["id"])) or {}).get("met")]
         asked = _dict(entry.get("owner_asked"))
         if waits_on_owner(m, entry):
+            waiting = ", ".join(str(c["describe"]) for c in unmet)
             out.append(
-                f"**{m['title']}** — waits on {_issuer(m)}, who was asked "
-                f"{_clock(asked.get('at', ''))} by {asked.get('by', 'a teammate')}. Every "
-                "condition the system can check is met. Nothing here is yours to do: do not "
-                "ask again, do not chase, do not add mission work. A second message does "
-                "not make the answer come sooner."
+                f"**{m['title']}** — every condition the system can check is met. What is "
+                f"left ({waiting}) is written as {_issuer(m)}'s to confirm. "
+                f"{_asked_fact(m, asked, now)}."
             )
             continue
         out.append(
@@ -1069,15 +1060,9 @@ def brief(
             seen = conds.get(str(cond["id"])) or {}
             owner = str((cond.get("check") or {}).get("type") or "") == "owner"
             if owner and str(cond["id"]) in asked.get("conditions", []):
-                tail = (
-                    f"{_issuer(m)} was asked {_clock(asked.get('at', ''))} by "
-                    f"{asked.get('by', 'a teammate')}; it waits on them, do not ask again"
-                )
+                tail = _asked_fact(m, asked, now)
             elif owner:
-                tail = (
-                    f"only {_issuer(m)} can confirm; make it true, then ONE member asks "
-                    "once for the team"
-                )
+                tail = _not_asked_fact(m)
             else:
                 tail = str(seen.get("observed") or "not yet checked")
             if str((cond.get("check") or {}).get("type") or "") == "team":
@@ -1093,13 +1078,30 @@ def brief(
 
 
 def team_has_work(missions: list[dict[str, Any]], state: dict[str, Any]) -> bool:
-    """False when every unfinished mission waits on its owner: an idle member
-    then has no mission step to take, and asking for one produces a chase."""
-    for m in missions:
-        entry = _dict(state.get(str(m["mission_id"])))
-        if not entry.get("complete") and not waits_on_owner(m, entry):
-            return True
-    return False
+    """True while any mission is short of its end state. A mission whose last
+    conditions were written as one person's to confirm was once counted as
+    no work for anyone; five people then had nothing to do on it for six and
+    a half days (Mini-2, 2026-11-12 to 11-19). Who was asked, and when, is
+    shown to them; what to do about it is theirs."""
+    return any(not _dict(state.get(str(m["mission_id"]))).get("complete") for m in missions)
+
+
+def _asked_fact(m: dict[str, Any], asked: dict[str, Any], now: datetime | None) -> str:
+    """Who asked the mission's issuer, when, and that nothing has come back."""
+    when = str(asked.get("at") or "")
+    waited = _hours_between(when, now or datetime.now(UTC)) if when else None
+    return (
+        f"{_issuer(m)} was asked {_clock(when)} by {asked.get('by', 'a teammate')}; no "
+        f"confirmation is in the register {_age(waited)} later"
+    )
+
+
+def _not_asked_fact(m: dict[str, Any]) -> str:
+    return (
+        f"as written, only {_issuer(m)}'s confirmation in the register meets this, and "
+        f"{_issuer(m)} has not been asked; whoever owns the register can make it the "
+        "team's to prove"
+    )
 
 
 def orders_for_hands(

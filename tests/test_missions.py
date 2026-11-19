@@ -146,7 +146,7 @@ class TestOwnerConfirmed:
         assert state["m-leads-228"]["complete"] is False
         block = ms.context_block(ms.load(tmp_path), state, now=T0)
         assert "only the mission's owner can confirm" in block
-        assert "ask Alex ONCE" in block and "Do not ask before it is true" in block
+        assert "Alex has not been asked" in block and "team's to prove" in block
 
     def test_confirmed_in_the_register_is_met(self, tmp_path):
         _write(tmp_path, [self._m(confirmed_at=T0.isoformat())])
@@ -281,11 +281,12 @@ class TestAskedOnce:
         state = ms.probe(tmp_path, fetch=_world(AFTER), now=T0 + timedelta(minutes=5))
         assert state["m-leads-228"]["owner_asked"]["by"] == "andre"
         out = ms.brief(missions, state, now=T0 + timedelta(hours=1))
-        assert "waits on Alex" in out and "by andre" in out and "do not ask again" in out
-        assert "NOT MET" not in out
-        assert ms.team_has_work(missions, state) is False
+        assert "Alex's to confirm" in out and "by andre" in out
+        assert "no confirmation is in the register" in out and "later" in out
+        assert "do not" not in out.lower() and "NOT MET" not in out
+        assert ms.team_has_work(missions, state) is True
         block = ms.context_block(missions, state, now=T0 + timedelta(hours=1))
-        assert "That was the team's one ask" in block and "ONCE to confirm" not in block
+        assert "Alex was asked" in block and "ask again" not in block.lower()
 
     def test_work_coming_back_is_shown_beside_the_standing_ask(self, tmp_path):
         _write(tmp_path, [self._m()])
@@ -296,7 +297,7 @@ class TestAskedOnce:
         out = ms.brief(missions, state, now=T0 + timedelta(hours=1))
         assert ms.team_has_work(missions, state) is True
         assert "NOT MET: The contact form" in out
-        assert "Alex was asked" in out and "do not ask again" in out
+        assert "Alex was asked" in out and "do not ask again" not in out
 
     def test_a_confirmation_ends_the_ask(self, tmp_path):
         _write(tmp_path, [self._m()])
@@ -319,7 +320,7 @@ def test_mail_to_the_owner_records_the_ask_once(tmp_path):
         _agent(tmp_path, "cto"), {"to": "alex@example.com", "subject": "s", "body": "b"}
     )
     assert ms.load_state(tmp_path)["m-leads-228"]["owner_asked"]["by"] == "amara"
-    assert f._mission_has_work(_agent(tmp_path)) is False
+    assert f._mission_has_work(_agent(tmp_path)) is True
 
 
 class TestOrdersForHands:
