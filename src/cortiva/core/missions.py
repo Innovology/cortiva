@@ -587,6 +587,91 @@ def amend(
     return False, f"'{cid}' is not a condition of an active mission"
 
 
+def restate(
+    agents_dir: Path,
+    *,
+    intent: str,
+    mission_id: str = "",
+    by: str = "",
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """Whoever issued a mission says again what it is for.
+
+    The first mission on Mini-2 was written down as "lead capture live":
+    a form, a store and a notification. The person who issued it meant a
+    qualified lead he could try to close. The team met seven of eight
+    conditions in a week without anyone working on bringing a lead in, and
+    nothing let him correct what had been written (19 November 2026).
+
+    What it said before is kept. The conditions are not touched: they were
+    written for the earlier wording, the team is told so, and the register's
+    owner rewords what the team proves."""
+    path = Path(agents_dir) / MISSIONS_FILE
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, "there is no mission register to change"
+    items = raw.get("missions") if isinstance(raw, dict) else raw
+    said = " ".join(str(intent or "").split())
+    if len(said) < 20:
+        return False, "say what the mission is for in a full sentence"
+    active = [
+        m
+        for m in (items if isinstance(items, list) else [])
+        if isinstance(m, dict)
+        and m.get("status", "active") == "active"
+        and (not mission_id or str(m.get("mission_id")) == mission_id)
+    ]
+    if len(active) != 1:
+        return False, (
+            "no active mission has that id"
+            if not active
+            else "more than one mission is active: name one with --mission"
+        )
+    m = active[0]
+    m.setdefault("restated", []).append(
+        {
+            "by": by or _issuer(m),
+            "at": (now or datetime.now(UTC)).isoformat(),
+            "was": str(m.get("intent") or ""),
+        }
+    )
+    m["intent"] = said[:600]
+    try:
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        return False, "the register could not be written"
+    return True, str(m.get("mission_id"))
+
+
+def _restated_fact(m: dict[str, Any]) -> str:
+    """What changed about what the mission is for, and whether any condition
+    has been reworded since — '' when it reads as it was issued."""
+    rows = [r for r in _as_list(m.get("restated")) if isinstance(r, dict)]
+    if not rows:
+        return ""
+    last = rows[-1]
+    at = str(last.get("at") or "")
+    since = [
+        a
+        for c in m.get("end_state") or []
+        for a in _as_list(_dict(c).get("amended"))
+        if isinstance(a, dict) and str(a.get("at") or "") > at
+    ]
+    text = f"{last.get('by') or _issuer(m)} restated what this mission is for on {_clock(at)}."
+    if last.get("was"):
+        text += f' Before that it read: "{last["was"]}".'
+    text += (
+        f" {len(since)} condition(s) have been reworded since."
+        if since
+        else " Every condition below was written for the earlier wording; "
+        "none has been reworded since."
+    )
+    return text
+
+
 def _amended_note(cond: dict[str, Any]) -> str:
     """Who last changed a condition and what it said before, for a reader
     who knew it as issued."""
@@ -972,6 +1057,9 @@ def context_block(
         intent = str(m.get("intent") or "").strip()
         if intent:
             lines.append(f"Intent ({_issuer(m)}): {intent}\n")
+        restated = _restated_fact(m)
+        if restated:
+            lines.append(restated + "\n")
         lines.extend(_route_lines(m, entry, now))
         for cond in m["end_state"]:
             seen = conds.get(str(cond["id"])) or {}
@@ -1041,6 +1129,12 @@ def brief(
             f"**{m['title']}** — {entry.get('met', 0)} of {len(m['end_state'])} end-state "
             f"conditions met, as observed by the system (issued by {_issuer(m)})."
         )
+        intent = str(m.get("intent") or "").strip()
+        if intent:
+            out.append(f"What it is for, in {_issuer(m)}'s words: {intent}")
+        restated = _restated_fact(m)
+        if restated:
+            out.append(restated)
         team = [str(t) for t in _as_list(m.get("team")) if str(t).strip()]
         if team:
             out.append(f"The team on it: {', '.join(team)}.")

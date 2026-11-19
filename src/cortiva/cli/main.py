@@ -1571,6 +1571,22 @@ def cmd_mission(args: argparse.Namespace) -> None:
 
     token = os.environ.get("CORTIVA_CHAT_TOKEN", "")
     sock = os.environ.get("CORTIVA_FABRIC_SOCK", "")
+    if args.mission_command == "restate":
+        # Whoever issued the mission, at the node: not something a work
+        # session does for the team it belongs to.
+        if token:
+            print("failed: what a mission is for is restated by whoever issued it, not the team")
+            sys.exit(1)
+        from cortiva.core import missions as _ms
+
+        ok, said = _ms.restate(
+            Path(args.agents_dir).expanduser(),
+            intent=args.intent,
+            mission_id=args.mission,
+            by=args.by,
+        )
+        print(f"restated: {said}" if ok else f"failed: {said}")
+        sys.exit(0 if ok else 1)
     if not token or not sock:
         print("Missions are not available here: no session token.")
         sys.exit(1)
@@ -2209,6 +2225,13 @@ def build_parser() -> argparse.ArgumentParser:
     mission_amend.add_argument("--describe", default="")
     mission_amend.add_argument("--prove-by", default="", choices=["", "team", "owner"])
     mission_amend.add_argument("--mission", default="")
+    mission_restate = mission_sub.add_parser(
+        "restate", help="Say again what the mission is for (whoever issued it, at the node)"
+    )
+    mission_restate.add_argument("--intent", required=True)
+    mission_restate.add_argument("--mission", default="")
+    mission_restate.add_argument("--by", default="", help="Your name, as the team knows you")
+    mission_restate.add_argument("--agents-dir", default="~/.cortiva/agents")
     mission_wit = mission_sub.add_parser(
         "witness", help="Say what you saw, having done it yourself (not the one who showed it)"
     )
@@ -2407,7 +2430,7 @@ def main() -> None:
         else:
             parser.parse_args(["allhands", "--help"])
     elif args.command == "mission":
-        if args.mission_command in ("prove", "witness", "list", "amend"):
+        if args.mission_command in ("prove", "witness", "list", "amend", "restate"):
             cmd_mission(args)
         else:
             parser.parse_args(["mission", "--help"])

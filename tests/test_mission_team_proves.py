@@ -372,3 +372,36 @@ def test_shown_before_it_is_done_and_done_after_is_met(tmp_path):
     assert not _lead(ms.probe(tmp_path, fetch=_world(before), now=T0))["met"]
     after = dict(PAGES) | {"https://site.test/api/leads/count": (200, '{"real": 3}')}
     assert _lead(ms.probe(tmp_path, fetch=_world(after), now=T0))["met"]
+
+
+def test_whoever_issued_it_can_say_again_what_it_is_for(tmp_path):
+    """Mini-2, 19 November 2026: written down as a form that works, meant as a lead to close."""
+    m = _mission()
+    m["intent"] = "A visitor can leave their details and the founder is told."
+    _write(tmp_path, m)
+    assert ms.restate(tmp_path, intent="more leads")[0] is False  # not a sentence
+    meant = "A qualified lead captured by the website that the founder can attempt to close."
+    ok, mid = ms.restate(tmp_path, intent=meant, by="Alex", now=T0)
+    assert ok and mid == "m-leads"
+    missions = ms.load(tmp_path)
+    assert missions[0]["intent"] == meant
+    assert missions[0]["restated"][0]["was"].startswith("A visitor can leave")
+    # The conditions are as they were, and the team is told what they were written for.
+    assert [c["id"] for c in missions[0]["end_state"]] == ["form", "first-lead"]
+    for text in (ms.brief(missions, {}, now=T0), ms.context_block(missions, {}, now=T0)):
+        assert meant in text
+        assert "Alex restated what this mission is for" in text
+        assert 'Before that it read: "A visitor can leave' in text
+        assert "none has been reworded since" in text
+    # The register's owner rewords a condition: that is stated too.
+    said = "A qualified lead that nobody on the team submitted is in the pipeline"
+    assert ms.amend(tmp_path, "ceo", condition="first-lead", describe=said)[0]
+    assert "1 condition(s) have been reworded since" in ms.brief(ms.load(tmp_path), {}, now=T0)
+
+
+def test_the_short_context_says_what_the_mission_is_for(tmp_path):
+    m = _mission()
+    m["intent"] = "A qualified lead the founder can attempt to close."
+    text = ms.brief(_write(tmp_path, m), {}, now=T0)
+    assert "What it is for, in Alex's words: A qualified lead the founder can attempt" in text
+    assert "restated" not in text
