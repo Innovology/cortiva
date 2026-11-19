@@ -413,9 +413,16 @@ def prove(
     token_file: str = "",
     mission_id: str = "",
     now: datetime | None = None,
+    fetch: Fetch | None = None,
 ) -> tuple[bool, str]:
     """A member shows the system where it can read a condition for itself.
-    Showing it again replaces what was shown and clears who had seen it."""
+    Showing it again replaces what was shown and clears who had seen it.
+
+    The system reads the address as it is shown and keeps what it read. An
+    open address that already reads the way that is asked shows nothing
+    about anyone doing the thing: a member was told to show a health page
+    that had answered "ok" for a week as proof of a sign-in (Mini-2,
+    2026-11-19)."""
     m, cond, why = _team_condition(missions, member, condition, mission_id)
     if m is None or cond is None:
         return False, why
@@ -445,6 +452,9 @@ def prove(
         shown["contains"] = str(contains)
     if token_file:
         shown["token_file"] = str(token_file)
+    else:
+        met, observed = run_check(_shown_check(shown), fetch)
+        shown["read_when_shown"] = {"met": bool(met), "observed": str(observed)[:200]}
     proofs = load_proofs(agents_dir)
     proofs.setdefault(str(m["mission_id"]), {})[str(cond["id"])] = {"shown": shown, "seen": []}
     try:
@@ -452,6 +462,16 @@ def prove(
     except OSError:
         return False, "the proof could not be kept"
     return True, str(m["mission_id"])
+
+
+def _shown_check(shown: dict[str, Any]) -> dict[str, Any]:
+    """What the system looks for at the address a member showed."""
+    check: dict[str, Any] = {"url": str(shown.get("url") or ""), "status": 200}
+    if shown.get("path"):
+        check["json"] = {"path": shown["path"], "min": shown.get("min", 1.0)}
+    if shown.get("contains"):
+        check["contains"] = shown["contains"]
+    return check
 
 
 def witness(
@@ -633,12 +653,15 @@ def run_team_check(
     secret, problem = _secret(agents_dir, by, str(shown.get("token_file") or ""))
     if problem:
         return False, f"{by} showed {url}, but {problem}"
-    check: dict[str, Any] = {"url": url, "status": 200}
-    if shown.get("path"):
-        check["json"] = {"path": shown["path"], "min": shown.get("min", 1.0)}
-    if shown.get("contains"):
-        check["contains"] = shown["contains"]
-    met, observed = run_check(check, fetch, secret)
+    before = _dict(shown.get("read_when_shown"))
+    if before.get("met"):
+        return False, (
+            f"{by} showed {url}, but it already read that way when it was shown "
+            f"({before.get('observed')}), so it shows nothing about anyone doing this. "
+            "Show the address before the thing is done, or ask for more than it reads "
+            "now (--min above the present value), then do it"
+        )
+    met, observed = run_check(_shown_check(shown), fetch, secret)
     if not met:
         return False, f"{by} showed {url}; the system reads: {observed}"
     if secret:
@@ -688,7 +711,9 @@ def team_guide(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
         "- `cortiva mission prove --condition <id> --url <address on the real thing> "
         "--path <field in the JSON> [--min <n>] [--contains <text>] [--token-file <file "
         "under your directory holding the credential>]` shows the system where to read "
-        "it. The system reads it itself from then on.\n"
+        "it. The system reads it as you show it and from then on: show it before the "
+        "thing is done, or ask for more than it reads now. An open address that already "
+        "reads that way proves nothing.\n"
         '- `cortiva mission witness --condition <id> --saw "<what you did and what you '
         'saw>"` is for a second member, never the one who showed it. Do it yourself '
         "first; your name stands on what you say you saw.\n"

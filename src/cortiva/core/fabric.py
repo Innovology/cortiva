@@ -9273,7 +9273,8 @@ class Fabric:
         from cortiva.core import missions as _ms
 
         missions = _ms.load(self.agents_dir)
-        ok, said = _ms.prove(
+        ok, said = await asyncio.to_thread(
+            _ms.prove,
             self.agents_dir,
             missions,
             who[0],
@@ -9455,7 +9456,9 @@ class Fabric:
         try:
             from cortiva.core import missions as _ms
 
-            return _ms.context_block(mine, state)
+            block = _ms.context_block(mine, state)
+            holds = self._team_holds(mine, state) if _ms.team_guide(mine, state) else ""
+            return f"{block}\n\n{holds}" if block and holds else block
         except Exception:
             logger.debug("mission context failed for %s", agent.id, exc_info=True)
             return ""
@@ -9889,12 +9892,45 @@ class Fabric:
             from cortiva.core import missions as _ms
 
             owned = [m for m in mine if self._owns_mission_register(agent, m)]
+            guide = _ms.team_guide(mine, state)
             return "\n\n".join(
-                b for b in (_ms.team_guide(mine, state), _ms.owner_guide(owned, state)) if b
+                b
+                for b in (
+                    guide,
+                    self._team_holds(mine, state) if guide else "",
+                    _ms.owner_guide(owned, state),
+                )
+                if b
             )
         except Exception:
             logger.debug("mission team guide failed for %s", agent.id, exc_info=True)
             return ""
+
+    def _team_holds(self, missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
+        """What each member of an unfinished mission holds on this machine,
+        by name only. Stated so that nobody plans on something a colleague
+        is assumed to hold: one request to set two variables on a hosting
+        service went round four people in two hours, each of whom held only
+        a GitHub token (Mini-2, 2026-11-19)."""
+        lines: list[str] = []
+        for m in missions:
+            if (state.get(str(m["mission_id"])) or {}).get("complete"):
+                continue
+            for member in m.get("team") or []:
+                try:
+                    held = sorted(load_agent_credentials(self.agents_dir / str(member)))
+                except Exception:
+                    held = []
+                line = f"- {member}: {', '.join(held) if held else 'nothing'}"
+                if line not in lines:
+                    lines.append(line)
+        if not lines:
+            return ""
+        return (
+            "## What the team holds\n"
+            "The credentials each member has on this machine, by name. Nothing else is "
+            "held by anyone on the team.\n" + "\n".join(lines)
+        )
 
     def _mission_orders_for_hands(self, agent: Agent) -> str:
         """The agent's unfinished missions for the session that does its work,

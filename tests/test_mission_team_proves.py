@@ -10,9 +10,23 @@ import threading
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import pytest
+
 from cortiva.core import missions as ms
 
 T0 = datetime(2026, 11, 19, 9, 0, tzinfo=UTC)
+
+_REAL_NETWORK = {
+    "test_the_system_signs_in_with_the_credential_the_member_made",
+    "test_a_way_in_that_answers_without_the_credential_shows_nothing",
+}
+
+
+@pytest.fixture(autouse=True)
+def _nothing_there_until_it_is_done(request, monkeypatch):
+    """An address shown without a reader answers 404: the thing is not done yet."""
+    if request.node.name not in _REAL_NETWORK:
+        monkeypatch.setattr(ms, "_default_fetch", lambda url, timeout, bearer="": (404, ""))
 
 
 def _mission(base: str = "https://site.test") -> dict:
@@ -318,3 +332,43 @@ def test_what_the_system_reads_itself_stays_as_issued(tmp_path):
     ok, why = ms.amend(tmp_path, "ceo", condition="founder-signin", describe="ok")
     assert not ok and "full sentence" in why
     assert "amended" not in json.loads((tmp_path / ms.MISSIONS_FILE).read_text())[0]["end_state"][1]
+
+
+def test_an_open_address_that_already_read_that_way_proves_nothing(tmp_path):
+    """A member was told to show a health page that had said "ok" for a week
+    as proof that someone had signed in (Mini-2, 2026-11-19)."""
+    missions = _write(tmp_path, _mission())
+    pages = dict(PAGES) | {"https://site.test/up": (200, '{"status": "ok"}')}
+    ok, _ = ms.prove(
+        tmp_path,
+        missions,
+        "amara",
+        condition="first-lead",
+        url="https://site.test/up",
+        contains="ok",
+        fetch=_world(pages),
+    )
+    assert ok
+    ms.witness(tmp_path, missions, "yuki", condition="first-lead", saw=SAW)
+    seen = _lead(ms.probe(tmp_path, fetch=_world(pages), now=T0))
+    assert not seen["met"]
+    assert "already read that way when it was shown" in seen["observed"]
+
+
+def test_shown_before_it_is_done_and_done_after_is_met(tmp_path):
+    missions = _write(tmp_path, _mission())
+    before = dict(PAGES) | {"https://site.test/api/leads/count": (200, '{"real": 2}')}
+    ms.prove(
+        tmp_path,
+        missions,
+        "amara",
+        condition="first-lead",
+        url="https://site.test/api/leads/count",
+        path="real",
+        minimum=3,
+        fetch=_world(before),
+    )
+    ms.witness(tmp_path, missions, "yuki", condition="first-lead", saw=SAW)
+    assert not _lead(ms.probe(tmp_path, fetch=_world(before), now=T0))["met"]
+    after = dict(PAGES) | {"https://site.test/api/leads/count": (200, '{"real": 3}')}
+    assert _lead(ms.probe(tmp_path, fetch=_world(after), now=T0))["met"]

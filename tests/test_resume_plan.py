@@ -467,3 +467,22 @@ def test_an_item_set_aside_today_is_not_added_again_by_an_idle_look(tmp_path):
     assert again is not None and again.count("Build a check script") == 1
     other = fab._plan_with_arrivals(agent, "ADD: Read the weekly numbers", limit=1, why="Idle step")
     assert other is not None and "Read the weekly numbers" in other
+
+
+def test_what_the_team_holds_is_stated_by_name_and_never_by_value(tmp_path):
+    """A request to set two variables on a hosting service went round four
+    people who each held only a GitHub token (Mini-2, 2026-11-19)."""
+    import json
+
+    from cortiva.core.fabric import Fabric
+
+    fab = Fabric.__new__(Fabric)
+    fab.agents_dir = tmp_path
+    (tmp_path / "amara").mkdir()
+    (tmp_path / "amara" / "credentials.json").write_text(json.dumps({"GH_TOKEN": "s3cret"}))
+    (tmp_path / "yuki").mkdir()
+    mission = {"mission_id": "m-1", "team": ["amara", "yuki"]}
+    said = fab._team_holds([mission], {})
+    assert "- amara: GH_TOKEN" in said and "- yuki: nothing" in said
+    assert "s3cret" not in said
+    assert fab._team_holds([mission], {"m-1": {"complete": True}}) == ""
