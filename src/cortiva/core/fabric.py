@@ -2105,9 +2105,7 @@ class Fabric:
             # names a deliverable is exactly the mark-done-without-doing bug
             # (#269). Deliverable tasks fall through to consciousness, which can
             # actually emit the side-effect.
-            if action == "procedural" and not any(
-                v in task.description.lower() for v in self._DELIVERABLE_VERBS
-            ):
+            if action == "procedural" and not self._deliverable_named(task.description):
                 task.status = "done"
                 task.outcome = routine_assessment.get("result", "Completed procedurally")
                 agent.tasks_completed_today += 1
@@ -2250,6 +2248,17 @@ class Fabric:
         self.session_manager.validate_agent(agent.id, context)
 
         prompt = f"Execute this task: {task.description}\n\nDescribe what you did and the outcome."
+        owed = self._deliverable_named(task.description or "")
+        if owed and "acknowledged — not done" in (task.description or ""):
+            # Worked before, and still open: say what it is open for. An item
+            # that comes back with no reason reads as the planner repeating itself.
+            prompt += (
+                f"\n\nYou worked on this before and it is still open because it says "
+                f"'{owed}' and nothing went out from you that turn. It closes when that "
+                "goes out in this turn: the email, message or document itself. If nothing "
+                "is owed to anyone, say so in your outcome and reword or drop the item "
+                "when you next update your list."
+            )
 
         # Offer the agent its native tools (e.g. the rota optimiser for
         # scheduling-authorised agents). Function-calling is far more
@@ -4250,6 +4259,9 @@ class Fabric:
             from cortiva.core import measures as _me
 
             prompt += "\n\n" + _me.guide()
+            proving = self._mission_team_guide(agent)
+            if proving:
+                prompt += "\n\n" + proving
             numbers = self._measures_context(agent)
             if numbers:
                 prompt += "\n\n" + numbers
@@ -4898,6 +4910,34 @@ class Fabric:
         "get back to",
     )
 
+    # Words that are as often the thing read as the act of sending it. They
+    # name a deliverable only where a verb stands: at the start, or after
+    # "to", "and", "then" or a break.
+    _DELIVERABLE_NOUNS = ("email", "document", "release", "commit")
+    _DELIVERABLE_RE = (
+        lambda verbs, nouns: re.compile(
+            r"\b(?:"
+            + "|".join(re.escape(v).replace(r"\ ", r"\s+") for v in verbs if v not in nouns)
+            + r")(?:s|es|ed|d|ing)?\b"
+            + r"|(?:^|\b(?:to|and|then|please)\s+|[,;:.]\s*)(?P<noun>"
+            + "|".join(nouns)
+            + r")\b"
+        )
+    )(_DELIVERABLE_VERBS, _DELIVERABLE_NOUNS)
+
+    @classmethod
+    def _deliverable_named(cls, description: str) -> str:
+        """The word in a task that names something to send out, or "".
+
+        Read as words. Read as letters, "metrics ownership" named a thing to
+        ship and "review Andre's email" named an email to send: two reviews
+        that owed nobody anything were marked not done and ran again five and
+        nine times in an hour, until their owner wrote to the founder that the
+        planner was regenerating finished work (Mini-2, 2026-11-19)."""
+        desc = cls._STATUS_MARK_RE.sub("", description or "").strip().lower()
+        found = cls._DELIVERABLE_RE.search(desc)
+        return (found.group("noun") or found.group(0)) if found else ""
+
     def _task_delivered(self, task: Task, suffix: Any) -> bool:
         """True if completing this task is honest.
 
@@ -4910,9 +4950,7 @@ class Fabric:
         Terminal/hands-on tasks never reach this path (they return earlier from
         the terminal executor), so we don't second-guess code work here.
         """
-        desc = (task.description or "").lower()
-        requires = any(v in desc for v in self._DELIVERABLE_VERBS)
-        if not requires:
+        if not self._deliverable_named(task.description or ""):
             return True
         if suffix is None:
             return False
@@ -9134,6 +9172,99 @@ class Fabric:
             + (f"the system reads {value:g} from it now" if value is not None else note),
         }
 
+    async def _ipc_mission_prove(
+        self,
+        token: str = "",
+        condition: str = "",
+        url: str = "",
+        path: str = "",
+        minimum: float | None = None,
+        contains: str = "",
+        token_file: str = "",
+        mission: str = "",
+        **_: Any,
+    ) -> dict[str, Any]:
+        """A work session shows the system where to read a condition that is
+        the team's to prove. The system reads it at once and says what it saw."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        from cortiva.core import missions as _ms
+
+        missions = _ms.load(self.agents_dir)
+        ok, said = _ms.prove(
+            self.agents_dir,
+            missions,
+            who[0],
+            condition=condition,
+            url=url,
+            path=path,
+            minimum=minimum,
+            contains=contains,
+            token_file=token_file,
+            mission_id=mission,
+        )
+        if not ok:
+            return {"ok": False, "error": said}
+        return {"ok": True, "text": await self._mission_condition_now(said, condition, who[0])}
+
+    async def _ipc_mission_witness(
+        self,
+        token: str = "",
+        condition: str = "",
+        saw: str = "",
+        mission: str = "",
+        **_: Any,
+    ) -> dict[str, Any]:
+        """A second member, having done it themselves, says what they saw."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        from cortiva.core import missions as _ms
+
+        ok, said = _ms.witness(
+            self.agents_dir,
+            _ms.load(self.agents_dir),
+            who[0],
+            condition=condition,
+            saw=saw,
+            mission_id=mission,
+        )
+        if not ok:
+            return {"ok": False, "error": said}
+        return {"ok": True, "text": await self._mission_condition_now(said, condition, who[0])}
+
+    async def _mission_condition_now(self, mission_id: str, condition: str, by: str) -> str:
+        """Read one team-proved condition now, and have the next tick fold it
+        into the record everyone sees."""
+        from cortiva.core import missions as _ms
+
+        m = next((x for x in _ms.load(self.agents_dir) if str(x["mission_id"]) == mission_id), None)
+        cond = next((c for c in (m or {}).get("end_state", []) if str(c["id"]) == condition), None)
+        if m is None or cond is None:
+            return "kept"
+        met, observed = await asyncio.to_thread(
+            _ms.run_team_check, m, cond, _ms.load_proofs(self.agents_dir), self.agents_dir
+        )
+        logger.info(
+            "Mission %s: %s on condition %s: %s (%s)",
+            mission_id,
+            by,
+            condition,
+            "MET" if met else "not met",
+            observed,
+        )
+        self._mission_probed_at = 0.0
+        return f"{'MET' if met else 'NOT MET'}: {observed}"
+
+    async def _ipc_mission_list(self, token: str = "", **_: Any) -> dict[str, Any]:
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        agent = self.agents.get(who[0])
+        text = self._mission_context(agent) if agent is not None else ""
+        return {"ok": True, "text": text or "You are on no mission."}
+
     async def _ipc_measure_list(self, token: str = "", **_: Any) -> dict[str, Any]:
         who = self._chat_whoami(token)
         if who is None:
@@ -9612,6 +9743,20 @@ class Fabric:
             return bool(mine) and _ms.team_has_work(mine, state)
         except Exception:
             return bool(mine)
+
+    def _mission_team_guide(self, agent: Agent) -> str:
+        """How this agent's work session proves a condition that is the
+        team's to prove. Empty when none is open."""
+        mine, state = self._missions_for(agent)
+        if not mine:
+            return ""
+        try:
+            from cortiva.core import missions as _ms
+
+            return _ms.team_guide(mine, state)
+        except Exception:
+            logger.debug("mission team guide failed for %s", agent.id, exc_info=True)
+            return ""
 
     def _mission_orders_for_hands(self, agent: Agent) -> str:
         """The agent's unfinished missions for the session that does its work,
@@ -13015,6 +13160,9 @@ class Fabric:
         server.register("memory.identity", self._ipc_memory_identity)
         server.register("measure.declare", self._ipc_measure_declare)
         server.register("measure.list", self._ipc_measure_list)
+        server.register("mission.prove", self._ipc_mission_prove)
+        server.register("mission.witness", self._ipc_mission_witness)
+        server.register("mission.list", self._ipc_mission_list)
         server.register("allhands.start", self._ipc_allhands_start)
         server.register("allhands.status", self._ipc_allhands_status)
         server.register("allhands.schedule", self._ipc_allhands_schedule)

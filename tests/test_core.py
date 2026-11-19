@@ -825,3 +825,38 @@ class MockConsciousness:
             tokens_out=100,
             model="mock",
         )
+
+
+class TestDeliverableIsNamedInWords:
+    """A review that owes nobody anything is done when it has been done."""
+
+    def test_reviews_that_only_contain_the_letters_owe_nothing(self):
+        from cortiva.core.fabric import Fabric
+
+        for desc in (
+            "Review yuki's spec in #354 to confirm alignment with CEO metrics ownership "
+            "before declaration.",
+            "Review andre@workforce.example email regarding Homepage Narrative v2 routing "
+            "to ops — assess if CEO intervention is required.",
+            "Check lead-notification-deliverability against the commitments register",
+            "Read the release notes and the design document",
+            "Review yuki's spec. *(acknowledged — not done)*",
+        ):
+            assert Fabric._deliverable_named(desc) == "", desc
+
+    def test_a_task_that_says_to_send_something_still_owes_it(self):
+        from cortiva.core.fabric import Fabric
+
+        for desc, word in (
+            ("Reply to the founder about the route", "reply"),
+            ("Review Andre's email and respond with a decision", "respond"),
+            ("Email Samantha the spec", "email"),
+            ("Read the thread, then email Yuki", "email"),
+            ("Ship the fix to main", "ship"),
+            ("Review and merge PR 12", "merge"),
+            ("Write to the team about the outage", "write"),
+            ("Document the decision in the wiki", "document"),
+            ("Notifying the CFO of the change", "notifying"),
+        ):
+            assert Fabric._deliverable_named(desc), desc
+            assert Fabric._deliverable_named(desc).split()[0] == word.split()[0], desc
