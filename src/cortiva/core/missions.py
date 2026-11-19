@@ -28,6 +28,16 @@ HQ owns the register; nodes receive the active set verbatim as
 ``<agents_dir>/.missions.json`` (the same shape as standing orders). The
 fabric writes what it observed to ``<agents_dir>/.mission_state.json``.
 Nothing here calls a model.
+
+A condition the system cannot see without help is the team's to prove
+(``type: team``), not the owner's to confirm. A register that read "the
+founder has signed in" and "the founder has seen a real lead" told five
+people for six and a half days that nothing was theirs to do (Mini-2,
+2026-11-12 to 11-19), when any of them could sign in, build themselves a way
+in and judge a lead as well as the founder. One member shows the system an
+address where it can read the thing for itself; a second member does it and
+puts their name to what they saw. ``type: owner`` remains for what truly
+only that person can do.
 """
 
 from __future__ import annotations
@@ -45,6 +55,11 @@ logger = logging.getLogger(__name__)
 MISSIONS_FILE = ".missions.json"
 #: What the fabric observed, per mission. Rewritten on every probe.
 STATE_FILE = ".mission_state.json"
+#: What the team has shown and seen, per condition. Written by the fabric
+#: when a member says so; a probe only reads it.
+PROOFS_FILE = ".mission_proofs.json"
+#: A member's account of what they did and saw is a sentence, not a tick.
+MIN_SAW_CHARS = 40
 
 #: Probe at most this often; a wake reads the file, it never waits on a probe.
 PROBE_INTERVAL_S = 300.0
@@ -119,7 +134,7 @@ def _dict(value: Any) -> dict[str, Any]:
 def _check_problems(check: Any) -> list[str]:
     if not isinstance(check, dict):
         return ["no check"]
-    if str(check.get("type") or "http") == "owner":
+    if str(check.get("type") or "http") in ("owner", "team"):
         return []
     if str(check.get("type") or "http") != "http":
         return [f"unknown check type {check.get('type')!r}"]
@@ -193,7 +208,7 @@ def route_of(mission: dict[str, Any]) -> dict[str, str] | None:
 # ---------------------------------------------------------------------------
 
 
-def _default_fetch(url: str, timeout: float) -> tuple[int, str]:
+def _default_fetch(url: str, timeout: float, bearer: str = "") -> tuple[int, str]:
     """GET ``url`` without following redirects: a sign-in wall that answers
     302 must be seen as 302, not as the 200 of the page it sends you to."""
     import urllib.error
@@ -204,7 +219,10 @@ def _default_fetch(url: str, timeout: float) -> tuple[int, str]:
             return None
 
     opener = urllib.request.build_opener(_NoRedirect)
-    req = urllib.request.Request(url, headers={"User-Agent": "cortiva-mission-probe"})
+    headers = {"User-Agent": "cortiva-mission-probe"}
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    req = urllib.request.Request(url, headers=headers)
     try:
         with opener.open(req, timeout=timeout) as r:
             return int(r.status), r.read(MAX_BODY_BYTES).decode("utf-8", "replace")
@@ -231,14 +249,16 @@ def _json_at(doc: Any, path: str) -> tuple[bool, Any]:
     return True, cur
 
 
-def run_check(check: dict[str, Any], fetch: Fetch | None = None) -> tuple[bool, str]:
+def run_check(
+    check: dict[str, Any], fetch: Fetch | None = None, bearer: str = ""
+) -> tuple[bool, str]:
     """Run one check. Returns ``(met, what was observed)``. Never raises:
     a check that could not be run is not met, and says why.
 
-    ``type: owner`` is for what the system cannot see (a person signed in, a
-    customer said yes). The judge is then the human who issued the mission,
-    through the register HQ owns: it is met when the register carries
-    ``confirmed_at``. It is never the team's to set."""
+    ``type: owner`` is for what only the person who issued the mission can
+    do. It is met when the register carries ``confirmed_at``, and is never
+    the team's to set. What the team can do and show for itself is
+    ``type: team``; see :func:`run_team_check`."""
     if str(check.get("type") or "http") == "owner":
         when = str(check.get("confirmed_at") or "").strip()
         if when:
@@ -246,7 +266,10 @@ def run_check(check: dict[str, Any], fetch: Fetch | None = None) -> tuple[bool, 
         return False, "only the mission's owner can confirm this, and has not yet"
     url = str(check.get("url") or "")
     try:
-        status, body = (fetch or _default_fetch)(url, CHECK_TIMEOUT_S)
+        if bearer and fetch is None:
+            status, body = _default_fetch(url, CHECK_TIMEOUT_S, bearer)
+        else:
+            status, body = (fetch or _default_fetch)(url, CHECK_TIMEOUT_S)
     except Exception as e:
         return False, f"no answer from {url} ({type(e).__name__})"
     seen = [f"HTTP {status}"]
@@ -297,6 +320,407 @@ def run_check(check: dict[str, Any], fetch: Fetch | None = None) -> tuple[bool, 
     return met, "; ".join(seen)
 
 
+# ---------------------------------------------------------------------------
+# What the team proves for itself
+# ---------------------------------------------------------------------------
+
+
+def _host(url: str) -> str:
+    import urllib.parse
+
+    return (urllib.parse.urlsplit(str(url)).hostname or "").lower()
+
+
+def _site(host: str) -> str:
+    return ".".join(host.split(".")[-2:])
+
+
+def mission_sites(mission: dict[str, Any]) -> set[str]:
+    """The sites this mission is about: where its other checks and its route
+    look. Proof is read from the thing itself. A number a member typed into
+    a page of their own is a report, and the system does not read reports."""
+    urls = [str(_dict(c.get("check")).get("url") or "") for c in mission.get("end_state") or []]
+    urls.append(str(_dict(mission.get("route")).get("url") or ""))
+    return {_site(_host(u)) for u in urls if _host(u)}
+
+
+def load_proofs(agents_dir: Path) -> dict[str, Any]:
+    try:
+        data = json.loads((Path(agents_dir) / PROOFS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_proofs(agents_dir: Path, proofs: dict[str, Any]) -> None:
+    path = Path(agents_dir) / PROOFS_FILE
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(proofs, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _team_condition(
+    missions: list[dict[str, Any]], member: str, condition: str, mission_id: str = ""
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str]:
+    """The mission and the team-proved condition a member means."""
+    cid = str(condition or "").strip()
+    mine = for_agent(missions, member)
+    if mission_id:
+        mine = [m for m in mine if str(m["mission_id"]) == mission_id]
+    open_ids: list[str] = []
+    for m in mine:
+        for cond in m["end_state"]:
+            if str(_dict(cond.get("check")).get("type") or "") != "team":
+                continue
+            open_ids.append(str(cond["id"]))
+            if str(cond["id"]) == cid:
+                return m, cond, ""
+    if not mine:
+        return None, None, "you are on no such mission"
+    known = ", ".join(open_ids) or "none"
+    return None, None, f"'{cid}' is not a condition the team proves (those are: {known})"
+
+
+def _secret(agents_dir: Path, member: str, token_file: str) -> tuple[str, str]:
+    """The credential a member keeps in a file under their own directory.
+    ``(secret, problem)``. The file is named in the proof; its content never is."""
+    if not token_file:
+        return "", ""
+    home = (Path(agents_dir) / member).resolve()
+    path = Path(token_file)
+    path = (path if path.is_absolute() else home / path).resolve()
+    if home != path and home not in path.parents:
+        return "", f"the credential file must be under {home}"
+    try:
+        secret = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "", f"the credential file {path} cannot be read"
+    if not secret or len(secret) > 4096 or "\n" in secret:
+        return "", f"the credential file {path} does not hold one credential"
+    return secret, ""
+
+
+def prove(
+    agents_dir: Path,
+    missions: list[dict[str, Any]],
+    member: str,
+    *,
+    condition: str,
+    url: str,
+    path: str = "",
+    minimum: float | None = None,
+    contains: str = "",
+    token_file: str = "",
+    mission_id: str = "",
+    now: datetime | None = None,
+    fetch: Fetch | None = None,
+) -> tuple[bool, str]:
+    """A member shows the system where it can read a condition for itself.
+    Showing it again replaces what was shown and clears who had seen it.
+
+    The system reads the address as it is shown and keeps what it read. An
+    open address that already reads the way that is asked shows nothing
+    about anyone doing the thing: a member was told to show a health page
+    that had answered "ok" for a week as proof of a sign-in (Mini-2,
+    2026-11-19)."""
+    m, cond, why = _team_condition(missions, member, condition, mission_id)
+    if m is None or cond is None:
+        return False, why
+    if not _is_http_url(url):
+        return False, "give an http(s) address the system can read"
+    sites = mission_sites(m)
+    if sites and _site(_host(url)) not in sites:
+        return False, (
+            f"the address must be on the thing this mission is about ({', '.join(sorted(sites))}), "
+            "so the system reads the thing itself and not a copy somebody wrote down"
+        )
+    if not path and not contains:
+        return False, "say what the system should find there: --path (with --min) or --contains"
+    if token_file:
+        _, problem = _secret(agents_dir, member, token_file)
+        if problem:
+            return False, problem
+    shown: dict[str, Any] = {
+        "by": member,
+        "at": (now or datetime.now(UTC)).isoformat(),
+        "url": str(url).strip(),
+    }
+    if path:
+        shown["path"] = str(path).strip()
+        shown["min"] = float(minimum) if minimum is not None else 1.0
+    if contains:
+        shown["contains"] = str(contains)
+    if token_file:
+        shown["token_file"] = str(token_file)
+    else:
+        met, observed = run_check(_shown_check(shown), fetch)
+        shown["read_when_shown"] = {"met": bool(met), "observed": str(observed)[:200]}
+    proofs = load_proofs(agents_dir)
+    proofs.setdefault(str(m["mission_id"]), {})[str(cond["id"])] = {"shown": shown, "seen": []}
+    try:
+        _save_proofs(agents_dir, proofs)
+    except OSError:
+        return False, "the proof could not be kept"
+    return True, str(m["mission_id"])
+
+
+def _shown_check(shown: dict[str, Any]) -> dict[str, Any]:
+    """What the system looks for at the address a member showed."""
+    check: dict[str, Any] = {"url": str(shown.get("url") or ""), "status": 200}
+    if shown.get("path"):
+        check["json"] = {"path": shown["path"], "min": shown.get("min", 1.0)}
+    if shown.get("contains"):
+        check["contains"] = shown["contains"]
+    return check
+
+
+def witness(
+    agents_dir: Path,
+    missions: list[dict[str, Any]],
+    member: str,
+    *,
+    condition: str,
+    saw: str,
+    mission_id: str = "",
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """A second member, having done it themselves, says what they saw."""
+    m, cond, why = _team_condition(missions, member, condition, mission_id)
+    if m is None or cond is None:
+        return False, why
+    said = " ".join(str(saw or "").split())
+    if len(said) < MIN_SAW_CHARS:
+        return False, "say what you did and what you saw, in a sentence or two"
+    proofs = load_proofs(agents_dir)
+    proof = _dict(_dict(proofs.get(str(m["mission_id"]))).get(str(cond["id"])))
+    shown = _dict(proof.get("shown"))
+    if not shown:
+        return False, (
+            "nobody has shown the system where to read this yet; that comes first "
+            "(`cortiva mission prove`)"
+        )
+    if str(shown.get("by")) == member:
+        return False, (
+            "you showed the system this one, so you cannot also be the one who vouches "
+            "for it; a second member does it themselves and says what they saw"
+        )
+    seen = [s for s in proof.get("seen") or [] if str(_dict(s).get("by")) != member]
+    seen.append({"by": member, "at": (now or datetime.now(UTC)).isoformat(), "saw": said[:600]})
+    proofs[str(m["mission_id"])][str(cond["id"])] = {"shown": shown, "seen": seen}
+    try:
+        _save_proofs(agents_dir, proofs)
+    except OSError:
+        return False, "what you saw could not be kept"
+    return True, str(m["mission_id"])
+
+
+def amend(
+    agents_dir: Path,
+    by: str,
+    *,
+    condition: str,
+    describe: str = "",
+    prove_by: str = "",
+    mission_id: str = "",
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """The register's owner rewords a condition, or changes who proves it.
+
+    Only what the system cannot read for itself may be changed: a condition
+    the owner confirms or the team proves. What the system observes directly
+    stays as issued. Every change keeps what the condition said before and
+    who changed it, and reports to a human carry that. The caller has
+    established that ``by`` owns the register."""
+    path = Path(agents_dir) / MISSIONS_FILE
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, "there is no mission register to change"
+    items = raw.get("missions") if isinstance(raw, dict) else raw
+    cid = str(condition or "").strip()
+    said = " ".join(str(describe or "").split())
+    kind = str(prove_by or "").strip().lower()
+    if kind not in ("", "team", "owner"):
+        return False, "a condition is proved by 'team' or confirmed by 'owner'"
+    if not said and not kind:
+        return False, "say what changes: --describe, --prove-by, or both"
+    if said and len(said) < 20:
+        return False, "describe the condition in a full sentence"
+    for m in items if isinstance(items, list) else []:
+        if not isinstance(m, dict) or m.get("status", "active") != "active":
+            continue
+        if mission_id and str(m.get("mission_id")) != mission_id:
+            continue
+        for cond in m.get("end_state") or []:
+            if not isinstance(cond, dict) or str(cond.get("id")) != cid:
+                continue
+            check = _dict(cond.get("check"))
+            was = str(check.get("type") or "http")
+            if was not in ("owner", "team"):
+                return False, (
+                    f"'{cid}' is read by the system itself and stays as it was issued; "
+                    "only a condition someone confirms or proves can be changed"
+                )
+            cond.setdefault("amended", []).append(
+                {
+                    "by": by,
+                    "at": (now or datetime.now(UTC)).isoformat(),
+                    "was": str(cond.get("describe") or ""),
+                    "was_proved_by": was,
+                }
+            )
+            if said:
+                cond["describe"] = said[:400]
+            if kind:
+                check["type"] = kind
+                cond["check"] = check
+            why = problems(m)
+            if why:
+                return False, "; ".join(why)
+            try:
+                tmp = path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+                tmp.replace(path)
+            except OSError:
+                return False, "the register could not be written"
+            return True, str(m.get("mission_id"))
+    return False, f"'{cid}' is not a condition of an active mission"
+
+
+def _amended_note(cond: dict[str, Any]) -> str:
+    """Who last changed a condition and what it said before, for a reader
+    who knew it as issued."""
+    changes = [c for c in _as_list(cond.get("amended")) if isinstance(c, dict)]
+    if not changes:
+        return ""
+    last = changes[-1]
+    return (
+        f" (changed by {last.get('by', 'its owner')}, {_clock(str(last.get('at') or ''))}; "
+        f'it read: "{last.get("was", "")}")'
+    )
+
+
+def owner_guide(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
+    """For the one who owns the register: the conditions that wait on a
+    confirmation, and how to make them the team's to prove."""
+    lines: list[str] = []
+    for m in missions:
+        conds = _dict(_dict(state.get(str(m["mission_id"]))).get("conditions"))
+        for cond in m["end_state"]:
+            if str(_dict(cond.get("check")).get("type") or "") != "owner":
+                continue
+            if _dict(conds.get(str(cond["id"]))).get("met"):
+                continue
+            lines.append(f"- `{cond['id']}`: {cond['describe']}")
+    if not lines:
+        return ""
+    return (
+        "## 🎯 You own this mission's register\n"
+        "These conditions wait on one person's confirmation, and while they do the "
+        "system tells your team nothing here is theirs to do:\n" + "\n".join(lines) + "\n"
+        "Ask of each: could a member of the team do this and show it as well as that "
+        "person could? If so, make it the team's to prove, in words that say what a "
+        "member does:\n"
+        '`cortiva mission amend --condition <id> --prove-by team --describe "<the '
+        'condition, as the team will prove it>"`\n'
+        "What it said before, and that you changed it, stays on the record and on every "
+        "report to a human."
+    )
+
+
+def run_team_check(
+    mission: dict[str, Any],
+    cond: dict[str, Any],
+    proofs: dict[str, Any],
+    agents_dir: Path,
+    fetch: Fetch | None = None,
+) -> tuple[bool, str]:
+    """A condition the team proves. Met when the system reads it at the
+    address a member showed, and a different member has done it themselves
+    and said what they saw. The owner's word in the register still settles it."""
+    when = str(_dict(cond.get("check")).get("confirmed_at") or "").strip()
+    if when:
+        return True, f"confirmed by the mission's owner, {_clock(when)}"
+    proof = _dict(_dict(proofs.get(str(mission["mission_id"]))).get(str(cond["id"])))
+    shown = _dict(proof.get("shown"))
+    if not shown:
+        return False, (
+            "the team's to prove, and nobody has yet: one of you does it, and shows the "
+            "system an address where it can read it for itself"
+        )
+    by = str(shown.get("by") or "a member")
+    url = str(shown.get("url") or "")
+    secret, problem = _secret(agents_dir, by, str(shown.get("token_file") or ""))
+    if problem:
+        return False, f"{by} showed {url}, but {problem}"
+    before = _dict(shown.get("read_when_shown"))
+    if before.get("met"):
+        return False, (
+            f"{by} showed {url}, but it already read that way when it was shown "
+            f"({before.get('observed')}), so it shows nothing about anyone doing this. "
+            "Show the address before the thing is done, or ask for more than it reads "
+            "now (--min above the present value), then do it"
+        )
+    met, observed = run_check(_shown_check(shown), fetch, secret)
+    if not met:
+        return False, f"{by} showed {url}; the system reads: {observed}"
+    if secret:
+        # A way in that also answers without the credential is not a way in.
+        try:
+            status, _ = (fetch or _default_fetch)(url, CHECK_TIMEOUT_S)
+        except Exception:
+            status = 0
+        if fetch is None and status == 200:
+            return False, (
+                f"{by} showed {url} with a credential, but it answers the same without "
+                "one, so it shows nothing about signing in"
+            )
+    others = [_dict(s) for s in proof.get("seen") or [] if str(_dict(s).get("by")) != by]
+    if not others:
+        return False, (
+            f"the system reads it at {url} ({observed}), shown by {by}. It waits for a "
+            f"second member, not {by}, to do it themselves and say what they saw"
+        )
+    names = ", ".join(str(s.get("by")) for s in others)
+    return True, f"shown by {by}, seen by {names}; the system reads {observed}"
+
+
+def team_guide(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
+    """How a work session proves a condition that is the team's to prove.
+    Empty when no such condition is open."""
+    lines: list[str] = []
+    for m in missions:
+        conds = _dict(_dict(state.get(str(m["mission_id"]))).get("conditions"))
+        for cond in m["end_state"]:
+            if str(_dict(cond.get("check")).get("type") or "") != "team":
+                continue
+            seen = _dict(conds.get(str(cond["id"])))
+            if seen.get("met"):
+                continue
+            lines.append(
+                f"- `{cond['id']}`: {cond['describe']} ({seen.get('observed') or 'not yet checked'})"
+            )
+    if not lines:
+        return ""
+    return (
+        "## 🎯 Conditions the team proves for itself\n"
+        "Nobody outside the team is waited on for these. Do the thing the way the person "
+        "it is for would: sign in, look, judge. If there is no way in for you, make one "
+        "(an account, a credential, a route for agents) by the path your work normally "
+        "travels.\n" + "\n".join(lines) + "\n"
+        "- `cortiva mission prove --condition <id> --url <address on the real thing> "
+        "--path <field in the JSON> [--min <n>] [--contains <text>] [--token-file <file "
+        "under your directory holding the credential>]` shows the system where to read "
+        "it. The system reads it as you show it and from then on: show it before the "
+        "thing is done, or ask for more than it reads now. An open address that already "
+        "reads that way proves nothing.\n"
+        '- `cortiva mission witness --condition <id> --saw "<what you did and what you '
+        'saw>"` is for a second member, never the one who showed it. Do it yourself '
+        "first; your name stands on what you say you saw.\n"
+        "- `cortiva mission list` shows every condition as the system last read it."
+    )
+
+
 def load_state(agents_dir: Path) -> dict[str, Any]:
     try:
         data = json.loads((Path(agents_dir) / STATE_FILE).read_text(encoding="utf-8"))
@@ -338,6 +762,7 @@ def probe(
     it off the event loop."""
     now_iso = (now or datetime.now(UTC)).isoformat()
     old = load_state(agents_dir)
+    proofs = load_proofs(agents_dir)
     state: dict[str, Any] = {}
     for m in load(agents_dir):
         mid = str(m["mission_id"])
@@ -346,7 +771,10 @@ def probe(
         conds: dict[str, Any] = {}
         for cond in m["end_state"]:
             cid = str(cond["id"])
-            met, observed = run_check(cond["check"], fetch)
+            if str(_dict(cond["check"]).get("type") or "") == "team":
+                met, observed = run_team_check(m, cond, proofs, Path(agents_dir), fetch)
+            else:
+                met, observed = run_check(cond["check"], fetch)
             conds[cid] = _observe(_dict(prev_conds.get(cid)), met, observed, now_iso)
         entry: dict[str, Any] = {
             "checked_at": now_iso,
@@ -652,6 +1080,8 @@ def brief(
                 )
             else:
                 tail = str(seen.get("observed") or "not yet checked")
+            if str((cond.get("check") or {}).get("type") or "") == "team":
+                tail += f". Nobody waits on {_issuer(m)} for this"
             out.append(f"- NOT MET: {cond['describe']} ({tail})")
     if not out:
         return ""
@@ -761,5 +1191,5 @@ def status_stamp(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
         for cond in m["end_state"]:
             seen = conds.get(str(cond["id"])) or {}
             mark = "✓" if seen.get("met") else "✗"
-            lines.append(f"  {mark} {cond['describe']}")
+            lines.append(f"  {mark} {cond['describe']}{_amended_note(cond)}")
     return "\n".join(lines)

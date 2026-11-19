@@ -2105,9 +2105,7 @@ class Fabric:
             # names a deliverable is exactly the mark-done-without-doing bug
             # (#269). Deliverable tasks fall through to consciousness, which can
             # actually emit the side-effect.
-            if action == "procedural" and not any(
-                v in task.description.lower() for v in self._DELIVERABLE_VERBS
-            ):
+            if action == "procedural" and not self._deliverable_named(task.description):
                 task.status = "done"
                 task.outcome = routine_assessment.get("result", "Completed procedurally")
                 agent.tasks_completed_today += 1
@@ -2250,6 +2248,17 @@ class Fabric:
         self.session_manager.validate_agent(agent.id, context)
 
         prompt = f"Execute this task: {task.description}\n\nDescribe what you did and the outcome."
+        owed = self._deliverable_named(task.description or "")
+        if owed and "acknowledged — not done" in (task.description or ""):
+            # Worked before, and still open: say what it is open for. An item
+            # that comes back with no reason reads as the planner repeating itself.
+            prompt += (
+                f"\n\nYou worked on this before and it is still open because it says "
+                f"'{owed}' and nothing went out from you that turn. It closes when that "
+                "goes out in this turn: the email, message or document itself. If nothing "
+                "is owed to anyone, say so in your outcome and reword or drop the item "
+                "when you next update your list."
+            )
 
         # Offer the agent its native tools (e.g. the rota optimiser for
         # scheduling-authorised agents). Function-calling is far more
@@ -4250,6 +4259,9 @@ class Fabric:
             from cortiva.core import measures as _me
 
             prompt += "\n\n" + _me.guide()
+            proving = self._mission_team_guide(agent)
+            if proving:
+                prompt += "\n\n" + proving
             numbers = self._measures_context(agent)
             if numbers:
                 prompt += "\n\n" + numbers
@@ -4898,6 +4910,34 @@ class Fabric:
         "get back to",
     )
 
+    # Words that are as often the thing read as the act of sending it. They
+    # name a deliverable only where a verb stands: at the start, or after
+    # "to", "and", "then" or a break.
+    _DELIVERABLE_NOUNS = ("email", "document", "release", "commit")
+    _DELIVERABLE_RE = (
+        lambda verbs, nouns: re.compile(
+            r"\b(?:"
+            + "|".join(re.escape(v).replace(r"\ ", r"\s+") for v in verbs if v not in nouns)
+            + r")(?:s|es|ed|d|ing)?\b"
+            + r"|(?:^|\b(?:to|and|then|please)\s+|[,;:.]\s*)(?P<noun>"
+            + "|".join(nouns)
+            + r")\b"
+        )
+    )(_DELIVERABLE_VERBS, _DELIVERABLE_NOUNS)
+
+    @classmethod
+    def _deliverable_named(cls, description: str) -> str:
+        """The word in a task that names something to send out, or "".
+
+        Read as words. Read as letters, "metrics ownership" named a thing to
+        ship and "review Andre's email" named an email to send: two reviews
+        that owed nobody anything were marked not done and ran again five and
+        nine times in an hour, until their owner wrote to the founder that the
+        planner was regenerating finished work (Mini-2, 2026-11-19)."""
+        desc = cls._STATUS_MARK_RE.sub("", description or "").strip().lower()
+        found = cls._DELIVERABLE_RE.search(desc)
+        return (found.group("noun") or found.group(0)) if found else ""
+
     def _task_delivered(self, task: Task, suffix: Any) -> bool:
         """True if completing this task is honest.
 
@@ -4910,9 +4950,7 @@ class Fabric:
         Terminal/hands-on tasks never reach this path (they return earlier from
         the terminal executor), so we don't second-guess code work here.
         """
-        desc = (task.description or "").lower()
-        requires = any(v in desc for v in self._DELIVERABLE_VERBS)
-        if not requires:
+        if not self._deliverable_named(task.description or ""):
             return True
         if suffix is None:
             return False
@@ -6554,11 +6592,28 @@ class Fabric:
             for x in (t, *(t.subtasks or []))
             if x.status in ("pending", "in_progress", "acknowledged")
         }
+        # Set aside today, and offered again by an idle look: it stays set
+        # aside. One item that its station could not run was added again every
+        # six minutes until it was fifteen of the twenty-one lines on a
+        # checklist (Mini-2, 2026-11-19).
+        set_aside = {
+            _task_key(x.description)
+            for t in tasks
+            for x in (t, *(t.subtasks or []))
+            if x.status in ("skipped", "exception")
+        }
         now: list[str] = []
         queued: list[str] = []
         for what, item in verdicts:
             key = _task_key(item)
             if not key or key in {_task_key(x) for x in now + queued}:
+                continue
+            if why == "Idle step" and key in set_aside:
+                logger.info(
+                    "Idle step for %s: '%s' was set aside today; not added again",
+                    agent.id,
+                    item[:70],
+                )
                 continue
             if key in open_keys:
                 if what != "NOW":
@@ -6799,6 +6854,12 @@ class Fabric:
                     agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
                     logger.info("Idle: %s was given the number it is held to as work", agent.id)
                     return
+
+            # A condition that waits on one person is its register owner's to
+            # look at: could the team do and show it instead?
+            if self._place_conditions_that_wait_on_one_person(agent):
+                agent._idle_interval_s = self._IDLE_REASSESS_INTERVAL_S
+                return
 
             # A number with a source that reads nothing is its owner's work too.
             if self._place_a_source_that_reads_nothing(agent):
@@ -8601,6 +8662,64 @@ class Fabric:
             logger.debug("number check failed for %s", agent.id, exc_info=True)
             return False
 
+    _REGISTER_LOOK_EVERY_S = 86400.0
+
+    def _place_conditions_that_wait_on_one_person(self, agent: Agent) -> bool:
+        """Place, for the owner of a mission's register, the decision on each
+        condition that waits on one person's confirmation: once a day while
+        any does. A register read "the founder has signed in" for six and a
+        half days; its owner could have made it the team's to prove and was
+        never shown that the choice was theirs (Mini-2, 2026-11-19)."""
+        from cortiva.core import missions as _ms
+
+        if agent.task_queue is None:
+            return False
+        mine, state = self._missions_for(agent)
+        placed_at: dict[str, float] = self.__dict__.setdefault("_register_look_at", {})
+        for m in mine:
+            mid = str(m["mission_id"])
+            entry = state.get(mid) or {}
+            if entry.get("complete") or not self._owns_mission_register(agent, m):
+                continue
+            waiting = _ms._owner_unmet(m, entry) if entry else []
+            if not waiting:
+                continue
+            if time.time() - placed_at.get(mid, 0.0) < self._REGISTER_LOOK_EVERY_S:
+                continue
+            ids = ", ".join(f"`{c}`" for c in waiting)
+            item = (
+                f"The register of the mission '{m['title']}' is yours. Its condition(s) {ids} "
+                "wait on one person's confirmation, and while they do the system tells the "
+                "team nothing there is theirs to do. For each, decide whether a member of the "
+                "team could do it and show it as well as that person could; if so run "
+                '`cortiva mission amend --condition <id> --prove-by team --describe "<the '
+                'condition, as the team will prove it>"` (`cortiva mission list` shows them)'
+            )
+            key = _task_key(item)
+            same = [t for t in agent.task_queue.tasks if _task_key(t.description) == key]
+            if any(t.status in ("pending", "in_progress", "acknowledged") for t in same):
+                continue
+            if same:
+                same[0].status = "pending"
+            else:
+                placed = self._plan_with_arrivals(
+                    agent, "ADD: " + item, limit=1, why="Register owned"
+                )
+                if placed is None:
+                    continue
+                agent.update_plan(placed)
+            placed_at[mid] = time.time()
+            self._write_plan(agent)
+            self._last_plan_ts[agent.id] = time.time()
+            logger.info(
+                "Mission %s: %s owns the register and is given %d waiting condition(s) to decide",
+                mid,
+                agent.id,
+                len(waiting),
+            )
+            return True
+        return False
+
     def _place_a_source_that_reads_nothing(self, agent: Agent) -> bool:
         """Place, for a number's owner, the work of making its declared
         source return a value: again every two hours while it reads nothing,
@@ -9134,6 +9253,154 @@ class Fabric:
             + (f"the system reads {value:g} from it now" if value is not None else note),
         }
 
+    async def _ipc_mission_prove(
+        self,
+        token: str = "",
+        condition: str = "",
+        url: str = "",
+        path: str = "",
+        minimum: float | None = None,
+        contains: str = "",
+        token_file: str = "",
+        mission: str = "",
+        **_: Any,
+    ) -> dict[str, Any]:
+        """A work session shows the system where to read a condition that is
+        the team's to prove. The system reads it at once and says what it saw."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        from cortiva.core import missions as _ms
+
+        missions = _ms.load(self.agents_dir)
+        ok, said = await asyncio.to_thread(
+            _ms.prove,
+            self.agents_dir,
+            missions,
+            who[0],
+            condition=condition,
+            url=url,
+            path=path,
+            minimum=minimum,
+            contains=contains,
+            token_file=token_file,
+            mission_id=mission,
+        )
+        if not ok:
+            return {"ok": False, "error": said}
+        return {"ok": True, "text": await self._mission_condition_now(said, condition, who[0])}
+
+    async def _ipc_mission_witness(
+        self,
+        token: str = "",
+        condition: str = "",
+        saw: str = "",
+        mission: str = "",
+        **_: Any,
+    ) -> dict[str, Any]:
+        """A second member, having done it themselves, says what they saw."""
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        from cortiva.core import missions as _ms
+
+        ok, said = _ms.witness(
+            self.agents_dir,
+            _ms.load(self.agents_dir),
+            who[0],
+            condition=condition,
+            saw=saw,
+            mission_id=mission,
+        )
+        if not ok:
+            return {"ok": False, "error": said}
+        return {"ok": True, "text": await self._mission_condition_now(said, condition, who[0])}
+
+    async def _mission_condition_now(self, mission_id: str, condition: str, by: str) -> str:
+        """Read one team-proved condition now, and have the next tick fold it
+        into the record everyone sees."""
+        from cortiva.core import missions as _ms
+
+        m = next((x for x in _ms.load(self.agents_dir) if str(x["mission_id"]) == mission_id), None)
+        cond = next((c for c in (m or {}).get("end_state", []) if str(c["id"]) == condition), None)
+        if m is None or cond is None:
+            return "kept"
+        met, observed = await asyncio.to_thread(
+            _ms.run_team_check, m, cond, _ms.load_proofs(self.agents_dir), self.agents_dir
+        )
+        logger.info(
+            "Mission %s: %s on condition %s: %s (%s)",
+            mission_id,
+            by,
+            condition,
+            "MET" if met else "not met",
+            observed,
+        )
+        self._mission_probed_at = 0.0
+        return f"{'MET' if met else 'NOT MET'}: {observed}"
+
+    def _owns_mission_register(self, agent: Agent, mission: dict[str, Any]) -> bool:
+        """The register's owner: the member the mission names, otherwise the
+        head of the organisation when they are on its team."""
+        named = str(mission.get("owner") or "").strip().lower()
+        if named:
+            return named == agent.id.lower()
+        team = [str(t).lower() for t in mission.get("team") or []]
+        return self._is_org_head(agent) and (not team or agent.id.lower() in team)
+
+    async def _ipc_mission_amend(
+        self,
+        token: str = "",
+        condition: str = "",
+        describe: str = "",
+        prove_by: str = "",
+        mission: str = "",
+        **_: Any,
+    ) -> dict[str, Any]:
+        """The register's owner rewords a condition or changes who proves it."""
+        who = self._chat_whoami(token)
+        agent = self.agents.get(who[0]) if who else None
+        if who is None or agent is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        from cortiva.core import missions as _ms
+
+        mine = [
+            m
+            for m in _ms.load(self.agents_dir)
+            if (not mission or str(m["mission_id"]) == mission)
+            and any(str(c["id"]) == condition for c in m["end_state"])
+        ]
+        if not mine:
+            return {"ok": False, "error": f"'{condition}' is not a condition of an active mission"}
+        if not self._owns_mission_register(agent, mine[0]):
+            return {
+                "ok": False,
+                "error": "the mission's register is not yours to change; put the case to "
+                "whoever owns it",
+            }
+        ok, said = _ms.amend(
+            self.agents_dir,
+            who[0],
+            condition=condition,
+            describe=describe,
+            prove_by=prove_by,
+            mission_id=str(mine[0]["mission_id"]),
+        )
+        if not ok:
+            return {"ok": False, "error": said}
+        logger.info("Mission %s: %s changed condition %s", said, who[0], condition)
+        self._emit("mission.amended", mission_id=said, condition=condition, by=who[0])
+        self._mission_probed_at = 0.0
+        return {"ok": True, "text": f"changed '{condition}'; the team sees it on its next look"}
+
+    async def _ipc_mission_list(self, token: str = "", **_: Any) -> dict[str, Any]:
+        who = self._chat_whoami(token)
+        if who is None:
+            return {"ok": False, "error": "this session has no valid token"}
+        agent = self.agents.get(who[0])
+        text = self._mission_context(agent) if agent is not None else ""
+        return {"ok": True, "text": text or "You are on no mission."}
+
     async def _ipc_measure_list(self, token: str = "", **_: Any) -> dict[str, Any]:
         who = self._chat_whoami(token)
         if who is None:
@@ -9189,7 +9456,9 @@ class Fabric:
         try:
             from cortiva.core import missions as _ms
 
-            return _ms.context_block(mine, state)
+            block = _ms.context_block(mine, state)
+            holds = self._team_holds(mine, state) if _ms.team_guide(mine, state) else ""
+            return f"{block}\n\n{holds}" if block and holds else block
         except Exception:
             logger.debug("mission context failed for %s", agent.id, exc_info=True)
             return ""
@@ -9612,6 +9881,56 @@ class Fabric:
             return bool(mine) and _ms.team_has_work(mine, state)
         except Exception:
             return bool(mine)
+
+    def _mission_team_guide(self, agent: Agent) -> str:
+        """How this agent's work session proves a condition that is the
+        team's to prove. Empty when none is open."""
+        mine, state = self._missions_for(agent)
+        if not mine:
+            return ""
+        try:
+            from cortiva.core import missions as _ms
+
+            owned = [m for m in mine if self._owns_mission_register(agent, m)]
+            guide = _ms.team_guide(mine, state)
+            return "\n\n".join(
+                b
+                for b in (
+                    guide,
+                    self._team_holds(mine, state) if guide else "",
+                    _ms.owner_guide(owned, state),
+                )
+                if b
+            )
+        except Exception:
+            logger.debug("mission team guide failed for %s", agent.id, exc_info=True)
+            return ""
+
+    def _team_holds(self, missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
+        """What each member of an unfinished mission holds on this machine,
+        by name only. Stated so that nobody plans on something a colleague
+        is assumed to hold: one request to set two variables on a hosting
+        service went round four people in two hours, each of whom held only
+        a GitHub token (Mini-2, 2026-11-19)."""
+        lines: list[str] = []
+        for m in missions:
+            if (state.get(str(m["mission_id"])) or {}).get("complete"):
+                continue
+            for member in m.get("team") or []:
+                try:
+                    held = sorted(load_agent_credentials(self.agents_dir / str(member)))
+                except Exception:
+                    held = []
+                line = f"- {member}: {', '.join(held) if held else 'nothing'}"
+                if line not in lines:
+                    lines.append(line)
+        if not lines:
+            return ""
+        return (
+            "## What the team holds\n"
+            "The credentials each member has on this machine, by name. Nothing else is "
+            "held by anyone on the team.\n" + "\n".join(lines)
+        )
 
     def _mission_orders_for_hands(self, agent: Agent) -> str:
         """The agent's unfinished missions for the session that does its work,
@@ -13015,6 +13334,10 @@ class Fabric:
         server.register("memory.identity", self._ipc_memory_identity)
         server.register("measure.declare", self._ipc_measure_declare)
         server.register("measure.list", self._ipc_measure_list)
+        server.register("mission.prove", self._ipc_mission_prove)
+        server.register("mission.witness", self._ipc_mission_witness)
+        server.register("mission.list", self._ipc_mission_list)
+        server.register("mission.amend", self._ipc_mission_amend)
         server.register("allhands.start", self._ipc_allhands_start)
         server.register("allhands.status", self._ipc_allhands_status)
         server.register("allhands.schedule", self._ipc_allhands_schedule)

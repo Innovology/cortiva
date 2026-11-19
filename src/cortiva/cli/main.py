@@ -1561,6 +1561,60 @@ def cmd_measure(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_mission(args: argparse.Namespace) -> None:
+    """Prove a mission condition that is the team's to prove, from a work session."""
+    import os
+    from pathlib import Path
+
+    from cortiva.core.ipc import FabricClient
+
+    token = os.environ.get("CORTIVA_CHAT_TOKEN", "")
+    sock = os.environ.get("CORTIVA_FABRIC_SOCK", "")
+    if not token or not sock:
+        print("Missions are not available here: no session token.")
+        sys.exit(1)
+    client = FabricClient(socket_path=Path(sock))
+    try:
+        if args.mission_command == "prove":
+            resp = client.send_sync(
+                "mission.prove",
+                token=token,
+                condition=args.condition,
+                url=args.url,
+                path=args.path,
+                minimum=args.min,
+                contains=args.contains,
+                token_file=args.token_file,
+                mission=args.mission,
+            )
+        elif args.mission_command == "amend":
+            resp = client.send_sync(
+                "mission.amend",
+                token=token,
+                condition=args.condition,
+                describe=args.describe,
+                prove_by=args.prove_by,
+                mission=args.mission,
+            )
+        elif args.mission_command == "witness":
+            resp = client.send_sync(
+                "mission.witness",
+                token=token,
+                condition=args.condition,
+                saw=args.saw,
+                mission=args.mission,
+            )
+        else:
+            resp = client.send_sync("mission.list", token=token)
+        if not resp.get("ok"):
+            print(f"failed: {resp.get('error', 'unknown error')}")
+            sys.exit(1)
+        print(resp.get("text") or "ok")
+    except Exception as exc:
+        print(f"Missions are unreachable: {exc}")
+        sys.exit(1)
+
+
 def cmd_agent_sleep(args: argparse.Namespace) -> None:
     """Put an agent to sleep via the running daemon."""
     from cortiva.core.ipc import FabricClient
@@ -2125,6 +2179,37 @@ def build_parser() -> argparse.ArgumentParser:
     measure_decl.add_argument("--drives", default="", help="The number this one feeds")
     measure_decl.add_argument("--better", default="up", choices=["up", "down"])
 
+    mission_top = subparsers.add_parser(
+        "mission", help="Prove what is the team's to prove, from a work session"
+    )
+    mission_sub = mission_top.add_subparsers(dest="mission_command")
+    mission_sub.add_parser("list", help="Every condition as the system last read it")
+    mission_prove = mission_sub.add_parser(
+        "prove", help="Show the system where it can read a condition for itself"
+    )
+    mission_prove.add_argument("--condition", required=True)
+    mission_prove.add_argument("--url", required=True)
+    mission_prove.add_argument("--path", default="", help="Field in the JSON returned")
+    mission_prove.add_argument("--min", type=float, default=None, help="Least it must read")
+    mission_prove.add_argument("--contains", default="", help="Text that must be there")
+    mission_prove.add_argument(
+        "--token-file", default="", help="File under your directory holding the credential"
+    )
+    mission_prove.add_argument("--mission", default="")
+    mission_amend = mission_sub.add_parser(
+        "amend", help="Reword a condition or change who proves it (the register's owner only)"
+    )
+    mission_amend.add_argument("--condition", required=True)
+    mission_amend.add_argument("--describe", default="")
+    mission_amend.add_argument("--prove-by", default="", choices=["", "team", "owner"])
+    mission_amend.add_argument("--mission", default="")
+    mission_wit = mission_sub.add_parser(
+        "witness", help="Say what you saw, having done it yourself (not the one who showed it)"
+    )
+    mission_wit.add_argument("--condition", required=True)
+    mission_wit.add_argument("--saw", required=True)
+    mission_wit.add_argument("--mission", default="")
+
     mem_top = subparsers.add_parser("memory", help="Your own memory, from a work session")
     mem_sub = mem_top.add_subparsers(dest="memory_command")
     mem_search = mem_sub.add_parser("search", help="Find what you know about something")
@@ -2315,6 +2400,11 @@ def main() -> None:
             cmd_allhands(args)
         else:
             parser.parse_args(["allhands", "--help"])
+    elif args.command == "mission":
+        if args.mission_command in ("prove", "witness", "list", "amend"):
+            cmd_mission(args)
+        else:
+            parser.parse_args(["mission", "--help"])
     elif args.command == "measure":
         if args.measure_command in ("declare", "list"):
             cmd_measure(args)

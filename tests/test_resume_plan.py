@@ -435,3 +435,54 @@ async def test_a_number_whose_source_reads_nothing_is_its_owners_work(tmp_path: 
     f._MEASURE_ASK_EVERY_S = 0.0
     measures._write_json(f.agents_dir / measures.STATE_FILE, {"cycle": {"value": 4.2}})
     assert f._place_a_source_that_reads_nothing(agent) is False
+
+
+def test_an_item_set_aside_today_is_not_added_again_by_an_idle_look(tmp_path):
+    """One item its station could not run came back every six minutes until
+    it was fifteen of twenty-one lines (Mini-2, 2026-11-19)."""
+    from types import SimpleNamespace
+
+    from cortiva.core.agent import Task, TaskQueue
+    from cortiva.core.fabric import Fabric
+
+    fab = Fabric.__new__(Fabric)
+    plan: dict[str, str] = {}
+    agent = SimpleNamespace(
+        id="ceo",
+        task_queue=TaskQueue(
+            tasks=[
+                Task(
+                    id="t1",
+                    description="Build a check script to validate PR statuses",
+                    status="skipped",
+                )
+            ]
+        ),
+        read_identity=lambda _k: plan.get("plan", ""),
+        write_identity=lambda k, v: plan.__setitem__(k, v),
+    )
+    again = fab._plan_with_arrivals(
+        agent, "ADD: Build a check script to validate PR statuses", limit=1, why="Idle step"
+    )
+    assert again is not None and again.count("Build a check script") == 1
+    other = fab._plan_with_arrivals(agent, "ADD: Read the weekly numbers", limit=1, why="Idle step")
+    assert other is not None and "Read the weekly numbers" in other
+
+
+def test_what_the_team_holds_is_stated_by_name_and_never_by_value(tmp_path):
+    """A request to set two variables on a hosting service went round four
+    people who each held only a GitHub token (Mini-2, 2026-11-19)."""
+    import json
+
+    from cortiva.core.fabric import Fabric
+
+    fab = Fabric.__new__(Fabric)
+    fab.agents_dir = tmp_path
+    (tmp_path / "amara").mkdir()
+    (tmp_path / "amara" / "credentials.json").write_text(json.dumps({"GH_TOKEN": "s3cret"}))
+    (tmp_path / "yuki").mkdir()
+    mission = {"mission_id": "m-1", "team": ["amara", "yuki"]}
+    said = fab._team_holds([mission], {})
+    assert "- amara: GH_TOKEN" in said and "- yuki: nothing" in said
+    assert "s3cret" not in said
+    assert fab._team_holds([mission], {"m-1": {"complete": True}}) == ""
