@@ -276,3 +276,45 @@ def test_a_credential_file_outside_the_members_own_directory_is_refused(tmp_path
         token_file="../cto/t",
     )
     assert not ok and "must be under" in why
+
+
+def _owner_mission() -> dict:
+    m = _mission()
+    m["end_state"][1] = {
+        "id": "founder-signin",
+        "describe": "Alex has signed in to the lead pipeline",
+        "check": {"type": "owner"},
+    }
+    return m
+
+
+def test_the_registers_owner_makes_a_waiting_condition_the_teams(tmp_path):
+    missions = _write(tmp_path, _owner_mission())
+    state = ms.probe(tmp_path, fetch=_world(PAGES), now=T0)
+    assert "cortiva mission amend" in ms.owner_guide(missions, state)
+    ok, _ = ms.amend(
+        tmp_path,
+        "ceo",
+        condition="founder-signin",
+        prove_by="team",
+        describe="A member of the team has signed in to the lead pipeline",
+        now=T0,
+    )
+    assert ok
+    missions = ms.load(tmp_path)
+    cond = missions[0]["end_state"][1]
+    assert cond["check"]["type"] == "team" and cond["describe"].startswith("A member")
+    assert cond["amended"][0]["was"] == "Alex has signed in to the lead pipeline"
+    state = ms.probe(tmp_path, fetch=_world(PAGES), now=T0)
+    assert ms.team_has_work(missions, state) and ms.owner_guide(missions, state) == ""
+    stamp = ms.status_stamp(missions, state)
+    assert "changed by ceo" in stamp and "Alex has signed in" in stamp
+
+
+def test_what_the_system_reads_itself_stays_as_issued(tmp_path):
+    _write(tmp_path, _owner_mission())
+    ok, why = ms.amend(tmp_path, "ceo", condition="form", describe="The form is somewhere, roughly")
+    assert not ok and "stays as it was issued" in why
+    ok, why = ms.amend(tmp_path, "ceo", condition="founder-signin", describe="ok")
+    assert not ok and "full sentence" in why
+    assert "amended" not in json.loads((tmp_path / ms.MISSIONS_FILE).read_text())[0]["end_state"][1]

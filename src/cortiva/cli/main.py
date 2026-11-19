@@ -1587,6 +1587,15 @@ def cmd_mission(args: argparse.Namespace) -> None:
                 token_file=args.token_file,
                 mission=args.mission,
             )
+        elif args.mission_command == "amend":
+            resp = client.send_sync(
+                "mission.amend",
+                token=token,
+                condition=args.condition,
+                describe=args.describe,
+                prove_by=args.prove_by,
+                mission=args.mission,
+            )
         elif args.mission_command == "witness":
             resp = client.send_sync(
                 "mission.witness",
@@ -2187,6 +2196,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--token-file", default="", help="File under your directory holding the credential"
     )
     mission_prove.add_argument("--mission", default="")
+    mission_amend = mission_sub.add_parser(
+        "amend", help="Reword a condition or change who proves it (the register's owner only)"
+    )
+    mission_amend.add_argument("--condition", required=True)
+    mission_amend.add_argument("--describe", default="")
+    mission_amend.add_argument("--prove-by", default="", choices=["", "team", "owner"])
+    mission_amend.add_argument("--mission", default="")
     mission_wit = mission_sub.add_parser(
         "witness", help="Say what you saw, having done it yourself (not the one who showed it)"
     )
@@ -2385,7 +2401,7 @@ def main() -> None:
         else:
             parser.parse_args(["allhands", "--help"])
     elif args.command == "mission":
-        if args.mission_command in ("prove", "witness", "list"):
+        if args.mission_command in ("prove", "witness", "list", "amend"):
             cmd_mission(args)
         else:
             parser.parse_args(["mission", "--help"])

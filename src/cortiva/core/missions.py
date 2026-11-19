@@ -494,6 +494,120 @@ def witness(
     return True, str(m["mission_id"])
 
 
+def amend(
+    agents_dir: Path,
+    by: str,
+    *,
+    condition: str,
+    describe: str = "",
+    prove_by: str = "",
+    mission_id: str = "",
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """The register's owner rewords a condition, or changes who proves it.
+
+    Only what the system cannot read for itself may be changed: a condition
+    the owner confirms or the team proves. What the system observes directly
+    stays as issued. Every change keeps what the condition said before and
+    who changed it, and reports to a human carry that. The caller has
+    established that ``by`` owns the register."""
+    path = Path(agents_dir) / MISSIONS_FILE
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, "there is no mission register to change"
+    items = raw.get("missions") if isinstance(raw, dict) else raw
+    cid = str(condition or "").strip()
+    said = " ".join(str(describe or "").split())
+    kind = str(prove_by or "").strip().lower()
+    if kind not in ("", "team", "owner"):
+        return False, "a condition is proved by 'team' or confirmed by 'owner'"
+    if not said and not kind:
+        return False, "say what changes: --describe, --prove-by, or both"
+    if said and len(said) < 20:
+        return False, "describe the condition in a full sentence"
+    for m in items if isinstance(items, list) else []:
+        if not isinstance(m, dict) or m.get("status", "active") != "active":
+            continue
+        if mission_id and str(m.get("mission_id")) != mission_id:
+            continue
+        for cond in m.get("end_state") or []:
+            if not isinstance(cond, dict) or str(cond.get("id")) != cid:
+                continue
+            check = _dict(cond.get("check"))
+            was = str(check.get("type") or "http")
+            if was not in ("owner", "team"):
+                return False, (
+                    f"'{cid}' is read by the system itself and stays as it was issued; "
+                    "only a condition someone confirms or proves can be changed"
+                )
+            cond.setdefault("amended", []).append(
+                {
+                    "by": by,
+                    "at": (now or datetime.now(UTC)).isoformat(),
+                    "was": str(cond.get("describe") or ""),
+                    "was_proved_by": was,
+                }
+            )
+            if said:
+                cond["describe"] = said[:400]
+            if kind:
+                check["type"] = kind
+                cond["check"] = check
+            why = problems(m)
+            if why:
+                return False, "; ".join(why)
+            try:
+                tmp = path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+                tmp.replace(path)
+            except OSError:
+                return False, "the register could not be written"
+            return True, str(m.get("mission_id"))
+    return False, f"'{cid}' is not a condition of an active mission"
+
+
+def _amended_note(cond: dict[str, Any]) -> str:
+    """Who last changed a condition and what it said before, for a reader
+    who knew it as issued."""
+    changes = [c for c in _as_list(cond.get("amended")) if isinstance(c, dict)]
+    if not changes:
+        return ""
+    last = changes[-1]
+    return (
+        f" (changed by {last.get('by', 'its owner')}, {_clock(str(last.get('at') or ''))}; "
+        f'it read: "{last.get("was", "")}")'
+    )
+
+
+def owner_guide(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
+    """For the one who owns the register: the conditions that wait on a
+    confirmation, and how to make them the team's to prove."""
+    lines: list[str] = []
+    for m in missions:
+        conds = _dict(_dict(state.get(str(m["mission_id"]))).get("conditions"))
+        for cond in m["end_state"]:
+            if str(_dict(cond.get("check")).get("type") or "") != "owner":
+                continue
+            if _dict(conds.get(str(cond["id"]))).get("met"):
+                continue
+            lines.append(f"- `{cond['id']}`: {cond['describe']}")
+    if not lines:
+        return ""
+    return (
+        "## 🎯 You own this mission's register\n"
+        "These conditions wait on one person's confirmation, and while they do the "
+        "system tells your team nothing here is theirs to do:\n" + "\n".join(lines) + "\n"
+        "Ask of each: could a member of the team do this and show it as well as that "
+        "person could? If so, make it the team's to prove, in words that say what a "
+        "member does:\n"
+        '`cortiva mission amend --condition <id> --prove-by team --describe "<the '
+        'condition, as the team will prove it>"`\n'
+        "What it said before, and that you changed it, stays on the record and on every "
+        "report to a human."
+    )
+
+
 def run_team_check(
     mission: dict[str, Any],
     cond: dict[str, Any],
@@ -1052,5 +1166,5 @@ def status_stamp(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
         for cond in m["end_state"]:
             seen = conds.get(str(cond["id"])) or {}
             mark = "✓" if seen.get("met") else "✗"
-            lines.append(f"  {mark} {cond['describe']}")
+            lines.append(f"  {mark} {cond['describe']}{_amended_note(cond)}")
     return "\n".join(lines)
