@@ -202,9 +202,11 @@ def test_a_station_that_failed_on_a_task_does_not_take_it_again_until_it_is_chan
 async def test_the_second_time_the_task_is_hers_not_the_stations(tmp_path: Path) -> None:
     model = _Model()
     fabric = Fabric(agents_dir=tmp_path / "agents", memory=InMemoryAdapter(), consciousness=model)
-    agent = _executing(fabric, "amara", "Send the weekly digest")
+    # The wording is longer than a run record keeps, as real tasks are.
+    agent = _executing(fabric, "amara", "Send the weekly digest " + "to everyone " * 30)
     _station(agent.directory, "digest", FAIL_BODY, matches=["weekly digest"])
     task = agent.task_queue.tasks[0]
+    assert len(task.description) > 200
     assert await fabric._run_through_station(agent, task) is True
     assert task.status == "exception"
     assert await fabric._run_through_station(agent, task) is False

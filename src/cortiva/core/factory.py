@@ -366,6 +366,7 @@ _TAKES_CALLER = re.compile(r"agent_dir|CORTIVA_AGENT_DIR")
 
 
 _TRIP_AFTER = 3
+_KEPT = 200  # how much of a task's wording a run record keeps
 
 
 def _touched(station: Station) -> float:
@@ -402,7 +403,7 @@ def already_failed_on(station: Station, agent_dir: Path, task_id: str, descripti
     the 422": his own answer to the failure, taken each time by the station
     it was about."""
     return any(
-        r.task_id == task_id and r.description == description
+        r.task_id == task_id and r.description == description[:_KEPT]
         for r in failing_unchanged(station, agent_dir)
     )
 
@@ -655,7 +656,7 @@ async def run_station(
             return StationRun(
                 station=station.name,
                 task_id=task_id,
-                description=description[:200],
+                description=description[:_KEPT],
                 ok=False,
                 error=f"could not start: {exc}"[:300],
             )
@@ -674,7 +675,7 @@ async def run_station(
         return StationRun(
             station=station.name,
             task_id=task_id,
-            description=description[:200],
+            description=description[:_KEPT],
             ok=False,
             error=f"could not start: {exc}"[:300],
         )
@@ -690,7 +691,7 @@ async def run_station(
         return StationRun(
             station=station.name,
             task_id=task_id,
-            description=description[:200],
+            description=description[:_KEPT],
             ok=False,
             error=f"timed out after {station.timeout_s:.0f}s",
             seconds=round(time.monotonic() - started, 2),
@@ -703,7 +704,7 @@ async def run_station(
         return StationRun(
             station=station.name,
             task_id=task_id,
-            description=description[:200],
+            description=description[:_KEPT],
             ok=False,
             error=f"exit {proc.returncode}: {(err or out).strip()[-300:]}",
             seconds=seconds,
@@ -712,7 +713,7 @@ async def run_station(
         return StationRun(
             station=station.name,
             task_id=task_id,
-            description=description[:200],
+            description=description[:_KEPT],
             ok=False,
             error=f"no JSON result on stdout: {out.strip()[-200:]}",
             seconds=seconds,
@@ -721,7 +722,7 @@ async def run_station(
     return StationRun(
         station=station.name,
         task_id=task_id,
-        description=description[:200],
+        description=description[:_KEPT],
         ok=ok,
         summary=str(result.get("summary") or "")[:400],
         artifact=str(result.get("artifact") or "")[:300],
