@@ -24,20 +24,24 @@ def test_the_ask_names_what_was_being_done_what_is_in_the_way_and_the_end():
 
 
 def test_an_answer_gives_the_end_and_the_route():
-    end, route = rt.parse(
+    end, route, bold = rt.parse(
         "END: the founder knows about each new lead\n"
-        "ROUTE: Email Alex myself with the lead's details and tell the team in chat"
+        "FIRST: Email Alex myself with the lead's details and tell the team in chat\n"
+        "BOLD: Post the finding on LinkedIn with a link to the contact form\n"
+        "WILD: Ring the five firms we most want and ask them straight out"
     )
     assert end == "the founder knows about each new lead"
     assert route.startswith("Email Alex myself")
+    assert [b.split()[0] for b in bold] == ["Post", "Ring"]
 
 
 def test_no_other_way_is_an_answer_too():
-    assert rt.parse("END: books closed\nROUTE: NONE, the bank holds the only copy") == (
+    assert rt.parse("END: books closed\nFIRST: NONE, the bank holds the only copy") == (
         "books closed",
         "",
+        [],
     )
-    assert rt.parse("I cannot think of anything.") == ("", "")
+    assert rt.parse("I cannot think of anything.") == ("", "", [])
 
 
 def test_saying_nothing_is_in_the_way_is_not_an_obstacle():
@@ -67,7 +71,8 @@ def test_a_blocked_member_is_asked_and_the_other_route_is_their_next_task(tmp_pa
     fab, agent, asked = _fabric(
         tmp_path,
         "END: the founder knows about each new lead\n"
-        "ROUTE: Email Alex myself with the lead's details and tell the team in chat",
+        "FIRST: Email Alex myself with the lead's details and tell the team in chat\n"
+        "BOLD: Post the finding on LinkedIn with a link to the contact form",
     )
     agent.task_queue.tasks.append(Task(id="t1", description="Something queued", priority=3))
     said = asyncio.run(fab._with_another_route(agent, TASK, WALL))
@@ -75,6 +80,11 @@ def test_a_blocked_member_is_asked_and_the_other_route_is_their_next_task(tmp_pa
     first = agent.task_queue.next_pending()
     assert first.description.startswith(rt.MARK) and "Email Alex myself" in first.description
     assert WALL in said and "Meanwhile I am taking another route" in said
+    # The bolder idea is kept as work, behind the place to start, and the
+    # person asked for help hears it.
+    kept = [t for t in agent.task_queue.tasks if t.description.startswith(rt.BOLD_MARK)]
+    assert len(kept) == 1 and "LinkedIn" in kept[0].description
+    assert "A bolder idea I have for it: Post the finding on LinkedIn" in said
     # The same wall told to a second person is one wall: asked once, queued once.
     asyncio.run(fab._with_another_route(agent, TASK, WALL))
     assert len(asked) == 1
@@ -82,13 +92,13 @@ def test_a_blocked_member_is_asked_and_the_other_route_is_their_next_task(tmp_pa
 
 
 def test_when_they_name_none_the_person_asked_is_told_so(tmp_path):
-    fab, agent, _ = _fabric(tmp_path, "END: books closed\nROUTE: NONE, only the bank has it")
+    fab, agent, _ = _fabric(tmp_path, "END: books closed\nFIRST: NONE, only the bank has it")
     said = asyncio.run(fab._with_another_route(agent, TASK, WALL))
-    assert "I have not found another route to the same end" in said
+    assert "I have not found another place to start" in said
     assert agent.task_queue.tasks == []
 
 
 def test_nothing_in_the_way_asks_nobody_anything(tmp_path):
-    fab, agent, asked = _fabric(tmp_path, "ROUTE: something long enough to count")
+    fab, agent, asked = _fabric(tmp_path, "FIRST: something long enough to count")
     assert asyncio.run(fab._with_another_route(agent, TASK, "None")) == "None"
     assert asked == []

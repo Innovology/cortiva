@@ -38,36 +38,42 @@ def prompt(task: str, obstacle: str, ends: str = "") -> str:
     if ends.strip():
         lines.append(f"What your team is here to reach:\n{ends.strip()}")
     lines.append(
-        "The thing in the way belongs to one way of doing this. Think about what this "
-        "piece of work was for: what would be true, and for whom, if it had gone through. "
-        "Name the nearest such thing, not the team's whole goal. Then name one other way "
-        "to make that same thing true that you can start now, with what you already have, "
-        "waiting on nobody. A cruder way that has the same effect counts. It is the same "
-        "size as the work it replaces: another way to the same result, not a different "
-        "project.\n"
-        "Answer on two lines:\n"
+        "The thing in the way belongs to one way of doing this. Think about what the work "
+        "was for: what would be true, and for whom, if it had gone through. Then think of "
+        "other ways to make that true. Think widely: the crude, the bold and the "
+        "unreasonable are all welcome, and an idea nobody has tried is worth more than "
+        "waiting.\n"
+        "Answer on these lines:\n"
         "END: <what the work was for, in a few words>\n"
-        "ROUTE: <the one action you will take now>\n"
-        "If there is truly no other way, write ROUTE: NONE and why in a few words."
+        "FIRST: <the place to start: one thing you can do now, with what you already have, "
+        "waiting on nobody>\n"
+        "BOLD: <a bolder way to the same end, even if it needs someone's yes>\n"
+        "WILD: <the boldest idea you have for it>\n"
+        "Leave out BOLD or WILD if you have none. If there is truly nowhere to start, "
+        "write FIRST: NONE and why in a few words."
     )
     return "\n\n".join(lines)
 
 
-def parse(answer: str) -> tuple[str, str]:
-    """(the end the work served, the other route) from the member's answer.
-    The route is empty when they named none."""
-    end = route = ""
+def parse(answer: str) -> tuple[str, str, list[str]]:
+    """(the end the work served, the place to start, the bolder ideas) from
+    the member's answer. The place to start is empty when they named none."""
+    end = first = ""
+    bold: list[str] = []
     for raw in (answer or "").splitlines():
         line = raw.strip().lstrip("*-• ").strip()
         head, _, rest = line.partition(":")
         key = head.strip().strip("*").upper()
+        said = rest.strip().strip("*").strip()
         if key == "END" and not end:
-            end = rest.strip().strip("*").strip()
-        elif key == "ROUTE" and not route:
-            route = rest.strip().strip("*").strip()
-    if not route or route.upper().startswith("NONE") or len(route) < 12:
-        return end[:200], ""
-    return end[:200], route[:400]
+            end = said
+        elif key in ("FIRST", "ROUTE") and not first:
+            first = said
+        elif key in ("BOLD", "WILD") and len(said) >= 12 and not said.upper().startswith("NONE"):
+            bold.append(said[:400])
+    if not first or first.upper().startswith("NONE") or len(first) < 12:
+        first = ""
+    return end[:200], first[:400], bold[:2]
 
 
 def task_text(route: str, end: str, task: str) -> str:
@@ -79,9 +85,23 @@ def task_text(route: str, end: str, task: str) -> str:
     )
 
 
-def meanwhile(route: str, end: str) -> str:
+BOLD_MARK = "A bolder idea of yours"
+
+
+def bold_text(idea: str, end: str) -> str:
+    """A bolder idea, kept as work: it is put to whoever can say yes, with
+    what it would take, so it is weighed and not lost."""
+    served = f" for the same end ({end})" if end else " for the same end"
+    return (
+        f"{BOLD_MARK}{served}: {idea} Put it to whoever can say yes, with what it would "
+        "take and what it would get; start it yourself if it needs nobody's yes."
+    )
+
+
+def meanwhile(route: str, end: str, bold: list[str] | None = None) -> str:
     """What the person asked for help is told the member is doing meanwhile."""
+    more = "".join(f"\nA bolder idea I have for it: {b}" for b in bold or [])
     if route:
         served = f" (the end it serves: {end})" if end else ""
-        return f"Meanwhile I am taking another route to the same end{served}: {route}"
-    return "I have not found another route to the same end; this one waits on you."
+        return f"Meanwhile I am taking another route to the same end{served}: {route}{more}"
+    return f"I have not found another place to start; this one waits on you.{more}"

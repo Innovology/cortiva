@@ -12121,25 +12121,28 @@ class Fabric:
             max_tokens=1024,
             metadata={"call_type": "route", "quick": True},
         )
-        end, route = _rt.parse(str(response.content or ""))
-        if not route:
-            logger.info("Route: %s named no other way past: %s", agent.id, obstacle[:120])
-            return f"{obstacle}\n\n{_rt.meanwhile('', end)}"
+        end, route, bold = _rt.parse(str(response.content or ""))
         if agent.task_queue is None:
             agent.task_queue = TaskQueue(tasks=[])
+        queue = agent.task_queue.tasks
+        open_now = {t.description or "" for t in queue if t.status in ("pending", "in_progress")}
+        # The queue works the highest number first: the place to start goes
+        # ahead of whatever was next, the bolder ideas behind it.
+        top = max((t.priority for t in queue), default=1)
+        low = min((t.priority for t in queue), default=1)
+        for idea in bold:
+            text = _rt.bold_text(idea, end)
+            if text not in open_now:
+                queue.append(Task(id=uuid.uuid4().hex[:12], description=text, priority=low))
+            logger.info("Route: %s has a bolder idea for '%s': %s", agent.id, end[:80], idea[:160])
+        if not route:
+            logger.info("Route: %s named nowhere to start past: %s", agent.id, obstacle[:120])
+            return f"{obstacle}\n\n{_rt.meanwhile('', end, bold)}"
         text = _rt.task_text(route, end, task_desc)
-        if not any(
-            (t.description or "") == text and t.status in ("pending", "in_progress")
-            for t in agent.task_queue.tasks
-        ):
-            # The queue works the highest number first; this goes ahead of
-            # whatever was next.
-            top = max((t.priority for t in agent.task_queue.tasks), default=1)
-            agent.task_queue.tasks.insert(
-                0, Task(id=uuid.uuid4().hex[:12], description=text, priority=top)
-            )
+        if text not in open_now:
+            queue.insert(0, Task(id=uuid.uuid4().hex[:12], description=text, priority=top))
         logger.info("Route: %s takes another way to '%s': %s", agent.id, end[:80], route[:160])
-        return f"{obstacle}\n\n{_rt.meanwhile(route, end)}"
+        return f"{obstacle}\n\n{_rt.meanwhile(route, end, bold)}"
 
     def _route_escalation(self, agent: Agent, task_desc: str, escalation: str) -> None:
         """Send a blocked agent's escalation to a human who can act on it.
