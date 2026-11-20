@@ -54,6 +54,7 @@ def test_the_first_thing_asked_is_what_has_to_happen_in_the_world_and_who_does_i
     how = rt.reach_prompt(needs, by, taken=["Write to five firms"])
     assert "Nobody on your team can do it for them" in how and "Write to five firms" in how
     assert "is not that person acting" in how
+    assert "Bold is welcome and false is not" in how
 
 
 def test_an_end_that_needs_an_outsider_asks_how_to_reach_them(tmp_path):
