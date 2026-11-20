@@ -91,6 +91,96 @@ class TaskQueue:
         return summary
 
 
+def _normalise_intent(description: str) -> str:
+    """Canonical intent fingerprint for planner seed-time dedupe.
+
+    Strips priority markers, markdown, trailing dates/IDs/SHAs, lowercases,
+    and returns the first 12 content words.  Two tasks phrasing the same
+    work usually collide; two phrasing different work rarely do.
+    """
+    d = description or ""
+    d = re.sub(r"\*\*\[\w+\]\*\*\s*", "", d)  # **[CRITICAL]** etc.
+    d = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", d)  # [text](url) → text
+    # Strip specific ref patterns BEFORE the general # → space substitution so
+    # "#364" becomes " " rather than "364" (which the later word-filter misses).
+    d = re.sub(r"#\d+", " ", d)  # #123 PR/issue refs
+    d = re.sub(r"[`*_~#]", " ", d)  # remaining markdown punctuation
+    d = d.lower()
+    d = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", d)  # dates 2026-11-17
+    d = re.sub(  # UUIDs
+        r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+        " ",
+        d,
+    )
+    d = re.sub(r"\btask-\d+\b", " ", d)  # task-NNN IDs
+    d = re.sub(r"\b[0-9a-f]{7,40}\b", " ", d)  # git SHAs (after lowercase)
+    words = [w for w in d.split() if re.match(r"[a-z0-9]", w)]
+    return " ".join(words[:12])
+
+
+def _station_name_from_description(description: str) -> str | None:
+    """Extract the station slug from a 'build ... station X' task.
+
+    Returns lowercase slug or None when not a station-build task.
+    """
+    d = description.lower()
+    if "station" not in d or not re.search(r"\bbuild\b", d):
+        return None
+    # "build <name> station"
+    m = re.search(r"\bbuild\s+(?:the\s+)?['\"]?([a-z0-9][a-z0-9_-]*)['\"]?\s+station\b", d)
+    if m:
+        return m.group(1)
+    # "station <name>"
+    m = re.search(r"\bstation\s+['\"]?([a-z0-9][a-z0-9_-]*)['\"]?", d)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _is_station_ready(station_name: str, agent_dir: Path) -> bool:
+    """Return True when factory/<station_name>/station.yaml has ready: true."""
+    yaml_path = agent_dir / "factory" / station_name / "station.yaml"
+    if not yaml_path.exists():
+        return False
+    try:
+        content = yaml_path.read_text(encoding="utf-8")
+        return bool(re.search(r"^\s*ready\s*:\s*true\s*$", content, re.MULTILINE | re.IGNORECASE))
+    except OSError:
+        return False
+
+
+def _load_done_intents(agent_dir: Path, days: int = 7) -> set[str]:
+    """Read normalised intents from done.jsonl, up to `days` days back."""
+    done_file = agent_dir / "done.jsonl"
+    if not done_file.exists():
+        return set()
+    cutoff = datetime.now(UTC).timestamp() - days * 86400
+    intents: set[str] = set()
+    try:
+        for raw in done_file.read_text(encoding="utf-8").splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                record = json.loads(raw)
+                ts_str = record.get("at", "")
+                if ts_str:
+                    try:
+                        ts = datetime.fromisoformat(ts_str).timestamp()
+                        if ts < cutoff:
+                            continue
+                    except ValueError:
+                        pass
+                intent = record.get("intent", "")
+                if intent:
+                    intents.add(intent)
+            except json.JSONDecodeError:
+                pass
+    except OSError:
+        pass
+    return intents
+
+
 def _parse_plan(plan_text: str) -> TaskQueue:
     """Parse plan markdown into a TaskQueue.
 
@@ -495,6 +585,66 @@ class Agent:
     # Maximum number of replans per wake cycle
     MAX_REPLANS = 3
 
+    def _filter_duplicate_tasks(
+        self, tasks: list[Task]
+    ) -> tuple[list[Task], list[tuple[str, str, str]]]:
+        """Remove duplicate or already-done tasks from a parsed task list.
+
+        Checks in order:
+        1. Same normalised intent already seen in this queue (intra-queue).
+        2. Intent already completed this week (done.jsonl).
+        3. Station-build task whose station.yaml is already ready: true.
+
+        Returns (filtered_tasks, drops) where each drop is
+        (reason, intent, original_description).  Non-pending tasks (already
+        done/skipped/etc.) are always kept — only pending duplicates are dropped.
+        """
+        done_intents = _load_done_intents(self.directory)
+        seen_intents: set[str] = set()
+        filtered: list[Task] = []
+        drops: list[tuple[str, str, str]] = []
+
+        for task in tasks:
+            intent = _normalise_intent(task.description)
+
+            # Intra-queue dedupe applies to all tasks (done or pending): a plan
+            # that lists the same completed item three times keeps only the first.
+            if intent and intent in seen_intents:
+                drops.append(("intra-queue duplicate", intent, task.description))
+                continue
+
+            # For pending tasks only: also check done.jsonl and station.yaml.
+            if task.status == "pending" and intent:
+                if intent in done_intents:
+                    drops.append(("already done this week", intent, task.description))
+                    continue
+
+                station = _station_name_from_description(task.description)
+                if station and _is_station_ready(station, self.directory):
+                    drops.append((f"station {station!r} already ready", intent, task.description))
+                    continue
+
+            seen_intents.add(intent)
+            filtered.append(task)
+
+        return filtered, drops
+
+    def _log_drops(self, drops: list[tuple[str, str, str]]) -> None:
+        """Append one line per dropped task to today's journal file."""
+        if not drops:
+            return
+        journal = self.journal_path()
+        lines = []
+        for reason, intent, description in drops:
+            # Keep the description short so the journal stays scannable
+            short = description[:80].replace("\n", " ")
+            lines.append(f"- dropped ({reason}): {intent!r}  [{short}]")
+        try:
+            with journal.open("a", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except OSError:
+            pass
+
     def set_plan(self, plan_text: str) -> TaskQueue:
         """Parse a plan markdown into a TaskQueue and take ownership.
 
@@ -502,7 +652,11 @@ class Agent:
         plan.  The agent stores the plan text in its identity files and
         parses it into an executable queue.
         """
-        self.task_queue = _parse_plan(plan_text)
+        raw_queue = _parse_plan(plan_text)
+        filtered, drops = self._filter_duplicate_tasks(raw_queue.tasks)
+        self._log_drops(drops)
+        raw_queue.tasks = filtered
+        self.task_queue = raw_queue
         self.write_identity("plan", plan_text)
         self.persist_runtime_state()
         return self.task_queue
@@ -510,8 +664,12 @@ class Agent:
     def update_plan(self, plan_text: str) -> TaskQueue:
         """Replace the current plan (replan), preserving replan count."""
         replan_count = self.task_queue.replan_count if self.task_queue else 0
-        self.task_queue = _parse_plan(plan_text)
-        self.task_queue.replan_count = replan_count + 1
+        raw_queue = _parse_plan(plan_text)
+        filtered, drops = self._filter_duplicate_tasks(raw_queue.tasks)
+        self._log_drops(drops)
+        raw_queue.tasks = filtered
+        raw_queue.replan_count = replan_count + 1
+        self.task_queue = raw_queue
         self.write_identity("plan", plan_text)
         self.persist_runtime_state()
         return self.task_queue
@@ -538,6 +696,22 @@ class Agent:
         task.status = "done"
         task.outcome = outcome
         self.tasks_completed_today += 1
+        # Record the completed intent so future plan cycles can dedupe against it.
+        intent = _normalise_intent(task.description)
+        if intent:
+            record = json.dumps(
+                {
+                    "intent": intent,
+                    "description": task.description[:120],
+                    "at": datetime.now(UTC).isoformat(),
+                }
+            )
+            done_path = self.directory / "done.jsonl"
+            try:
+                with done_path.open("a", encoding="utf-8") as f:
+                    f.write(record + "\n")
+            except OSError:
+                pass
 
     def fail_task(self, task: Task, error: str) -> None:
         """Mark a task as failed and add to exception pile."""
