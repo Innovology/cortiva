@@ -68,6 +68,9 @@ CHECK_TIMEOUT_S = 10.0
 MAX_BODY_BYTES = 512 * 1024
 #: A route unproven for this long is the team's first problem, not a footnote.
 ROUTE_OVERDUE_HOURS = 24.0
+#: A mission where nothing has moved for this long is standing still, however
+#: busy the team is. Nobody has to say they are blocked for that to be so.
+STILL_AFTER_HOURS = 12.0
 
 #: ``fetch(url, timeout) -> (status, body)``; raises on a transport failure.
 Fetch = Callable[[str, float], tuple[int, str]]
@@ -1021,12 +1024,89 @@ def probe(
         asked = _dict(prev.get("owner_asked"))
         if asked and all(not _dict(conds.get(c)).get("met") for c in asked.get("conditions", [])):
             entry["owner_asked"] = asked
+        still = {
+            c: at
+            for c, at in _dict(prev.get("still_asked")).items()
+            if c in conds and not conds[c]["met"]
+        }
+        if still:
+            entry["still_asked"] = still
         complete = entry["met"] == entry["total"]
         entry["complete"] = complete
         entry["completed_at"] = (str(prev.get("completed_at") or "") or now_iso) if complete else ""
         state[mid] = entry
     save_state(agents_dir, state)
     return state
+
+
+def standing_still(agents_dir: Path, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Conditions of a mission where nothing has moved for STILL_AFTER_HOURS.
+
+    A team that is busy does not say it is blocked. One condition read not
+    met for eight days and nothing moved for twenty-two hours while five
+    members finished fifteen pieces of work, and no one was asked anything,
+    because the asking waited for someone to say "blocked" (Mini-2,
+    2026-11-20). The system holds the fact, so the system asks.
+
+    One row per condition the team can move that has not been asked about in
+    that long, with who is asked: the member who showed it, and the first
+    named on the team."""
+    at = now or datetime.now(UTC)
+    state = load_state(agents_dir)
+    proofs = load_proofs(agents_dir)
+    rows: list[dict[str, Any]] = []
+    for m in load(agents_dir):
+        mid = str(m["mission_id"])
+        entry = _dict(state.get(mid))
+        if not entry or entry.get("complete"):
+            continue
+        moved = str(entry.get("last_change_at") or entry.get("first_checked_at") or "")
+        still = _hours_between(moved, at)
+        if still is None or still < STILL_AFTER_HOURS:
+            continue
+        team = [str(t).lower() for t in _as_list(m.get("team")) if str(t).strip()]
+        asked = _dict(entry.get("still_asked"))
+        for cond in m["end_state"]:
+            cid = str(cond["id"])
+            seen = _dict(_dict(entry.get("conditions")).get(cid))
+            if not seen or seen.get("met"):
+                continue
+            if str(_dict(cond["check"]).get("type") or "") == "owner":
+                continue  # that one waits on its owner, who is asked elsewhere
+            since_ask = _hours_between(str(asked.get(cid) or ""), at)
+            if since_ask is not None and since_ask < STILL_AFTER_HOURS:
+                continue
+            shown = _dict(_dict(_dict(proofs.get(mid)).get(cid)).get("shown"))
+            who = [w for w in (str(shown.get("by") or "").lower(), *team[:1]) if w]
+            rows.append(
+                {
+                    "mission_id": mid,
+                    "title": str(m.get("title") or mid),
+                    "condition": cid,
+                    "describe": str(cond.get("describe") or cid),
+                    "observed": str(seen.get("observed") or ""),
+                    "not_met_for": _age(_hours_between(str(seen.get("since") or ""), at)),
+                    "still_for": _age(still),
+                    "still_hours": still,
+                    "who": list(dict.fromkeys(who)),
+                }
+            )
+    return rows
+
+
+def record_still_ask(
+    agents_dir: Path, mission_id: str, condition: str, *, now: datetime | None = None
+) -> None:
+    """Note that the team was asked about a condition standing still."""
+    state = load_state(agents_dir)
+    entry = _dict(state.get(mission_id))
+    if not entry:
+        return
+    asked = _dict(entry.get("still_asked"))
+    asked[condition] = (now or datetime.now(UTC)).isoformat()
+    entry["still_asked"] = asked
+    state[mission_id] = entry
+    save_state(agents_dir, state)
 
 
 # ---------------------------------------------------------------------------

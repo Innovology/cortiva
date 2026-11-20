@@ -15,6 +15,13 @@ the goal and everything already working where they were. Second, how else
 to that sub-goal: a place to start now, and their bolder ideas. The place
 to start is their next task; the bolder ideas are kept as work to put to
 whoever can say yes.
+
+Nobody has to say "blocked" for the questions to be asked. A team that is
+busy does not say it: one condition stood for twenty-two hours while its
+members finished fifteen pieces of work and no question was put to anyone
+(Mini-2, 2026-11-20). When nothing in a mission has moved for half a day the
+system asks the same two things, with what was finished in that time set
+beside the reading that did not move.
 """
 
 from __future__ import annotations
@@ -32,11 +39,28 @@ def is_obstacle(said: str) -> bool:
     return len(text) >= 8 and not text.lower().lstrip(" .—-").startswith(_HOLLOW)
 
 
-def what_prompt(task: str, obstacle: str, standing: str = "") -> str:
+def still_text(row: dict[str, object], finished: list[str]) -> tuple[str, str]:
+    """(what the work is, what is in the way) for a condition that has stood
+    still: nobody said no, and nothing that was done moved it."""
+    task = f'Mission "{row["title"]}": {row["describe"]}'
+    did = (
+        " In that time you finished: " + "; ".join(f'"{d}"' for d in finished) + "."
+        if finished
+        else " In that time you finished nothing that is on record."
+    )
+    wall = (
+        f"Nobody has said no. The system has read this as not so for {row['not_met_for']} "
+        f"({row['observed']}), and nothing in the mission has moved for {row['still_for']}."
+        f"{did} None of it moved the reading."
+    )
+    return task, wall
+
+
+def what_prompt(task: str, obstacle: str, standing: str = "", *, still: bool = False) -> str:
     """First ask: what is it blocking? A block closes one route to one
     sub-goal; it is not the goal that is blocked."""
     lines = [
-        f"You were doing: {task.strip()}",
+        f"{'The end you are working to' if still else 'You were doing'}: {task.strip()}",
         f"What stands in the way: {obstacle.strip()}",
     ]
     if standing.strip():
@@ -45,10 +69,18 @@ def what_prompt(task: str, obstacle: str, standing: str = "") -> str:
             f"opinions):\n{standing.strip()}"
         )
     lines.append(
-        "Something in the way closes one particular route to one particular sub-goal. It "
-        "does not close the goal, and it does not break what is already working. Say "
-        "exactly what this one is blocking, and no more than that.\n"
-        "Answer on these lines:\n"
+        (
+            "Work that does not move the reading is on a route that is not getting there, "
+            "whether or not anyone has said no. Something in the way closes one particular "
+            "route to one particular sub-goal. It does not close the goal, and it does not "
+            "break what is already working. Say which route you have been on that is not "
+            "getting there, and no more than that.\n"
+            if still
+            else "Something in the way closes one particular route to one particular "
+            "sub-goal. It does not close the goal, and it does not break what is already "
+            "working. Say exactly what this one is blocking, and no more than that.\n"
+        )
+        + "Answer on these lines:\n"
         "ROUTE: <the one way of doing something that is closed>\n"
         "SUBGOAL: <the result that route was for, said as what a person would then have or "
         "know, naming no tool or system>\n"
@@ -114,9 +146,14 @@ def parse(answer: str) -> tuple[str, list[str]]:
     return first[:400], bold[:2]
 
 
-def task_text(route: str, end: str, task: str) -> str:
+def task_text(route: str, end: str, task: str, *, still: bool = False) -> str:
     """The next task, in the member's own words, tied to what it replaces."""
     served = f" The end it serves: {end}." if end else ""
+    if still:
+        return (
+            f'{MARK}: {route}{served} ("{task.strip()[:120]}" has not moved while the '
+            "first way was worked; this is another way to it.)"
+        )
     return (
         f'{MARK}: {route}{served} (The first way, "{task.strip()[:120]}", is waiting on '
         "someone else; this does not wait.)"

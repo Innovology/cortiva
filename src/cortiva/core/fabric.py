@@ -10094,6 +10094,10 @@ class Fabric:
                 if entry.get("complete") and not (before.get(mid) or {}).get("complete"):
                     logger.info("Mission %s: end state reached", mid)
                     self._emit("mission.end_state_reached", mission_id=mid)
+            try:
+                await self._ask_where_still()
+            except Exception:
+                logger.exception("asking where a mission stands still failed")
 
         try:
             self._mission_probe_task = asyncio.get_running_loop().create_task(_run())
@@ -12084,7 +12088,47 @@ class Fabric:
             except RuntimeError:
                 pass  # no loop running: nothing to ask on
 
-    async def _with_another_route(self, agent: Agent, task_desc: str, obstacle: str) -> str:
+    async def _ask_where_still(self) -> None:
+        """Put the two questions to the team where a mission has stood still.
+        Nobody has to say they are blocked: the system holds the fact."""
+        import json as _json
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        for row in _ms.standing_still(self.agents_dir):
+            _ms.record_still_ask(self.agents_dir, row["mission_id"], row["condition"])
+            logger.info(
+                "Mission %s: condition %s not met for %s and nothing moved for %s; asking %s",
+                row["mission_id"],
+                row["condition"],
+                row["not_met_for"],
+                row["still_for"],
+                ", ".join(row["who"]) or "nobody (no one named on the team)",
+            )
+            for who in row["who"]:
+                agent = self.agents.get(who)
+                if agent is None:
+                    continue
+                finished: list[str] = []
+                try:
+                    floor = time.time() - float(row["still_hours"]) * 3600
+                    ledger = self.agents_dir / who / self._DONE_LEDGER
+                    for line in ledger.read_text(encoding="utf-8").splitlines():
+                        rec = _json.loads(line)
+                        if float(rec.get("at") or 0) >= floor:
+                            finished.append(str(rec.get("description") or "")[:90])
+                except (OSError, ValueError):
+                    pass
+                task, wall = _rt.still_text(row, finished[-8:])
+                try:
+                    await self._with_another_route(agent, task, wall, still=True)
+                except Exception:
+                    logger.exception("Asking %s about a mission standing still failed", who)
+
+    async def _with_another_route(
+        self, agent: Agent, task_desc: str, obstacle: str, *, still: bool = False
+    ) -> str:
         """Ask a member who cannot go on what the work was for and how else
         to get there, queue their answer as their next task, and return what
         they said was in the way with what they are doing meanwhile."""
@@ -12141,7 +12185,7 @@ class Fabric:
 
         # First, what is it blocking; then, how else to that.
         closed, end, untouched = _rt.parse_what(
-            await _ask(_rt.what_prompt(task_desc, obstacle, standing))
+            await _ask(_rt.what_prompt(task_desc, obstacle, standing, still=still))
         )
         if not end:
             logger.info("Route: %s could not say what is blocked by: %s", agent.id, obstacle[:120])
@@ -12169,7 +12213,7 @@ class Fabric:
         if not route:
             logger.info("Route: %s named nowhere to start past: %s", agent.id, obstacle[:120])
             return f"{obstacle}\n\n{_rt.meanwhile('', end, bold)}"
-        text = _rt.task_text(route, end, task_desc)
+        text = _rt.task_text(route, end, task_desc, still=still)
         if text not in open_now:
             queue.insert(0, Task(id=uuid.uuid4().hex[:12], description=text, priority=top))
         logger.info("Route: %s takes another way to '%s': %s", agent.id, end[:80], route[:160])

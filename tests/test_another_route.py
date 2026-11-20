@@ -108,3 +108,96 @@ def test_nothing_in_the_way_asks_nobody_anything(tmp_path):
     fab, agent, asked = _fabric(tmp_path, WHAT, HOW)
     assert asyncio.run(fab._with_another_route(agent, TASK, "None")) == "None"
     assert asked == []
+
+
+def _still_mission(tmp_path: Path, moved_hours_ago: float) -> None:
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from cortiva.core import missions as ms
+
+    now = datetime.now(UTC)
+    old = (now - timedelta(days=8)).isoformat()
+    moved = (now - timedelta(hours=moved_hours_ago)).isoformat()
+    (tmp_path / ms.MISSIONS_FILE).write_text(
+        json.dumps(
+            [
+                {
+                    "mission_id": "m1",
+                    "title": "Leads reach the founder",
+                    "intent": "A lead the founder can try to close.",
+                    "issued_by": {"name": "Alex", "role": "founder"},
+                    "team": ["maren", "andre"],
+                    "status": "active",
+                    "end_state": [
+                        {
+                            "id": "up",
+                            "describe": "The site answers",
+                            "check": {"url": "https://example.test/health", "status": 200},
+                        },
+                        {
+                            "id": "told",
+                            "describe": "The founder has been told of a lead",
+                            "check": {"type": "team"},
+                        },
+                    ],
+                }
+            ]
+        )
+    )
+    ms.save_state(
+        tmp_path,
+        {
+            "m1": {
+                "checked_at": now.isoformat(),
+                "first_checked_at": old,
+                "last_change_at": moved,
+                "complete": False,
+                "conditions": {
+                    "up": {"met": True, "observed": "HTTP 200", "since": moved},
+                    "told": {"met": False, "observed": "founder_notified = 0", "since": old},
+                },
+            }
+        },
+    )
+    (tmp_path / ms.PROOFS_FILE).write_text(
+        json.dumps({"m1": {"told": {"shown": {"by": "andre", "at": old}}}})
+    )
+
+
+def test_a_mission_standing_still_asks_the_team_though_nobody_said_blocked(tmp_path):
+    import json
+    import time
+
+    from cortiva.core import missions as ms
+
+    _still_mission(tmp_path, moved_hours_ago=22)
+    rows = ms.standing_still(tmp_path)
+    assert [(r["condition"], r["who"]) for r in rows] == [("told", ["andre", "maren"])]
+
+    fab, andre, asked = _fabric(tmp_path, WHAT, HOW, WHAT, HOW)
+    maren = SimpleNamespace(id="maren", directory=tmp_path / "maren", task_queue=None)
+    fab.agents = {"andre": andre, "maren": maren}
+    (tmp_path / "andre").mkdir()
+    (tmp_path / "andre" / "done.jsonl").write_text(
+        json.dumps({"at": time.time() - 3600, "description": "Build the deliverability station"})
+        + "\n"
+    )
+    asyncio.run(fab._ask_where_still())
+    # What was finished is set beside the reading that did not move.
+    assert "Build the deliverability station" in asked[0] and "founder_notified = 0" in asked[0]
+    assert "Nobody has said no" in asked[0] and "not getting there" in asked[0]
+    for member in (andre, maren):
+        first = member.task_queue.next_pending()
+        assert first.description.startswith(rt.MARK) and "has not moved" in first.description
+    # Asked once: the next look, minutes later, asks nobody again.
+    assert ms.standing_still(tmp_path) == []
+    asyncio.run(fab._ask_where_still())
+    assert len(asked) == 4
+
+
+def test_a_mission_that_moved_today_is_left_to_get_on(tmp_path):
+    from cortiva.core import missions as ms
+
+    _still_mission(tmp_path, moved_hours_ago=3)
+    assert ms.standing_still(tmp_path) == []
