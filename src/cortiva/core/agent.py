@@ -99,21 +99,21 @@ def _normalise_intent(description: str) -> str:
     work usually collide; two phrasing different work rarely do.
     """
     d = description or ""
-    d = re.sub(r"\*\*\[\w+\]\*\*\s*", "", d)          # **[CRITICAL]** etc.
-    d = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", d)     # [text](url) → text
+    d = re.sub(r"\*\*\[\w+\]\*\*\s*", "", d)  # **[CRITICAL]** etc.
+    d = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", d)  # [text](url) → text
     # Strip specific ref patterns BEFORE the general # → space substitution so
     # "#364" becomes " " rather than "364" (which the later word-filter misses).
-    d = re.sub(r"#\d+", " ", d)                        # #123 PR/issue refs
-    d = re.sub(r"[`*_~#]", " ", d)                     # remaining markdown punctuation
+    d = re.sub(r"#\d+", " ", d)  # #123 PR/issue refs
+    d = re.sub(r"[`*_~#]", " ", d)  # remaining markdown punctuation
     d = d.lower()
-    d = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", d)      # dates 2026-11-17
-    d = re.sub(                                         # UUIDs
+    d = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", d)  # dates 2026-11-17
+    d = re.sub(  # UUIDs
         r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
         " ",
         d,
     )
-    d = re.sub(r"\btask-\d+\b", " ", d)                # task-NNN IDs
-    d = re.sub(r"\b[0-9a-f]{7,40}\b", " ", d)          # git SHAs (after lowercase)
+    d = re.sub(r"\btask-\d+\b", " ", d)  # task-NNN IDs
+    d = re.sub(r"\b[0-9a-f]{7,40}\b", " ", d)  # git SHAs (after lowercase)
     words = [w for w in d.split() if re.match(r"[a-z0-9]", w)]
     return " ".join(words[:12])
 
@@ -699,11 +699,13 @@ class Agent:
         # Record the completed intent so future plan cycles can dedupe against it.
         intent = _normalise_intent(task.description)
         if intent:
-            record = json.dumps({
-                "intent": intent,
-                "description": task.description[:120],
-                "at": datetime.now(UTC).isoformat(),
-            })
+            record = json.dumps(
+                {
+                    "intent": intent,
+                    "description": task.description[:120],
+                    "at": datetime.now(UTC).isoformat(),
+                }
+            )
             done_path = self.directory / "done.jsonl"
             try:
                 with done_path.open("a", encoding="utf-8") as f:

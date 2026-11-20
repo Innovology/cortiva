@@ -76,7 +76,10 @@ class TestNormaliseIntent:
 
 class TestStationName:
     def test_build_x_station(self) -> None:
-        assert _station_name_from_description("Build automate-ci-triage station") == "automate-ci-triage"
+        assert (
+            _station_name_from_description("Build automate-ci-triage station")
+            == "automate-ci-triage"
+        )
 
     def test_build_the_x_station(self) -> None:
         assert _station_name_from_description("Build the scope station for delegation") == "scope"
@@ -117,11 +120,13 @@ class TestLoadDoneIntents:
     def test_reads_recent_intents(self, tmp_path: Path) -> None:
         from datetime import UTC, datetime
 
-        record = json.dumps({
-            "intent": "fix ci pipeline",
-            "description": "Fix CI pipeline",
-            "at": datetime.now(UTC).isoformat(),
-        })
+        record = json.dumps(
+            {
+                "intent": "fix ci pipeline",
+                "description": "Fix CI pipeline",
+                "at": datetime.now(UTC).isoformat(),
+            }
+        )
         (tmp_path / "done.jsonl").write_text(record + "\n")
         intents = _load_done_intents(tmp_path)
         assert "fix ci pipeline" in intents
@@ -130,10 +135,12 @@ class TestLoadDoneIntents:
         from datetime import UTC, datetime, timedelta
 
         old = datetime.now(UTC) - timedelta(days=10)
-        record = json.dumps({
-            "intent": "old task intent",
-            "at": old.isoformat(),
-        })
+        record = json.dumps(
+            {
+                "intent": "old task intent",
+                "at": old.isoformat(),
+            }
+        )
         (tmp_path / "done.jsonl").write_text(record + "\n")
         intents = _load_done_intents(tmp_path, days=7)
         assert "old task intent" not in intents
@@ -202,10 +209,7 @@ class TestFilterDuplicateTasks:
 
     def test_drops_logged_to_journal(self, tmp_path: Path) -> None:
         agent = self._make_agent(tmp_path)
-        plan = (
-            "- Fix CI pipeline\n"
-            "- Fix CI pipeline\n"
-        )
+        plan = "- Fix CI pipeline\n- Fix CI pipeline\n"
         agent.set_plan(plan)
         journal = agent.journal_path()
         assert journal.exists()
@@ -288,9 +292,13 @@ class TestReplayDedupe:
         assert len(verify_github) == 1, f"Expected 1 'verify github', got {verify_github}"
 
         # "verify github claims" has no done version → its surviving task is pending.
-        surviving_github = [t for t in tq.tasks if "verify github" in _normalise_intent(t.description)]
+        surviving_github = [
+            t for t in tq.tasks if "verify github" in _normalise_intent(t.description)
+        ]
         assert surviving_github[0].status == "pending"
 
         # "fix ci run counter" had done versions → its surviving task is done.
-        surviving_ci = [t for t in tq.tasks if "fix ci run counter" in _normalise_intent(t.description)]
+        surviving_ci = [
+            t for t in tq.tasks if "fix ci run counter" in _normalise_intent(t.description)
+        ]
         assert surviving_ci[0].status == "done"
