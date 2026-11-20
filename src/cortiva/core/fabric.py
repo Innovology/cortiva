@@ -3840,8 +3840,13 @@ class Fabric:
             logger.warning(
                 f"Agent {agent.id} escalation on '{task.description}': {suffix.escalation}"
             )
+            said = str(suffix.escalation)
             try:
-                self._route_escalation(agent, task.description, str(suffix.escalation))
+                said = await self._with_another_route(agent, task.description, said)
+            except Exception:
+                logger.debug("another-route ask failed for %s", agent.id, exc_info=True)
+            try:
+                self._route_escalation(agent, task.description, said)
             except Exception:
                 logger.exception("Escalation routing failed for %s", agent.id)
 
@@ -12051,6 +12056,52 @@ class Fabric:
             except Exception:
                 logger.exception("Tripwire escalation failed for %s", agent.id)
 
+    async def _with_another_route(self, agent: Agent, task_desc: str, obstacle: str) -> str:
+        """Ask a member who cannot go on what the work was for and how else
+        to get there, queue their answer as their next task, and return what
+        they said was in the way with what they are doing meanwhile."""
+        import uuid
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        if not _rt.is_obstacle(obstacle) or task_desc.startswith(_rt.MARK):
+            return obstacle
+        ends = ""
+        try:
+            mine = _ms.for_agent(_ms.load(self.agents_dir), agent.id)
+            ends = "\n".join(
+                f"- {m['title']}: {str(m.get('intent') or '').strip()} {_ms._why_line(m)}"
+                for m in mine
+            )
+        except Exception:
+            logger.debug("no mission ends for %s", agent.id, exc_info=True)
+        self._meter_model_call(agent, "route")
+        response = await self.consciousness.think(
+            agent_id=agent.id,
+            context=_rt.SYSTEM,
+            prompt=_rt.prompt(task_desc, obstacle, ends),
+            priority=Priority.HIGH,
+            max_tokens=1024,
+            metadata={"call_type": "route", "quick": True},
+        )
+        end, route = _rt.parse(str(response.content or ""))
+        if not route:
+            logger.info("Route: %s named no other way past: %s", agent.id, obstacle[:120])
+            return f"{obstacle}\n\n{_rt.meanwhile('', end)}"
+        if agent.task_queue is None:
+            agent.task_queue = TaskQueue(tasks=[])
+        text = _rt.task_text(route, end, task_desc)
+        if not any(
+            (t.description or "") == text and t.status in ("pending", "in_progress")
+            for t in agent.task_queue.tasks
+        ):
+            agent.task_queue.tasks.insert(
+                0, Task(id=uuid.uuid4().hex[:12], description=text, priority=1)
+            )
+        logger.info("Route: %s takes another way to '%s': %s", agent.id, end[:80], route[:160])
+        return f"{obstacle}\n\n{_rt.meanwhile(route, end)}"
+
     def _route_escalation(self, agent: Agent, task_desc: str, escalation: str) -> None:
         """Send a blocked agent's escalation to a human who can act on it.
 
@@ -12568,12 +12619,12 @@ class Fabric:
                     "status, a task that isn't actually blocked, or something "
                     "you've already handled — no real blocker means no "
                     "escalation. A genuine block must not sit as a dead exception; "
-                    "a non-block must not become noise in someone's inbox. And "
-                    "TEST a blocker before you escalate or work around it: check "
-                    "the live capability check above, or just try the real action "
-                    "once. A workaround that avoids the blocked thing keeps you "
-                    "blocked — most 'blockers' you've assumed for a while are "
-                    "already cleared.\n\n"
+                    "a non-block must not become noise in someone's inbox. Test "
+                    "a blocker before you act on it: try the real action once. "
+                    "A route being closed is not the end being out of reach: when "
+                    "the answer is no, or does not come in time, ask what the work "
+                    "was for and take another way to it, cruder if need be, and "
+                    "say that you did.\n\n"
                     "Output ONLY the updated checklist of remaining + new tasks."
                 )
             self._meter_model_call(agent, "replan")
