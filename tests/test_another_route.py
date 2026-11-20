@@ -229,3 +229,20 @@ def test_a_mission_that_moved_today_is_left_to_get_on(tmp_path):
 
     _still_mission(tmp_path, moved_hours_ago=3)
     assert ms.standing_still(tmp_path) == []
+
+
+def test_another_route_is_not_handed_to_the_station_already_built(tmp_path, monkeypatch):
+    # A station is the route already built: it is never even looked up.
+    from cortiva.core import fabric as fabric_module
+
+    looked: list[str] = []
+    monkeypatch.setattr(fabric_module._factory, "stations", lambda *a, **k: looked.append("x"))
+    fab = Fabric.__new__(Fabric)
+    agent = SimpleNamespace(id="andre", directory=tmp_path / "nowhere")
+    for text in (
+        rt.task_text("Write to five firms", "a lead", TASK),
+        rt.bold_text("Ring them", ""),
+    ):
+        task = Task(id="t", description=text, priority=1)
+        assert asyncio.run(fab._run_through_station(agent, task)) is False
+    assert looked == []

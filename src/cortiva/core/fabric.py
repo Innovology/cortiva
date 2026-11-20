@@ -5237,7 +5237,16 @@ class Fabric:
         her directory, her credentials — and stays its builder's. On
         Mini-2, 5-12 November 2026, one agent's station took "Track to
         delivery; mark the commitment delivered" while the other four did
-        the identical step by hand about 350 times."""
+        the identical step by hand about 350 times.
+
+        Another route is not the floor's to take. A station is the route
+        already built; on 20 November two members' "another route" tasks
+        were taken by the station that submits the form, which answered each
+        by submitting it again."""
+        from cortiva.core import routes as _rt
+
+        if (task.description or "").startswith((_rt.MARK, _rt.BOLD_MARK)):
+            return False
         author = ""
         try:
             station = _factory.match(
