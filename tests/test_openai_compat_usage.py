@@ -71,3 +71,33 @@ def test_a_quick_judgement_is_asked_without_thinking_and_falls_back_if_refused()
     assert "extra_body" in sent[1] and "extra_body" not in sent[2]
     asyncio.run(a.think("cto", "c", "p", metadata={"quick": True}))
     assert "extra_body" not in sent[3]
+
+
+def test_a_pondered_question_is_given_time_and_being_slow_is_not_being_unwell() -> None:
+    import pytest
+
+    a, completions = _adapter(None)
+    sent: list[dict] = []
+    plain = completions.create
+
+    def create(**kwargs):
+        sent.append(kwargs)
+        return plain(**kwargs)
+
+    completions.create = create
+    asyncio.run(a.think("cto", "c", "p"))
+    asyncio.run(a.think("cto", "c", "p", metadata={"ponder": True}))
+    # Thinking is left on, and the call is given four times as long.
+    assert "extra_body" not in sent[1]
+    assert sent[1]["timeout"] == 4 * sent[0]["timeout"]
+
+    def slow(**kwargs):
+        raise TimeoutError("still thinking")
+
+    completions.create = slow
+    with pytest.raises(TimeoutError):
+        asyncio.run(a.think("cto", "c", "p", metadata={"ponder": True}))
+    assert a._breaker_fails == 0
+    with pytest.raises(TimeoutError):
+        asyncio.run(a.think("cto", "c", "p"))
+    assert a._breaker_fails == 1

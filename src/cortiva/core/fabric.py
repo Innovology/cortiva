@@ -10103,10 +10103,13 @@ class Fabric:
                 if entry.get("complete") and not (before.get(mid) or {}).get("complete"):
                     logger.info("Mission %s: end state reached", mid)
                     self._emit("mission.end_state_reached", mission_id=mid)
-            try:
-                await self._ask_where_still()
-            except Exception:
-                logger.exception("asking where a mission stands still failed")
+            # Asked apart from the probe: the answers are pondered, minutes
+            # each, and the next look at the end state does not wait on them.
+            held: set[Any] = getattr(self, "_route_asks", None) or set()
+            self._route_asks = held
+            asking = asyncio.get_running_loop().create_task(self._ask_where_still())
+            held.add(asking)
+            asking.add_done_callback(held.discard)
 
         try:
             self._mission_probe_task = asyncio.get_running_loop().create_task(_run())
@@ -12194,8 +12197,9 @@ class Fabric:
                 context=_rt.SYSTEM,
                 prompt=prompt,
                 priority=Priority.HIGH,
-                max_tokens=1024,
-                metadata={"call_type": "route", "quick": True},
+                # Pondered, not answered: see the adapter's note on "ponder".
+                max_tokens=8000,
+                metadata={"call_type": "route", "ponder": True},
             )
             return str(response.content or "")
 
