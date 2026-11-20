@@ -12071,6 +12071,18 @@ class Fabric:
                 )
             except Exception:
                 logger.exception("Tripwire escalation failed for %s", agent.id)
+            # Failing on the same thing over and over is being blocked without
+            # saying so: the same question is asked.
+            try:
+                held: set[Any] = getattr(self, "_route_asks", None) or set()
+                self._route_asks = held
+                ask = asyncio.get_running_loop().create_task(
+                    self._with_another_route(agent, task.description, detail)
+                )
+                held.add(ask)
+                ask.add_done_callback(held.discard)
+            except RuntimeError:
+                pass  # no loop running: nothing to ask on
 
     async def _with_another_route(self, agent: Agent, task_desc: str, obstacle: str) -> str:
         """Ask a member who cannot go on what the work was for and how else

@@ -38,10 +38,13 @@ def prompt(task: str, obstacle: str, ends: str = "") -> str:
     if ends.strip():
         lines.append(f"What your team is here to reach:\n{ends.strip()}")
     lines.append(
-        "The thing in the way belongs to one way of doing this. Think about what the work "
-        "was for: what would be true, and for whom, if it had gone through. Then name one "
-        "other way to make that true that you can start now, with what you already have, "
-        "waiting on nobody. A cruder way that has the same effect counts.\n"
+        "The thing in the way belongs to one way of doing this. Think about what this "
+        "piece of work was for: what would be true, and for whom, if it had gone through. "
+        "Name the nearest such thing, not the team's whole goal. Then name one other way "
+        "to make that same thing true that you can start now, with what you already have, "
+        "waiting on nobody. A cruder way that has the same effect counts. It is the same "
+        "size as the work it replaces: another way to the same result, not a different "
+        "project.\n"
         "Answer on two lines:\n"
         "END: <what the work was for, in a few words>\n"
         "ROUTE: <the one action you will take now>\n"
