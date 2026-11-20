@@ -18,6 +18,8 @@ WALL = "I have no Railway access; Samantha needs to set the key."
 
 
 WHAT = (
+    "NEEDS: someone decides who hears about each lead\n"
+    "BY: TEAM\n"
     "ROUTE: sending the notification through the mail service\n"
     "SUBGOAL: the founder knows about each new lead\n"
     "UNTOUCHED: the form and the stored leads"
@@ -38,6 +40,28 @@ def test_the_first_ask_is_what_is_it_blocking():
         "the founder knows about each new lead",
         "the form and the stored leads",
     )
+
+
+def test_the_first_thing_asked_is_what_has_to_happen_in_the_world_and_who_does_it():
+    asked = rt.what_prompt(TASK, WALL, goal="- Leads: new clients")
+    assert "Start from the end, not from the reading" in asked and "new clients" in asked
+    assert asked.index("NEEDS:") < asked.index("ROUTE:")
+    assert asked.index("NEEDS:") < asked.index("BY:") < asked.index("ROUTE:")
+    assert rt.parse_needs(WHAT) == ("someone decides who hears about each lead", "")
+    needs, by = rt.parse_needs("NEEDS: a person fills in the form\nBY: a prospective client")
+    assert by == "a prospective client"
+    # Where someone outside has to act, the second ask is how to reach them.
+    how = rt.reach_prompt(needs, by, taken=["Write to five firms"])
+    assert "Nobody on your team can do it for them" in how and "Write to five firms" in how
+    assert "is not that person acting" in how
+
+
+def test_an_end_that_needs_an_outsider_asks_how_to_reach_them(tmp_path):
+    what = WHAT.replace("BY: TEAM", "BY: a prospective client")
+    fab, agent, asked = _fabric(tmp_path, what, "FIRST: Write today to the five firms we know")
+    asyncio.run(fab._with_another_route(agent, TASK, WALL))
+    assert "Who does it: a prospective client" in asked[1] and "The sub-goal" not in asked[1]
+    assert "Write today to the five firms" in agent.task_queue.next_pending().description
 
 
 def test_the_second_ask_is_how_else_to_that_sub_goal():
@@ -173,6 +197,7 @@ def test_a_mission_standing_still_asks_the_team_though_nobody_said_blocked(tmp_p
 
     _still_mission(tmp_path, moved_hours_ago=22)
     rows = ms.standing_still(tmp_path)
+    # Everyone on the team is asked, the one who showed it first.
     assert [(r["condition"], r["who"]) for r in rows] == [("told", ["andre", "maren"])]
 
     fab, andre, asked = _fabric(tmp_path, WHAT, HOW, WHAT, HOW)
@@ -187,6 +212,9 @@ def test_a_mission_standing_still_asks_the_team_though_nobody_said_blocked(tmp_p
     # What was finished is set beside the reading that did not move.
     assert "Build the deliverability station" in asked[0] and "founder_notified = 0" in asked[0]
     assert "Nobody has said no" in asked[0] and "not getting there" in asked[0]
+    # The second is told what the first named, and asked for something different.
+    assert "Others on your team have already named" not in asked[1]
+    assert "Email Alex myself" in asked[3] and "Name something different" in asked[3]
     for member in (andre, maren):
         first = member.task_queue.next_pending()
         assert first.description.startswith(rt.MARK) and "has not moved" in first.description

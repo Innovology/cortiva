@@ -12097,7 +12097,8 @@ class Fabric:
         from cortiva.core import routes as _rt
 
         for row in _ms.standing_still(self.agents_dir):
-            _ms.record_still_ask(self.agents_dir, row["mission_id"], row["condition"])
+            _ms.record_still_ask(self.agents_dir, row["mission_id"], row["condition"], row["who"])
+            named: list[str] = []
             logger.info(
                 "Mission %s: condition %s not met for %s and nothing moved for %s; asking %s",
                 row["mission_id"],
@@ -12122,12 +12123,18 @@ class Fabric:
                     pass
                 task, wall = _rt.still_text(row, finished[-8:])
                 try:
-                    await self._with_another_route(agent, task, wall, still=True)
+                    await self._with_another_route(agent, task, wall, still=True, taken=named)
                 except Exception:
                     logger.exception("Asking %s about a mission standing still failed", who)
 
     async def _with_another_route(
-        self, agent: Agent, task_desc: str, obstacle: str, *, still: bool = False
+        self,
+        agent: Agent,
+        task_desc: str,
+        obstacle: str,
+        *,
+        still: bool = False,
+        taken: list[str] | None = None,
     ) -> str:
         """Ask a member who cannot go on what the work was for and how else
         to get there, queue their answer as their next task, and return what
@@ -12184,19 +12191,31 @@ class Fabric:
             return str(response.content or "")
 
         # First, what is it blocking; then, how else to that.
-        closed, end, untouched = _rt.parse_what(
-            await _ask(_rt.what_prompt(task_desc, obstacle, standing, still=still))
-        )
+        first = await _ask(_rt.what_prompt(task_desc, obstacle, standing, still=still, goal=goal))
+        closed, end, untouched = _rt.parse_what(first)
+        needs, by = _rt.parse_needs(first)
         if not end:
             logger.info("Route: %s could not say what is blocked by: %s", agent.id, obstacle[:120])
             return obstacle
         logger.info(
-            "Route: %s says what is blocked is one route (%s) to: %s",
+            "Route: %s says what is blocked is one route (%s) to: %s; it needs: %s",
             agent.id,
             closed[:100],
             end[:120],
+            f"{needs[:140]} (by: {by[:60] or 'the team'})" if needs else "(not said)",
         )
-        route, bold = _rt.parse(await _ask(_rt.prompt(end, closed or obstacle, untouched, goal)))
+        # Where the end needs someone outside the team to act, the question
+        # is how to bring that about, not how else to build it.
+        how = (
+            _rt.reach_prompt(needs, by, goal, taken)
+            if by
+            else _rt.prompt(end, closed or obstacle, untouched, goal, taken, needs)
+        )
+        route, bold = _rt.parse(await _ask(how))
+        if by:
+            end = needs
+        if taken is not None and route:
+            taken.append(route)
         if agent.task_queue is None:
             agent.task_queue = TaskQueue(tasks=[])
         queue = agent.task_queue.tasks

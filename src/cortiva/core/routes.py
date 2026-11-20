@@ -22,6 +22,16 @@ members finished fifteen pieces of work and no question was put to anyone
 (Mini-2, 2026-11-20). When nothing in a mission has moved for half a day the
 system asks the same two things, with what was finished in that time set
 beside the reading that did not move.
+
+The first thing asked is what has to happen in the world for the end to be
+so, and who does it. The same team had read "founder notified of a lead = 0"
+as a fault in the notifying and spent a week on it; the number was nought
+because no visitor had filled in the form. Their own station had been
+filling it in as an invented company, thirty-two times, and the site counted
+each as a lead (Mini-2, 2026-11-20). A reading is how the system looks at
+the end; it is not the end. Where the end needs someone outside the team to
+act, the routes are ways of bringing that about, and doing it in their place
+moves the reading and nothing else.
 """
 
 from __future__ import annotations
@@ -56,7 +66,9 @@ def still_text(row: dict[str, object], finished: list[str]) -> tuple[str, str]:
     return task, wall
 
 
-def what_prompt(task: str, obstacle: str, standing: str = "", *, still: bool = False) -> str:
+def what_prompt(
+    task: str, obstacle: str, standing: str = "", *, still: bool = False, goal: str = ""
+) -> str:
     """First ask: what is it blocking? A block closes one route to one
     sub-goal; it is not the goal that is blocked."""
     lines = [
@@ -68,6 +80,15 @@ def what_prompt(task: str, obstacle: str, standing: str = "", *, still: bool = F
             "What the system reads on the real thing right now (these are facts, not "
             f"opinions):\n{standing.strip()}"
         )
+    if goal.strip():
+        lines.append(f"What it is all for:\n{goal.strip()}")
+    lines.append(
+        "Start from the end, not from the reading. A reading is how the system looks at "
+        "the end; it is not the end. Say first what has to happen in the real world for "
+        "the end to be so, and who does that. If it is someone outside your team (a "
+        "customer, a bank, a market, the person you work for), say who; something the "
+        "team does in their place moves the reading and not the end, and does not count."
+    )
     lines.append(
         (
             "Work that does not move the reading is on a route that is not getting there, "
@@ -81,6 +102,8 @@ def what_prompt(task: str, obstacle: str, standing: str = "", *, still: bool = F
             "working. Say exactly what this one is blocking, and no more than that.\n"
         )
         + "Answer on these lines:\n"
+        "NEEDS: <what has to happen in the real world>\n"
+        "BY: <TEAM if your team can do that itself; otherwise who outside the team does it>\n"
         "ROUTE: <the one way of doing something that is closed>\n"
         "SUBGOAL: <the result that route was for, said as what a person would then have or "
         "know, naming no tool or system>\n"
@@ -101,8 +124,64 @@ def parse_what(answer: str) -> tuple[str, str, str]:
     return got["ROUTE"], got["SUBGOAL"], got["UNTOUCHED"]
 
 
-def prompt(subgoal: str, closed: str, untouched: str = "", goal: str = "") -> str:
-    """Second ask: how else to that sub-goal?"""
+def parse_needs(answer: str) -> tuple[str, str]:
+    """(what the member said has to happen in the world, who outside the
+    team does it). The second is empty when the team can do it itself."""
+    got = {"NEEDS": "", "BY": ""}
+    for raw in (answer or "").splitlines():
+        line = raw.strip().lstrip("*-• ").strip()
+        head, _, rest = line.partition(":")
+        key = head.strip().strip("*").upper()
+        if key in got and not got[key]:
+            got[key] = rest.strip().strip("*").strip()[:300]
+    by = got["BY"]
+    if by.upper().rstrip(".").strip() in ("", "TEAM", "THE TEAM", "US", "ME"):
+        by = ""
+    return got["NEEDS"], by
+
+
+def reach_prompt(needs: str, by: str, goal: str = "", taken: list[str] | None = None) -> str:
+    """Second ask where the end needs someone outside the team to act: how
+    to bring that about. Nothing the team builds or enters does it for them."""
+    lines = [
+        f"What has to happen: {needs.strip()}",
+        f"Who does it: {by.strip()}. Nobody on your team can do it for them.",
+    ]
+    if goal.strip():
+        lines.append(f"What it is all for:\n{goal.strip()}")
+    if taken:
+        lines.append(
+            "Others on your team have already named these, and are taking them:\n"
+            + "\n".join(f"- {t.strip()[:200]}" for t in taken)
+            + "\nName something different from yours: what you see from where you stand."
+        )
+    lines.append(
+        "An entry, a test or a stand-in made by the team is not that person acting, however "
+        "real it looks, and what already works needs no more testing. The work is reaching "
+        "such people and giving them a reason to act. Think widely: the crude, the bold and "
+        "the unreasonable are all welcome.\n"
+        "Answer on these lines:\n"
+        "FIRST: <one thing you can do today, with what you already have, waiting on nobody, "
+        "that puts this in front of real people of that kind; say which people and where>\n"
+        "BOLD: <a bolder way of reaching them, even if it needs someone's yes>\n"
+        "WILD: <the boldest idea you have for it>\n"
+        "Leave out BOLD or WILD if you have none. If there is truly nowhere to start, "
+        "write FIRST: NONE and why in a few words."
+    )
+    return "\n\n".join(lines)
+
+
+def prompt(
+    subgoal: str,
+    closed: str,
+    untouched: str = "",
+    goal: str = "",
+    taken: list[str] | None = None,
+    needs: str = "",
+) -> str:
+    """Second ask: how else to that sub-goal? ``taken`` is what others on the
+    team have already named: a team is worth more than one head because its
+    members do not all think the same thing."""
     lines = [
         f"The sub-goal: {subgoal.strip()}",
         f"The route to it that is closed: {closed.strip()}",
@@ -111,6 +190,14 @@ def prompt(subgoal: str, closed: str, untouched: str = "", goal: str = "") -> st
         lines.append(f"What still works and needs no fixing: {untouched.strip()}")
     if goal.strip():
         lines.append(f"The goal the sub-goal sits under:\n{goal.strip()}")
+    if needs.strip():
+        lines.append(f"What you said has to happen in the real world: {needs.strip()}")
+    if taken:
+        lines.append(
+            "Others on your team have already named these, and are taking them:\n"
+            + "\n".join(f"- {t.strip()[:200]}" for t in taken)
+            + "\nName something different from yours: what you see from where you stand."
+        )
     lines.append(
         "Whoever could open that route may say no, or answer too late to matter. Think of "
         "other routes to the same sub-goal. Think widely: the crude, the bold and the "

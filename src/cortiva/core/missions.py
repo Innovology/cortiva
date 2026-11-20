@@ -1048,9 +1048,10 @@ def standing_still(agents_dir: Path, *, now: datetime | None = None) -> list[dic
     because the asking waited for someone to say "blocked" (Mini-2,
     2026-11-20). The system holds the fact, so the system asks.
 
-    One row per condition the team can move that has not been asked about in
-    that long, with who is asked: the member who showed it, and the first
-    named on the team."""
+    One row per condition the team can move, with who is asked: every member
+    of the team not asked about it in that long, the one who showed it first.
+    Each is asked separately; that they answer differently is what a team is
+    for."""
     at = now or datetime.now(UTC)
     state = load_state(agents_dir)
     proofs = load_proofs(agents_dir)
@@ -1073,11 +1074,21 @@ def standing_still(agents_dir: Path, *, now: datetime | None = None) -> list[dic
                 continue
             if str(_dict(cond["check"]).get("type") or "") == "owner":
                 continue  # that one waits on its owner, who is asked elsewhere
-            since_ask = _hours_between(str(asked.get(cid) or ""), at)
-            if since_ask is not None and since_ask < STILL_AFTER_HOURS:
-                continue
             shown = _dict(_dict(_dict(proofs.get(mid)).get(cid)).get("shown"))
-            who = [w for w in (str(shown.get("by") or "").lower(), *team[:1]) if w]
+            by = str(shown.get("by") or "").lower()
+            everyone = list(dict.fromkeys(w for w in (by, *team) if w))
+            before = asked.get(cid)
+            if isinstance(before, str):
+                # Written when only two were asked: the one who showed it and
+                # the first named.
+                before = {w: before for w in (by, *team[:1]) if w}
+            who = []
+            for w in everyone:
+                since_ask = _hours_between(str(_dict(before).get(w) or ""), at)
+                if since_ask is None or since_ask >= STILL_AFTER_HOURS:
+                    who.append(w)
+            if not who:
+                continue
             rows.append(
                 {
                     "mission_id": mid,
@@ -1088,22 +1099,29 @@ def standing_still(agents_dir: Path, *, now: datetime | None = None) -> list[dic
                     "not_met_for": _age(_hours_between(str(seen.get("since") or ""), at)),
                     "still_for": _age(still),
                     "still_hours": still,
-                    "who": list(dict.fromkeys(who)),
+                    "who": who,
                 }
             )
     return rows
 
 
 def record_still_ask(
-    agents_dir: Path, mission_id: str, condition: str, *, now: datetime | None = None
+    agents_dir: Path,
+    mission_id: str,
+    condition: str,
+    who: list[str],
+    *,
+    now: datetime | None = None,
 ) -> None:
-    """Note that the team was asked about a condition standing still."""
+    """Note which members were asked about a condition standing still."""
     state = load_state(agents_dir)
     entry = _dict(state.get(mission_id))
     if not entry:
         return
     asked = _dict(entry.get("still_asked"))
-    asked[condition] = (now or datetime.now(UTC)).isoformat()
+    at = (now or datetime.now(UTC)).isoformat()
+    before = asked.get(condition)
+    asked[condition] = {**(before if isinstance(before, dict) else {}), **dict.fromkeys(who, at)}
     entry["still_asked"] = asked
     state[mission_id] = entry
     save_state(agents_dir, state)
