@@ -406,17 +406,23 @@ def prove(
     member: str,
     *,
     condition: str,
-    url: str,
+    url: str = "",
     path: str = "",
     minimum: float | None = None,
     contains: str = "",
     token_file: str = "",
+    sent_to: str = "",
     mission_id: str = "",
     now: datetime | None = None,
     fetch: Fetch | None = None,
 ) -> tuple[bool, str]:
-    """A member shows the system where it can read a condition for itself.
+    """A member shows the system where it can read a condition for itself:
+    an address on the thing, or a message the system itself will have sent.
     Showing it again replaces what was shown and clears who had seen it.
+
+    A team whose notification email could not go out spent sixteen hours on
+    the mail key, because a member writing to the founder by hand was
+    something the system had no way to read (Mini-2, 2026-11-20).
 
     The system reads the address as it is shown and keeps what it read. An
     open address that already reads the way that is asked shows nothing
@@ -426,8 +432,28 @@ def prove(
     m, cond, why = _team_condition(missions, member, condition, mission_id)
     if m is None or cond is None:
         return False, why
+    to = str(sent_to or "").strip().lower()
+    if to:
+        if url or path or token_file:
+            return False, "show an address or a message sent, one or the other"
+        if "@" not in to:
+            return False, "say who the message goes to, as an address"
+        kept: dict[str, Any] = {
+            "by": member,
+            "at": (now or datetime.now(UTC)).isoformat(),
+            "sent_to": to,
+        }
+        if contains:
+            kept["contains"] = str(contains)
+        proofs = load_proofs(agents_dir)
+        proofs.setdefault(str(m["mission_id"]), {})[str(cond["id"])] = {"shown": kept, "seen": []}
+        try:
+            _save_proofs(agents_dir, proofs)
+        except OSError:
+            return False, "the proof could not be kept"
+        return True, str(m["mission_id"])
     if not _is_http_url(url):
-        return False, "give an http(s) address the system can read"
+        return False, "give an http(s) address the system can read, or --sent-to <who is told>"
     sites = mission_sites(m)
     if sites and _site(_host(url)) not in sites:
         return False, (
@@ -472,6 +498,46 @@ def _shown_check(shown: dict[str, Any]) -> dict[str, Any]:
     if shown.get("contains"):
         check["contains"] = shown["contains"]
     return check
+
+
+def _sent_since(
+    agents_dir: Path, mission: dict[str, Any], shown: dict[str, Any]
+) -> tuple[bool, str]:
+    """Whether the system has sent a member's message to the address shown,
+    since it was shown. Read from the system's own record of what it sent."""
+    to = str(shown.get("sent_to") or "").lower()
+    want = str(shown.get("contains") or "").lower()
+    try:
+        since = datetime.fromisoformat(str(shown.get("at") or ""))
+    except ValueError:
+        return False, "what was shown carries no time"
+    team = [str(t).lower() for t in _as_list(mission.get("team")) if str(t).strip()]
+    try:
+        dirs = sorted(d for d in Path(agents_dir).iterdir() if d.is_dir())
+    except OSError:
+        dirs = []
+    for d in dirs:
+        if team and d.name.lower() not in team:
+            continue
+        for f in sorted((d / "outbox" / "email" / "sent").glob("*.json")):
+            try:
+                mail = json.loads(f.read_text(encoding="utf-8"))
+                when = datetime.fromisoformat(str(mail.get("sent_at") or ""))
+            except (OSError, ValueError):
+                continue
+            if when <= since or to not in str(mail.get("to") or "").lower():
+                continue
+            text = f"{mail.get('subject') or ''}\n{mail.get('body') or ''}"
+            if want and want not in text.lower():
+                continue
+            return True, (
+                f'the system sent "{str(mail.get("subject") or "")[:80]}" from {d.name} '
+                f"to {to}, {_clock(when.isoformat())}"
+            )
+    saying = f' saying "{shown.get("contains")}"' if want else ""
+    return False, (
+        f"no message from the team to {to}{saying} has been sent since {_clock(since.isoformat())}"
+    )
 
 
 def witness(
@@ -699,6 +765,30 @@ def _why_line(m: dict[str, Any]) -> str:
     return f"Why it is being done: {_issuer(m)} has not written a reason down."
 
 
+def _standing_facts(cond: dict[str, Any], seen: dict[str, Any], now: datetime) -> list[str]:
+    """What is known about a condition that is not met: how long it has read
+    that way, who reworded it and what it said as issued, and who chose how
+    it is read. Facts only; what to do about them is the reader's."""
+    out: list[str] = []
+    stood = _hours_between(str(seen.get("since") or ""), now)
+    if stood is not None and stood >= 1:
+        out.append(f"  It has read not met for {_age(stood)}.")
+    changes = [c for c in _as_list(cond.get("amended")) if isinstance(c, dict)]
+    worded = [c for c in changes if str(c.get("was") or "") != str(cond.get("describe") or "")]
+    if worded:
+        first, last = worded[0], worded[-1]
+        out.append(
+            f"  {last.get('by', 'Its owner')} reworded it {_clock(str(last.get('at') or ''))}. "
+            f'As issued it read: "{first.get("was", "")}"'
+        )
+    if str(_dict(cond.get("check")).get("type") or "") == "team":
+        out.append(
+            "  How the system reads it was chosen by whoever showed it, and any member "
+            "can show it another way; the sentence is the condition, the reading is not."
+        )
+    return out
+
+
 def _amended_note(cond: dict[str, Any]) -> str:
     """Who last changed a condition and what it said before, for a reader
     who knew it as issued."""
@@ -761,6 +851,18 @@ def run_team_check(
             "system an address where it can read it for itself"
         )
     by = str(shown.get("by") or "a member")
+    if shown.get("sent_to"):
+        sent, read = _sent_since(agents_dir, mission, shown)
+        if not sent:
+            return False, f"{by} showed a message to be sent; {read}"
+        others = [_dict(s) for s in proof.get("seen") or [] if str(_dict(s).get("by")) != by]
+        if not others:
+            return False, (
+                f"{read}, shown by {by}. It waits for a second member, not {by}, to say "
+                "what they saw of the thing the message is about"
+            )
+        names = ", ".join(str(s.get("by")) for s in others)
+        return True, f"shown by {by}, seen by {names}; {read}"
     url = str(shown.get("url") or "")
     secret, problem = _secret(agents_dir, by, str(shown.get("token_file") or ""))
     if problem:
@@ -826,6 +928,11 @@ def team_guide(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
         "it. The system reads it as you show it and from then on: show it before the "
         "thing is done, or ask for more than it reads now. An open address that already "
         "reads that way proves nothing.\n"
+        '- `cortiva mission prove --condition <id> --sent-to <address> [--contains "<text>"]` '
+        "is the same for a condition that ends in somebody being told: the system reads "
+        "its own record of what it sent, and counts a message any of you sends to that "
+        "address after you show it. Whichever of you sends it, by whatever means, it is "
+        "the telling that is read.\n"
         '- `cortiva mission witness --condition <id> --saw "<what you did and what you '
         'saw>"` is for a second member, never the one who showed it. Do it yourself '
         "first; your name stands on what you say you saw.\n"
@@ -1097,6 +1204,7 @@ def context_block(
                 lines.append(f"- ✅ {cond['describe']} — met since {_clock(seen.get('since', ''))}")
             else:
                 lines.append(f"- ❌ {cond['describe']} — NOT MET ({seen.get('observed', '')})")
+                lines.extend(_standing_facts(cond, seen, now))
                 if str((cond.get("check") or {}).get("type") or "") == "owner":
                     asked = _dict(entry.get("owner_asked"))
                     if str(cond["id"]) in asked.get("conditions", []):

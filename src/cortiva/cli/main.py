@@ -1603,6 +1603,7 @@ def cmd_mission(args: argparse.Namespace) -> None:
                 minimum=args.min,
                 contains=args.contains,
                 token_file=args.token_file,
+                sent_to=args.sent_to,
                 mission=args.mission,
             )
         elif args.mission_command == "amend":
@@ -2211,7 +2212,10 @@ def build_parser() -> argparse.ArgumentParser:
         "prove", help="Show the system where it can read a condition for itself"
     )
     mission_prove.add_argument("--condition", required=True)
-    mission_prove.add_argument("--url", required=True)
+    mission_prove.add_argument("--url", default="", help="Address on the real thing")
+    mission_prove.add_argument(
+        "--sent-to", default="", help="Who is told: a message the system sends them counts"
+    )
     mission_prove.add_argument("--path", default="", help="Field in the JSON returned")
     mission_prove.add_argument("--min", type=float, default=None, help="Least it must read")
     mission_prove.add_argument("--contains", default="", help="Text that must be there")

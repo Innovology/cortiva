@@ -425,3 +425,70 @@ def test_a_mission_carries_why_it_is_being_done(tmp_path):
         assert "No reason had been written down before." in text
     assert ms.restate(tmp_path, why="Because the board asked for it by Friday.", now=T0)[0]
     assert "The reason given before was" in ms.brief(ms.load(tmp_path), {}, now=T0)
+
+
+def _send(tmp_path, who: str, to: str, subject: str, at: datetime, body: str = "") -> None:
+    sent = tmp_path / who / "outbox" / "email" / "sent"
+    sent.mkdir(parents=True, exist_ok=True)
+    (sent / f"{subject[:8]}-{at.timestamp():.0f}.json").write_text(
+        json.dumps({"to": to, "subject": subject, "body": body, "sent_at": at.isoformat()})
+    )
+
+
+def test_a_member_telling_the_founder_by_hand_is_something_the_system_can_read(tmp_path):
+    """The automatic notification could not go out for want of a mail key, and
+    a member writing to the founder was something nothing could read
+    (Mini-2, 2026-11-20)."""
+    from datetime import timedelta
+
+    missions = _write(tmp_path, _mission())
+    _send(tmp_path, "amara", "alex@firm.test", "Earlier note", T0 - timedelta(hours=2))
+    ok, _ = ms.prove(
+        tmp_path, missions, "amara", condition="first-lead", sent_to="alex@firm.test", now=T0
+    )
+    assert ok
+    seen = _lead(ms.probe(tmp_path, fetch=_world(PAGES), now=T0))
+    assert not seen["met"] and "no message from the team to alex@firm.test" in seen["observed"]
+
+    _send(tmp_path, "yuki", "alex@firm.test", "New lead: Dana at Firm", T0 + timedelta(hours=1))
+    seen = _lead(ms.probe(tmp_path, fetch=_world(PAGES), now=T0))
+    assert not seen["met"] and "waits for a second member" in seen["observed"]
+
+    ms.witness(tmp_path, missions, "yuki", condition="first-lead", saw=SAW)
+    seen = _lead(ms.probe(tmp_path, fetch=_world(PAGES), now=T0))
+    assert seen["met"] and 'the system sent "New lead: Dana at Firm" from yuki' in seen["observed"]
+
+
+def test_a_message_from_outside_the_team_or_to_someone_else_is_not_it(tmp_path):
+    from datetime import timedelta
+
+    missions = _write(tmp_path, _mission())
+    ms.prove(tmp_path, missions, "amara", condition="first-lead", sent_to="alex@firm.test", now=T0)
+    later = T0 + timedelta(hours=1)
+    _send(tmp_path, "stranger", "alex@firm.test", "New lead", later)
+    _send(tmp_path, "yuki", "someone@else.test", "New lead", later)
+    ms.witness(tmp_path, missions, "yuki", condition="first-lead", saw=SAW)
+    assert not _lead(ms.probe(tmp_path, fetch=_world(PAGES), now=T0))["met"]
+
+
+def test_an_unmet_condition_says_how_long_who_reworded_it_and_what_it_said(tmp_path):
+    from datetime import timedelta
+
+    m = _mission()
+    m["owner"] = "cto"
+    missions = _write(tmp_path, m)
+    state = ms.probe(tmp_path, fetch=_world(PAGES), now=T0)
+    ok, _ = ms.amend(
+        tmp_path,
+        "cto",
+        condition="first-lead",
+        describe="The notification email is delivered from the verified sending domain",
+        now=T0,
+    )
+    assert ok
+    missions = ms.load(tmp_path)
+    block = ms.context_block(missions, state, now=T0 + timedelta(hours=16))
+    assert "It has read not met for 16" in block
+    assert "cto reworded it" in block
+    assert 'As issued it read: "A real lead is in the pipeline and a member has seen it"' in block
+    assert "the sentence is the condition, the reading is not" in block

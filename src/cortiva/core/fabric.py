@@ -9312,6 +9312,7 @@ class Fabric:
         minimum: float | None = None,
         contains: str = "",
         token_file: str = "",
+        sent_to: str = "",
         mission: str = "",
         **_: Any,
     ) -> dict[str, Any]:
@@ -9334,6 +9335,7 @@ class Fabric:
             minimum=minimum,
             contains=contains,
             token_file=token_file,
+            sent_to=sent_to,
             mission_id=mission,
         )
         if not ok:
