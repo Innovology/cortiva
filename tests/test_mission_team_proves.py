@@ -372,3 +372,123 @@ def test_shown_before_it_is_done_and_done_after_is_met(tmp_path):
     assert not _lead(ms.probe(tmp_path, fetch=_world(before), now=T0))["met"]
     after = dict(PAGES) | {"https://site.test/api/leads/count": (200, '{"real": 3}')}
     assert _lead(ms.probe(tmp_path, fetch=_world(after), now=T0))["met"]
+
+
+def test_whoever_issued_it_can_say_again_what_it_is_for(tmp_path):
+    """Mini-2, 19 November 2026: written down as a form that works, meant as a lead to close."""
+    m = _mission()
+    m["intent"] = "A visitor can leave their details and the founder is told."
+    _write(tmp_path, m)
+    assert ms.restate(tmp_path, intent="more leads")[0] is False  # not a sentence
+    meant = "A qualified lead captured by the website that the founder can attempt to close."
+    ok, mid = ms.restate(tmp_path, intent=meant, by="Alex", now=T0)
+    assert ok and mid == "m-leads"
+    missions = ms.load(tmp_path)
+    assert missions[0]["intent"] == meant
+    assert missions[0]["restated"][0]["was"].startswith("A visitor can leave")
+    # The conditions are as they were, and the team is told what they were written for.
+    assert [c["id"] for c in missions[0]["end_state"]] == ["form", "first-lead"]
+    for text in (ms.brief(missions, {}, now=T0), ms.context_block(missions, {}, now=T0)):
+        assert meant in text
+        assert "Alex restated what this mission is for" in text
+        assert 'Before that it read: "A visitor can leave' in text
+        assert "none has been reworded since" in text
+    # The register's owner rewords a condition: that is stated too.
+    said = "A qualified lead that nobody on the team submitted is in the pipeline"
+    assert ms.amend(tmp_path, "ceo", condition="first-lead", describe=said)[0]
+    assert "1 condition(s) have been reworded since" in ms.brief(ms.load(tmp_path), {}, now=T0)
+
+
+def test_the_short_context_says_what_the_mission_is_for(tmp_path):
+    m = _mission()
+    m["intent"] = "A qualified lead the founder can attempt to close."
+    text = ms.brief(_write(tmp_path, m), {}, now=T0)
+    assert "What it is for, in Alex's words: A qualified lead the founder can attempt" in text
+    assert "restated" not in text
+
+
+def test_a_mission_carries_why_it_is_being_done(tmp_path):
+    """The end without the reason is a list to tick."""
+    m = _mission()
+    m["intent"] = "A qualified lead the founder can attempt to close."
+    missions = _write(tmp_path, m)
+    for text in (ms.brief(missions, {}, now=T0), ms.context_block(missions, {}, now=T0)):
+        assert "Why it is being done: Alex has not written a reason down." in text
+    assert ms.restate(tmp_path)[0] is False
+    why = "The company has no paying customer yet, and one closed lead is the first."
+    assert ms.restate(tmp_path, why=why, by="Alex", now=T0)[0]
+    missions = ms.load(tmp_path)
+    assert missions[0]["intent"].startswith("A qualified lead")  # untouched
+    for text in (ms.brief(missions, {}, now=T0), ms.context_block(missions, {}, now=T0)):
+        assert f"Why it is being done, in Alex's words: {why}" in text
+        assert "Alex restated why this mission is being done" in text
+        assert "No reason had been written down before." in text
+    assert ms.restate(tmp_path, why="Because the board asked for it by Friday.", now=T0)[0]
+    assert "The reason given before was" in ms.brief(ms.load(tmp_path), {}, now=T0)
+
+
+def _send(tmp_path, who: str, to: str, subject: str, at: datetime, body: str = "") -> None:
+    sent = tmp_path / who / "outbox" / "email" / "sent"
+    sent.mkdir(parents=True, exist_ok=True)
+    (sent / f"{subject[:8]}-{at.timestamp():.0f}.json").write_text(
+        json.dumps({"to": to, "subject": subject, "body": body, "sent_at": at.isoformat()})
+    )
+
+
+def test_a_member_telling_the_founder_by_hand_is_something_the_system_can_read(tmp_path):
+    """The automatic notification could not go out for want of a mail key, and
+    a member writing to the founder was something nothing could read
+    (Mini-2, 2026-11-20)."""
+    from datetime import timedelta
+
+    missions = _write(tmp_path, _mission())
+    _send(tmp_path, "amara", "alex@firm.test", "Earlier note", T0 - timedelta(hours=2))
+    ok, _ = ms.prove(
+        tmp_path, missions, "amara", condition="first-lead", sent_to="alex@firm.test", now=T0
+    )
+    assert ok
+    seen = _lead(ms.probe(tmp_path, fetch=_world(PAGES), now=T0))
+    assert not seen["met"] and "no message from the team to alex@firm.test" in seen["observed"]
+
+    _send(tmp_path, "yuki", "alex@firm.test", "New lead: Dana at Firm", T0 + timedelta(hours=1))
+    seen = _lead(ms.probe(tmp_path, fetch=_world(PAGES), now=T0))
+    assert not seen["met"] and "waits for a second member" in seen["observed"]
+
+    ms.witness(tmp_path, missions, "yuki", condition="first-lead", saw=SAW)
+    seen = _lead(ms.probe(tmp_path, fetch=_world(PAGES), now=T0))
+    assert seen["met"] and 'the system sent "New lead: Dana at Firm" from yuki' in seen["observed"]
+
+
+def test_a_message_from_outside_the_team_or_to_someone_else_is_not_it(tmp_path):
+    from datetime import timedelta
+
+    missions = _write(tmp_path, _mission())
+    ms.prove(tmp_path, missions, "amara", condition="first-lead", sent_to="alex@firm.test", now=T0)
+    later = T0 + timedelta(hours=1)
+    _send(tmp_path, "stranger", "alex@firm.test", "New lead", later)
+    _send(tmp_path, "yuki", "someone@else.test", "New lead", later)
+    ms.witness(tmp_path, missions, "yuki", condition="first-lead", saw=SAW)
+    assert not _lead(ms.probe(tmp_path, fetch=_world(PAGES), now=T0))["met"]
+
+
+def test_an_unmet_condition_says_how_long_who_reworded_it_and_what_it_said(tmp_path):
+    from datetime import timedelta
+
+    m = _mission()
+    m["owner"] = "cto"
+    missions = _write(tmp_path, m)
+    state = ms.probe(tmp_path, fetch=_world(PAGES), now=T0)
+    ok, _ = ms.amend(
+        tmp_path,
+        "cto",
+        condition="first-lead",
+        describe="The notification email is delivered from the verified sending domain",
+        now=T0,
+    )
+    assert ok
+    missions = ms.load(tmp_path)
+    block = ms.context_block(missions, state, now=T0 + timedelta(hours=16))
+    assert "It has read not met for 16" in block
+    assert "cto reworded it" in block
+    assert 'As issued it read: "A real lead is in the pipeline and a member has seen it"' in block
+    assert "the sentence is the condition, the reading is not" in block

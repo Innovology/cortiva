@@ -139,3 +139,68 @@ def test_only_someone_who_leads_others_and_holds_no_number_is_asked_and_once_a_d
     assert f._owes_a_number(lead) is False
     me.declare(f.agents_dir, "ceo", name="Orders shipped")
     assert f._owes_a_number(SimpleNamespace(id="ceo")) is False
+
+
+def _behind_a_sign_in():
+    """A source that answers only to the right credential, as a ledger or a
+    brokerage account does."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Source(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            ok = self.headers.get("Authorization") == "Bearer s3cret"
+            body = b'{"value": 104250.5}' if ok else b"{}"
+            self.send_response(200 if ok else 401)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Source)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_a_number_behind_a_sign_in_is_read_with_its_owners_credential(tmp_path):
+    """A ledger balance or a portfolio's value is not at an open address."""
+    from cortiva.core import measures
+
+    server = _behind_a_sign_in()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/value"
+        (tmp_path / "cfo").mkdir()
+        (tmp_path / "cfo" / "broker.token").write_text("s3cret\n")
+        ok, mid = measures.declare(
+            tmp_path,
+            "cfo",
+            name="Portfolio value",
+            url=url,
+            path="value",
+            token_file="broker.token",
+        )
+        assert ok
+        row = measures.load(tmp_path)[0]
+        assert "s3cret" not in (tmp_path / measures.MEASURES_FILE).read_text()
+        assert measures.read_one(row, None, tmp_path) == (104250.5, "")
+        measures.probe(tmp_path)
+        assert measures.load_state(tmp_path)[mid]["value"] == 104250.5
+        (tmp_path / "cfo" / "broker.token").write_text("wrong")
+        value, note = measures.read_one(row, None, tmp_path)
+        assert value is None and "401" in note
+    finally:
+        server.shutdown()
+
+
+def test_a_credential_must_be_the_owners_own(tmp_path):
+    from cortiva.core import measures
+
+    (tmp_path / "cfo").mkdir()
+    (tmp_path / "ceo").mkdir()
+    (tmp_path / "ceo" / "t").write_text("x")
+    ok, why = measures.declare(
+        tmp_path, "cfo", name="Cash", url="https://books.test/cash", token_file="../ceo/t"
+    )
+    assert not ok and "must be under" in why

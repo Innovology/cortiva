@@ -215,6 +215,31 @@ def unread(agents_dir: Path, agent_id: str, *, take: bool = True) -> list[dict[s
     return rows
 
 
+def unread_names(agents_dir: Path) -> list[str]:
+    """Every name that has chat waiting under it."""
+    try:
+        return sorted(p.stem for p in (_dir(agents_dir) / "unread").glob("*.jsonl"))
+    except OSError:
+        return []
+
+
+def readdress(agents_dir: Path, name: str, agent_id: str) -> int:
+    """Move what waits under ``name`` to ``agent_id``, oldest first, each
+    message marked with the name it was sent to. Returns how many moved."""
+    src = _dir(agents_dir) / "unread" / f"{_safe(name)}.jsonl"
+    rows = _read_jsonl(src)
+    for row in rows:
+        _append(
+            _dir(agents_dir) / "unread" / f"{_safe(agent_id)}.jsonl",
+            {**row, "to": [agent_id], "sent_to_name": name},
+        )
+    try:
+        src.unlink()
+    except OSError:
+        logger.debug("could not clear %s", src, exc_info=True)
+    return len(rows)
+
+
 def line(msg: dict[str, Any]) -> str:
     """One message on one line."""
     parts = [str(msg.get("from", "?")), str(msg.get("kind", "say"))]
@@ -227,6 +252,9 @@ def line(msg: dict[str, Any]) -> str:
         text += f": {body}"
     if msg.get("ref"):
         text += f" [{msg['ref']}]"
+    if msg.get("sent_to_name"):
+        sent = str(msg.get("at") or "")[:16].replace("T", " ")
+        text += f' (sent {sent} UTC to "{msg["sent_to_name"]}"; it reached you only now)'
     return text
 
 

@@ -1549,6 +1549,7 @@ def cmd_measure(args: argparse.Namespace) -> None:
                 path=args.path,
                 drives=args.drives,
                 better=args.better,
+                token_file=args.token_file,
             )
         else:
             resp = client.send_sync("measure.list", token=token)
@@ -1570,6 +1571,23 @@ def cmd_mission(args: argparse.Namespace) -> None:
 
     token = os.environ.get("CORTIVA_CHAT_TOKEN", "")
     sock = os.environ.get("CORTIVA_FABRIC_SOCK", "")
+    if args.mission_command == "restate":
+        # Whoever issued the mission, at the node: not something a work
+        # session does for the team it belongs to.
+        if token:
+            print("failed: what a mission is for is restated by whoever issued it, not the team")
+            sys.exit(1)
+        from cortiva.core import missions as _ms
+
+        ok, said = _ms.restate(
+            Path(args.agents_dir).expanduser(),
+            intent=args.intent,
+            why=args.why,
+            mission_id=args.mission,
+            by=args.by,
+        )
+        print(f"restated: {said}" if ok else f"failed: {said}")
+        sys.exit(0 if ok else 1)
     if not token or not sock:
         print("Missions are not available here: no session token.")
         sys.exit(1)
@@ -1585,6 +1603,7 @@ def cmd_mission(args: argparse.Namespace) -> None:
                 minimum=args.min,
                 contains=args.contains,
                 token_file=args.token_file,
+                sent_to=args.sent_to,
                 mission=args.mission,
             )
         elif args.mission_command == "amend":
@@ -2178,6 +2197,11 @@ def build_parser() -> argparse.ArgumentParser:
     measure_decl.add_argument("--path", default="")
     measure_decl.add_argument("--drives", default="", help="The number this one feeds")
     measure_decl.add_argument("--better", default="up", choices=["up", "down"])
+    measure_decl.add_argument(
+        "--token-file",
+        default="",
+        help="A file under your directory holding the credential the source needs",
+    )
 
     mission_top = subparsers.add_parser(
         "mission", help="Prove what is the team's to prove, from a work session"
@@ -2188,7 +2212,10 @@ def build_parser() -> argparse.ArgumentParser:
         "prove", help="Show the system where it can read a condition for itself"
     )
     mission_prove.add_argument("--condition", required=True)
-    mission_prove.add_argument("--url", required=True)
+    mission_prove.add_argument("--url", default="", help="Address on the real thing")
+    mission_prove.add_argument(
+        "--sent-to", default="", help="Who is told: a message the system sends them counts"
+    )
     mission_prove.add_argument("--path", default="", help="Field in the JSON returned")
     mission_prove.add_argument("--min", type=float, default=None, help="Least it must read")
     mission_prove.add_argument("--contains", default="", help="Text that must be there")
@@ -2203,6 +2230,14 @@ def build_parser() -> argparse.ArgumentParser:
     mission_amend.add_argument("--describe", default="")
     mission_amend.add_argument("--prove-by", default="", choices=["", "team", "owner"])
     mission_amend.add_argument("--mission", default="")
+    mission_restate = mission_sub.add_parser(
+        "restate", help="Say again what the mission is for (whoever issued it, at the node)"
+    )
+    mission_restate.add_argument("--intent", default="", help="What it is to reach")
+    mission_restate.add_argument("--why", default="", help="Why it is being done")
+    mission_restate.add_argument("--mission", default="")
+    mission_restate.add_argument("--by", default="", help="Your name, as the team knows you")
+    mission_restate.add_argument("--agents-dir", default="~/.cortiva/agents")
     mission_wit = mission_sub.add_parser(
         "witness", help="Say what you saw, having done it yourself (not the one who showed it)"
     )
@@ -2401,7 +2436,7 @@ def main() -> None:
         else:
             parser.parse_args(["allhands", "--help"])
     elif args.command == "mission":
-        if args.mission_command in ("prove", "witness", "list", "amend"):
+        if args.mission_command in ("prove", "witness", "list", "amend", "restate"):
             cmd_mission(args)
         else:
             parser.parse_args(["mission", "--help"])

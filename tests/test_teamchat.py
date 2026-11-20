@@ -107,6 +107,30 @@ def test_the_sender_is_whoever_the_token_was_issued_to(tmp_path):
     assert not refused["ok"] and "token" in refused["error"]
 
 
+def test_a_directory_of_notes_left_for_a_name_is_not_a_person(tmp_path):
+    """Mini-2, 17-19 November 2026: 45 messages to two first names, none read."""
+    (tmp_path / "samantha" / "inbox").mkdir(parents=True)
+    (tmp_path / "samantha" / "inbox" / "note.md").write_text("for Samantha")
+    (tmp_path / "samantha" / "workspace").mkdir()
+    (tmp_path / "cto" / "identity").mkdir(parents=True)
+    (tmp_path / "cto" / "inbox").mkdir()
+    assert Fabric._only_mail_left_for_a_name(tmp_path / "samantha")
+    assert not Fabric._only_mail_left_for_a_name(tmp_path / "cto")
+    (tmp_path / "new").mkdir()
+    assert not Fabric._only_mail_left_for_a_name(tmp_path / "new")
+
+    f = _fab(tmp_path)
+    # What was sent while the directory stood in for her:
+    tc.post(tmp_path, "amara", "ask", "is #363 yours to approve?", to=["samantha"])
+    tc.post(tmp_path, "amara", "say", "for nobody we know", to=["zed"])
+    assert f._redeliver_chat_left_for_a_name() == 1
+    got = tc.unread(tmp_path, "cto")
+    assert [m["body"] for m in got] == ["is #363 yours to approve?"]
+    assert got[0]["to"] == ["cto"] and got[0]["sent_to_name"] == "samantha"
+    assert 'to "samantha"; it reached you only now' in tc.line(got[0])
+    assert tc.unread_names(tmp_path) == ["zed"]
+
+
 def test_an_unknown_colleague_is_refused(tmp_path):
     f = _fab(tmp_path)
     out = asyncio.run(f._ipc_chat_send(token=_token(f, "amara"), body="q", to="nobody"))

@@ -68,6 +68,9 @@ CHECK_TIMEOUT_S = 10.0
 MAX_BODY_BYTES = 512 * 1024
 #: A route unproven for this long is the team's first problem, not a footnote.
 ROUTE_OVERDUE_HOURS = 24.0
+#: A mission where nothing has moved for this long is standing still, however
+#: busy the team is. Nobody has to say they are blocked for that to be so.
+STILL_AFTER_HOURS = 12.0
 
 #: ``fetch(url, timeout) -> (status, body)``; raises on a transport failure.
 Fetch = Callable[[str, float], tuple[int, str]]
@@ -406,17 +409,23 @@ def prove(
     member: str,
     *,
     condition: str,
-    url: str,
+    url: str = "",
     path: str = "",
     minimum: float | None = None,
     contains: str = "",
     token_file: str = "",
+    sent_to: str = "",
     mission_id: str = "",
     now: datetime | None = None,
     fetch: Fetch | None = None,
 ) -> tuple[bool, str]:
-    """A member shows the system where it can read a condition for itself.
+    """A member shows the system where it can read a condition for itself:
+    an address on the thing, or a message the system itself will have sent.
     Showing it again replaces what was shown and clears who had seen it.
+
+    A team whose notification email could not go out spent sixteen hours on
+    the mail key, because a member writing to the founder by hand was
+    something the system had no way to read (Mini-2, 2026-11-20).
 
     The system reads the address as it is shown and keeps what it read. An
     open address that already reads the way that is asked shows nothing
@@ -426,8 +435,28 @@ def prove(
     m, cond, why = _team_condition(missions, member, condition, mission_id)
     if m is None or cond is None:
         return False, why
+    to = str(sent_to or "").strip().lower()
+    if to:
+        if url or path or token_file:
+            return False, "show an address or a message sent, one or the other"
+        if "@" not in to:
+            return False, "say who the message goes to, as an address"
+        kept: dict[str, Any] = {
+            "by": member,
+            "at": (now or datetime.now(UTC)).isoformat(),
+            "sent_to": to,
+        }
+        if contains:
+            kept["contains"] = str(contains)
+        proofs = load_proofs(agents_dir)
+        proofs.setdefault(str(m["mission_id"]), {})[str(cond["id"])] = {"shown": kept, "seen": []}
+        try:
+            _save_proofs(agents_dir, proofs)
+        except OSError:
+            return False, "the proof could not be kept"
+        return True, str(m["mission_id"])
     if not _is_http_url(url):
-        return False, "give an http(s) address the system can read"
+        return False, "give an http(s) address the system can read, or --sent-to <who is told>"
     sites = mission_sites(m)
     if sites and _site(_host(url)) not in sites:
         return False, (
@@ -472,6 +501,46 @@ def _shown_check(shown: dict[str, Any]) -> dict[str, Any]:
     if shown.get("contains"):
         check["contains"] = shown["contains"]
     return check
+
+
+def _sent_since(
+    agents_dir: Path, mission: dict[str, Any], shown: dict[str, Any]
+) -> tuple[bool, str]:
+    """Whether the system has sent a member's message to the address shown,
+    since it was shown. Read from the system's own record of what it sent."""
+    to = str(shown.get("sent_to") or "").lower()
+    want = str(shown.get("contains") or "").lower()
+    try:
+        since = datetime.fromisoformat(str(shown.get("at") or ""))
+    except ValueError:
+        return False, "what was shown carries no time"
+    team = [str(t).lower() for t in _as_list(mission.get("team")) if str(t).strip()]
+    try:
+        dirs = sorted(d for d in Path(agents_dir).iterdir() if d.is_dir())
+    except OSError:
+        dirs = []
+    for d in dirs:
+        if team and d.name.lower() not in team:
+            continue
+        for f in sorted((d / "outbox" / "email" / "sent").glob("*.json")):
+            try:
+                mail = json.loads(f.read_text(encoding="utf-8"))
+                when = datetime.fromisoformat(str(mail.get("sent_at") or ""))
+            except (OSError, ValueError):
+                continue
+            if when <= since or to not in str(mail.get("to") or "").lower():
+                continue
+            text = f"{mail.get('subject') or ''}\n{mail.get('body') or ''}"
+            if want and want not in text.lower():
+                continue
+            return True, (
+                f'the system sent "{str(mail.get("subject") or "")[:80]}" from {d.name} '
+                f"to {to}, {_clock(when.isoformat())}"
+            )
+    saying = f' saying "{shown.get("contains")}"' if want else ""
+    return False, (
+        f"no message from the team to {to}{saying} has been sent since {_clock(since.isoformat())}"
+    )
 
 
 def witness(
@@ -587,6 +656,142 @@ def amend(
     return False, f"'{cid}' is not a condition of an active mission"
 
 
+def restate(
+    agents_dir: Path,
+    *,
+    intent: str = "",
+    why: str = "",
+    mission_id: str = "",
+    by: str = "",
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """Whoever issued a mission says again what it is to reach, why it is
+    being done, or both.
+
+    The end without the reason is a list to tick: a team that knows why can
+    tell when its conditions no longer serve it, and one that does not
+    cannot.
+
+    The first mission on Mini-2 was written down as "lead capture live":
+    a form, a store and a notification. The person who issued it meant a
+    qualified lead he could try to close. The team met seven of eight
+    conditions in a week without anyone working on bringing a lead in, and
+    nothing let him correct what had been written (19 November 2026).
+
+    What it said before is kept. The conditions are not touched: they were
+    written for the earlier wording, the team is told so, and the register's
+    owner rewords what the team proves."""
+    path = Path(agents_dir) / MISSIONS_FILE
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, "there is no mission register to change"
+    items = raw.get("missions") if isinstance(raw, dict) else raw
+    said = " ".join(str(intent or "").split())
+    reason = " ".join(str(why or "").split())
+    if not said and not reason:
+        return False, "say what changes: --intent, --why, or both"
+    if (said and len(said) < 20) or (reason and len(reason) < 20):
+        return False, "say it in a full sentence"
+    active = [
+        m
+        for m in (items if isinstance(items, list) else [])
+        if isinstance(m, dict)
+        and m.get("status", "active") == "active"
+        and (not mission_id or str(m.get("mission_id")) == mission_id)
+    ]
+    if len(active) != 1:
+        return False, (
+            "no active mission has that id"
+            if not active
+            else "more than one mission is active: name one with --mission"
+        )
+    m = active[0]
+    m.setdefault("restated", []).append(
+        {
+            "by": by or _issuer(m),
+            "at": (now or datetime.now(UTC)).isoformat(),
+            "was": str(m.get("intent") or "") if said else "",
+            "why_was": str(m.get("why") or "") if reason else "",
+            "why_added": bool(reason and not m.get("why")),
+        }
+    )
+    if said:
+        m["intent"] = said[:600]
+    if reason:
+        m["why"] = reason[:600]
+    try:
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        return False, "the register could not be written"
+    return True, str(m.get("mission_id"))
+
+
+def _restated_fact(m: dict[str, Any]) -> str:
+    """What changed about what the mission is for, and whether any condition
+    has been reworded since — '' when it reads as it was issued."""
+    rows = [r for r in _as_list(m.get("restated")) if isinstance(r, dict)]
+    if not rows:
+        return ""
+    last = rows[-1]
+    at = str(last.get("at") or "")
+    since = [
+        a
+        for c in m.get("end_state") or []
+        for a in _as_list(_dict(c).get("amended"))
+        if isinstance(a, dict) and str(a.get("at") or "") > at
+    ]
+    only_why = not last.get("was") and (last.get("why_was") or last.get("why_added"))
+    what = "why this mission is being done" if only_why else "what this mission is for"
+    text = f"{last.get('by') or _issuer(m)} restated {what} on {_clock(at)}."
+    if last.get("was"):
+        text += f' Before that it read: "{last["was"]}".'
+    if last.get("why_was"):
+        text += f' The reason given before was: "{last["why_was"]}".'
+    elif last.get("why_added"):
+        text += " No reason had been written down before."
+    text += (
+        f" {len(since)} condition(s) have been reworded since."
+        if since
+        else " Every condition below was written for the earlier wording; "
+        "none has been reworded since."
+    )
+    return text
+
+
+def _why_line(m: dict[str, Any]) -> str:
+    why = str(m.get("why") or "").strip()
+    if why:
+        return f"Why it is being done, in {_issuer(m)}'s words: {why}"
+    return f"Why it is being done: {_issuer(m)} has not written a reason down."
+
+
+def _standing_facts(cond: dict[str, Any], seen: dict[str, Any], now: datetime) -> list[str]:
+    """What is known about a condition that is not met: how long it has read
+    that way, who reworded it and what it said as issued, and who chose how
+    it is read. Facts only; what to do about them is the reader's."""
+    out: list[str] = []
+    stood = _hours_between(str(seen.get("since") or ""), now)
+    if stood is not None and stood >= 1:
+        out.append(f"  It has read not met for {_age(stood)}.")
+    changes = [c for c in _as_list(cond.get("amended")) if isinstance(c, dict)]
+    worded = [c for c in changes if str(c.get("was") or "") != str(cond.get("describe") or "")]
+    if worded:
+        first, last = worded[0], worded[-1]
+        out.append(
+            f"  {last.get('by', 'Its owner')} reworded it {_clock(str(last.get('at') or ''))}. "
+            f'As issued it read: "{first.get("was", "")}"'
+        )
+    if str(_dict(cond.get("check")).get("type") or "") == "team":
+        out.append(
+            "  How the system reads it was chosen by whoever showed it, and any member "
+            "can show it another way; the sentence is the condition, the reading is not."
+        )
+    return out
+
+
 def _amended_note(cond: dict[str, Any]) -> str:
     """Who last changed a condition and what it said before, for a reader
     who knew it as issued."""
@@ -649,6 +854,18 @@ def run_team_check(
             "system an address where it can read it for itself"
         )
     by = str(shown.get("by") or "a member")
+    if shown.get("sent_to"):
+        sent, read = _sent_since(agents_dir, mission, shown)
+        if not sent:
+            return False, f"{by} showed a message to be sent; {read}"
+        others = [_dict(s) for s in proof.get("seen") or [] if str(_dict(s).get("by")) != by]
+        if not others:
+            return False, (
+                f"{read}, shown by {by}. It waits for a second member, not {by}, to say "
+                "what they saw of the thing the message is about"
+            )
+        names = ", ".join(str(s.get("by")) for s in others)
+        return True, f"shown by {by}, seen by {names}; {read}"
     url = str(shown.get("url") or "")
     secret, problem = _secret(agents_dir, by, str(shown.get("token_file") or ""))
     if problem:
@@ -714,6 +931,11 @@ def team_guide(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
         "it. The system reads it as you show it and from then on: show it before the "
         "thing is done, or ask for more than it reads now. An open address that already "
         "reads that way proves nothing.\n"
+        '- `cortiva mission prove --condition <id> --sent-to <address> [--contains "<text>"]` '
+        "is the same for a condition that ends in somebody being told: the system reads "
+        "its own record of what it sent, and counts a message any of you sends to that "
+        "address after you show it. Whichever of you sends it, by whatever means, it is "
+        "the telling that is read.\n"
         '- `cortiva mission witness --condition <id> --saw "<what you did and what you '
         'saw>"` is for a second member, never the one who showed it. Do it yourself '
         "first; your name stands on what you say you saw.\n"
@@ -802,12 +1024,107 @@ def probe(
         asked = _dict(prev.get("owner_asked"))
         if asked and all(not _dict(conds.get(c)).get("met") for c in asked.get("conditions", [])):
             entry["owner_asked"] = asked
+        still = {
+            c: at
+            for c, at in _dict(prev.get("still_asked")).items()
+            if c in conds and not conds[c]["met"]
+        }
+        if still:
+            entry["still_asked"] = still
         complete = entry["met"] == entry["total"]
         entry["complete"] = complete
         entry["completed_at"] = (str(prev.get("completed_at") or "") or now_iso) if complete else ""
         state[mid] = entry
     save_state(agents_dir, state)
     return state
+
+
+def standing_still(agents_dir: Path, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Conditions of a mission where nothing has moved for STILL_AFTER_HOURS.
+
+    A team that is busy does not say it is blocked. One condition read not
+    met for eight days and nothing moved for twenty-two hours while five
+    members finished fifteen pieces of work, and no one was asked anything,
+    because the asking waited for someone to say "blocked" (Mini-2,
+    2026-11-20). The system holds the fact, so the system asks.
+
+    One row per condition the team can move, with who is asked: every member
+    of the team not asked about it in that long, the one who showed it first.
+    Each is asked separately; that they answer differently is what a team is
+    for."""
+    at = now or datetime.now(UTC)
+    state = load_state(agents_dir)
+    proofs = load_proofs(agents_dir)
+    rows: list[dict[str, Any]] = []
+    for m in load(agents_dir):
+        mid = str(m["mission_id"])
+        entry = _dict(state.get(mid))
+        if not entry or entry.get("complete"):
+            continue
+        moved = str(entry.get("last_change_at") or entry.get("first_checked_at") or "")
+        still = _hours_between(moved, at)
+        if still is None or still < STILL_AFTER_HOURS:
+            continue
+        team = [str(t).lower() for t in _as_list(m.get("team")) if str(t).strip()]
+        asked = _dict(entry.get("still_asked"))
+        for cond in m["end_state"]:
+            cid = str(cond["id"])
+            seen = _dict(_dict(entry.get("conditions")).get(cid))
+            if not seen or seen.get("met"):
+                continue
+            if str(_dict(cond["check"]).get("type") or "") == "owner":
+                continue  # that one waits on its owner, who is asked elsewhere
+            shown = _dict(_dict(_dict(proofs.get(mid)).get(cid)).get("shown"))
+            by = str(shown.get("by") or "").lower()
+            everyone = list(dict.fromkeys(w for w in (by, *team) if w))
+            before = asked.get(cid)
+            if isinstance(before, str):
+                # Written when only two were asked: the one who showed it and
+                # the first named.
+                before = {w: before for w in (by, *team[:1]) if w}
+            who = []
+            for w in everyone:
+                since_ask = _hours_between(str(_dict(before).get(w) or ""), at)
+                if since_ask is None or since_ask >= STILL_AFTER_HOURS:
+                    who.append(w)
+            if not who:
+                continue
+            rows.append(
+                {
+                    "mission_id": mid,
+                    "title": str(m.get("title") or mid),
+                    "condition": cid,
+                    "describe": str(cond.get("describe") or cid),
+                    "observed": str(seen.get("observed") or ""),
+                    "not_met_for": _age(_hours_between(str(seen.get("since") or ""), at)),
+                    "still_for": _age(still),
+                    "still_hours": still,
+                    "who": who,
+                }
+            )
+    return rows
+
+
+def record_still_ask(
+    agents_dir: Path,
+    mission_id: str,
+    condition: str,
+    who: list[str],
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Note which members were asked about a condition standing still."""
+    state = load_state(agents_dir)
+    entry = _dict(state.get(mission_id))
+    if not entry:
+        return
+    asked = _dict(entry.get("still_asked"))
+    at = (now or datetime.now(UTC)).isoformat()
+    before = asked.get(condition)
+    asked[condition] = {**(before if isinstance(before, dict) else {}), **dict.fromkeys(who, at)}
+    entry["still_asked"] = asked
+    state[mission_id] = entry
+    save_state(agents_dir, state)
 
 
 # ---------------------------------------------------------------------------
@@ -972,6 +1289,10 @@ def context_block(
         intent = str(m.get("intent") or "").strip()
         if intent:
             lines.append(f"Intent ({_issuer(m)}): {intent}\n")
+        lines.append(_why_line(m) + "\n")
+        restated = _restated_fact(m)
+        if restated:
+            lines.append(restated + "\n")
         lines.extend(_route_lines(m, entry, now))
         for cond in m["end_state"]:
             seen = conds.get(str(cond["id"])) or {}
@@ -981,20 +1302,13 @@ def context_block(
                 lines.append(f"- ✅ {cond['describe']} — met since {_clock(seen.get('since', ''))}")
             else:
                 lines.append(f"- ❌ {cond['describe']} — NOT MET ({seen.get('observed', '')})")
+                lines.extend(_standing_facts(cond, seen, now))
                 if str((cond.get("check") or {}).get("type") or "") == "owner":
                     asked = _dict(entry.get("owner_asked"))
                     if str(cond["id"]) in asked.get("conditions", []):
-                        lines.append(
-                            f"  {_issuer(m)} was asked {_clock(asked.get('at', ''))} by "
-                            f"{asked.get('by', 'a teammate')}. That was the team's one ask. "
-                            "Do not ask again, do not chase a colleague about it, and treat "
-                            "any item on your list that asks again as already done."
-                        )
+                        lines.append(f"  {_asked_fact(m, asked, now)}.")
                     else:
-                        lines.append(
-                            f"  Make it true, then ask {_issuer(m)} ONCE to confirm it, saying "
-                            "exactly what to do and where to look. Do not ask before it is true."
-                        )
+                        lines.append(f"  {_not_asked_fact(m)}.")
         if entry and not entry.get("complete"):
             if entry.get("last_change_at"):
                 idle = _hours_between(entry["last_change_at"], now)
@@ -1038,18 +1352,24 @@ def brief(
         unmet = [c for c in m["end_state"] if not (conds.get(str(c["id"])) or {}).get("met")]
         asked = _dict(entry.get("owner_asked"))
         if waits_on_owner(m, entry):
+            waiting = ", ".join(str(c["describe"]) for c in unmet)
             out.append(
-                f"**{m['title']}** — waits on {_issuer(m)}, who was asked "
-                f"{_clock(asked.get('at', ''))} by {asked.get('by', 'a teammate')}. Every "
-                "condition the system can check is met. Nothing here is yours to do: do not "
-                "ask again, do not chase, do not add mission work. A second message does "
-                "not make the answer come sooner."
+                f"**{m['title']}** — every condition the system can check is met. What is "
+                f"left ({waiting}) is written as {_issuer(m)}'s to confirm. "
+                f"{_asked_fact(m, asked, now)}."
             )
             continue
         out.append(
             f"**{m['title']}** — {entry.get('met', 0)} of {len(m['end_state'])} end-state "
             f"conditions met, as observed by the system (issued by {_issuer(m)})."
         )
+        intent = str(m.get("intent") or "").strip()
+        if intent:
+            out.append(f"What it is for, in {_issuer(m)}'s words: {intent}")
+        out.append(_why_line(m))
+        restated = _restated_fact(m)
+        if restated:
+            out.append(restated)
         team = [str(t) for t in _as_list(m.get("team")) if str(t).strip()]
         if team:
             out.append(f"The team on it: {', '.join(team)}.")
@@ -1069,15 +1389,9 @@ def brief(
             seen = conds.get(str(cond["id"])) or {}
             owner = str((cond.get("check") or {}).get("type") or "") == "owner"
             if owner and str(cond["id"]) in asked.get("conditions", []):
-                tail = (
-                    f"{_issuer(m)} was asked {_clock(asked.get('at', ''))} by "
-                    f"{asked.get('by', 'a teammate')}; it waits on them, do not ask again"
-                )
+                tail = _asked_fact(m, asked, now)
             elif owner:
-                tail = (
-                    f"only {_issuer(m)} can confirm; make it true, then ONE member asks "
-                    "once for the team"
-                )
+                tail = _not_asked_fact(m)
             else:
                 tail = str(seen.get("observed") or "not yet checked")
             if str((cond.get("check") or {}).get("type") or "") == "team":
@@ -1093,13 +1407,30 @@ def brief(
 
 
 def team_has_work(missions: list[dict[str, Any]], state: dict[str, Any]) -> bool:
-    """False when every unfinished mission waits on its owner: an idle member
-    then has no mission step to take, and asking for one produces a chase."""
-    for m in missions:
-        entry = _dict(state.get(str(m["mission_id"])))
-        if not entry.get("complete") and not waits_on_owner(m, entry):
-            return True
-    return False
+    """True while any mission is short of its end state. A mission whose last
+    conditions were written as one person's to confirm was once counted as
+    no work for anyone; five people then had nothing to do on it for six and
+    a half days (Mini-2, 2026-11-12 to 11-19). Who was asked, and when, is
+    shown to them; what to do about it is theirs."""
+    return any(not _dict(state.get(str(m["mission_id"]))).get("complete") for m in missions)
+
+
+def _asked_fact(m: dict[str, Any], asked: dict[str, Any], now: datetime | None) -> str:
+    """Who asked the mission's issuer, when, and that nothing has come back."""
+    when = str(asked.get("at") or "")
+    waited = _hours_between(when, now or datetime.now(UTC)) if when else None
+    return (
+        f"{_issuer(m)} was asked {_clock(when)} by {asked.get('by', 'a teammate')}; no "
+        f"confirmation is in the register {_age(waited)} later"
+    )
+
+
+def _not_asked_fact(m: dict[str, Any]) -> str:
+    return (
+        f"as written, only {_issuer(m)}'s confirmation in the register meets this, and "
+        f"{_issuer(m)} has not been asked; whoever owns the register can make it the "
+        "team's to prove"
+    )
 
 
 def orders_for_hands(

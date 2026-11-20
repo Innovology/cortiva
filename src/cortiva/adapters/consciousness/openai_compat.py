@@ -276,6 +276,14 @@ class OpenAICompatibleAdapter:
         # nothing (Mini-2, 2026-11-17: 6 s and an empty reply with thinking,
         # 0.2 s and the answer without).
         quick = bool(metadata and metadata.get("quick")) and not self._quick_refused
+        # Some questions are to be pondered, not answered. Asked how else to
+        # reach an end, the same model answered in five seconds with the
+        # thinking off and proposed entering the result itself; given two
+        # minutes to think, all five members named a way of reaching real
+        # people (Mini-2, 2026-11-20). A pondered call is given the time, and
+        # being slow is not counted as the server being unwell.
+        ponder = bool(metadata and metadata.get("ponder"))
+        deadline = self._request_timeout_s * (4.0 if ponder else 1.0)
         if quick:
             create_kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
 
@@ -315,10 +323,10 @@ class OpenAICompatibleAdapter:
                     response = await asyncio.wait_for(
                         asyncio.to_thread(
                             lambda: client.chat.completions.create(
-                                timeout=self._request_timeout_s, **create_kwargs
+                                timeout=deadline, **create_kwargs
                             )
                         ),
-                        timeout=self._request_timeout_s + 15.0,
+                        timeout=deadline + 15.0,
                     )
                 except Exception as exc:
                     # A server that does not take the switch is asked the
@@ -330,10 +338,10 @@ class OpenAICompatibleAdapter:
                     response = await asyncio.wait_for(
                         asyncio.to_thread(
                             lambda: client.chat.completions.create(
-                                timeout=self._request_timeout_s, **create_kwargs
+                                timeout=deadline, **create_kwargs
                             )
                         ),
-                        timeout=self._request_timeout_s + 15.0,
+                        timeout=deadline + 15.0,
                     )
         except Exception as exc:
             # Count only model-HEALTH failures (timeout / connection) toward the
@@ -341,9 +349,8 @@ class OpenAICompatibleAdapter:
             # server, and must not trip it. Name-based check avoids a hard
             # dependency on openai's exception classes.
             _n = type(exc).__name__
-            if isinstance(exc, asyncio.TimeoutError | TimeoutError) or any(
-                k in _n for k in ("Timeout", "APIConnection", "Connection")
-            ):
+            slow = isinstance(exc, asyncio.TimeoutError | TimeoutError) or "Timeout" in _n
+            if (slow and not ponder) or any(k in _n for k in ("APIConnection", "Connection")):
                 self._breaker_fails += 1
                 if self._breaker_fails >= self._breaker_threshold and not (
                     self._breaker_open_until and time.monotonic() < self._breaker_open_until
