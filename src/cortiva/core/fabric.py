@@ -3789,6 +3789,13 @@ class Fabric:
                 # the colleague no model call.
                 if self._chat_from_mind(agent, msg):
                     self.communication_tracker.record(agent.id, recipient)
+                    if str(msg.get("kind") or "") == "blocked":
+                        # Telling a colleague you are blocked is the same
+                        # moment as telling a manager.
+                        try:
+                            await self._with_another_route(agent, task.description, str(content))
+                        except Exception:
+                            logger.debug("another-route ask failed", exc_info=True)
                     continue
                 if recipient.lower() in local_keys and self.channel:
                     await self.channel.send(
@@ -9678,6 +9685,15 @@ class Fabric:
         )
         if out.get("ok"):
             self._chat_note(who, "sent " + _tc.line(out["message"]))
+            sender = self.agents.get(who[0])
+            if out["message"]["kind"] == "blocked" and sender is not None:
+                doing = (getattr(self, "_session_tasks", None) or {}).get(who, "")
+                if doing:
+                    held: set[Any] = getattr(self, "_route_asks", None) or set()
+                    self._route_asks = held
+                    ask = asyncio.create_task(self._with_another_route(sender, doing, body))
+                    held.add(ask)
+                    ask.add_done_callback(held.discard)
             logger.info(
                 "Chat: %s %s -> %s (%s)",
                 who[0],
@@ -12067,6 +12083,14 @@ class Fabric:
 
         if not _rt.is_obstacle(obstacle) or task_desc.startswith(_rt.MARK):
             return obstacle
+        # One ask per piece of work: the same wall told to three people is
+        # one wall.
+        asked: dict[tuple[str, str], float] = getattr(self, "_route_asked", None) or {}
+        self._route_asked = asked
+        key = (agent.id, task_desc[:120])
+        if time.time() - asked.get(key, 0.0) < 6 * 3600:
+            return obstacle
+        asked[key] = time.time()
         ends = ""
         try:
             mine = _ms.for_agent(_ms.load(self.agents_dir), agent.id)
@@ -12096,8 +12120,11 @@ class Fabric:
             (t.description or "") == text and t.status in ("pending", "in_progress")
             for t in agent.task_queue.tasks
         ):
+            # The queue works the highest number first; this goes ahead of
+            # whatever was next.
+            top = max((t.priority for t in agent.task_queue.tasks), default=1)
             agent.task_queue.tasks.insert(
-                0, Task(id=uuid.uuid4().hex[:12], description=text, priority=1)
+                0, Task(id=uuid.uuid4().hex[:12], description=text, priority=top)
             )
         logger.info("Route: %s takes another way to '%s': %s", agent.id, end[:80], route[:160])
         return f"{obstacle}\n\n{_rt.meanwhile(route, end)}"

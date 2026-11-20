@@ -69,14 +69,15 @@ def test_a_blocked_member_is_asked_and_the_other_route_is_their_next_task(tmp_pa
         "END: the founder knows about each new lead\n"
         "ROUTE: Email Alex myself with the lead's details and tell the team in chat",
     )
-    agent.task_queue.tasks.append(Task(id="t1", description="Something already queued"))
+    agent.task_queue.tasks.append(Task(id="t1", description="Something queued", priority=3))
     said = asyncio.run(fab._with_another_route(agent, TASK, WALL))
     assert len(asked) == 1
-    first = agent.task_queue.tasks[0]
+    first = agent.task_queue.next_pending()
     assert first.description.startswith(rt.MARK) and "Email Alex myself" in first.description
     assert WALL in said and "Meanwhile I am taking another route" in said
-    # Asked again about the same wall, the same route is not queued twice.
+    # The same wall told to a second person is one wall: asked once, queued once.
     asyncio.run(fab._with_another_route(agent, TASK, WALL))
+    assert len(asked) == 1
     assert sum(t.description.startswith(rt.MARK) for t in agent.task_queue.tasks) == 1
 
 
