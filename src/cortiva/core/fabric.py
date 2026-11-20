@@ -12103,25 +12103,56 @@ class Fabric:
         if time.time() - asked.get(key, 0.0) < 6 * 3600:
             return obstacle
         asked[key] = time.time()
-        ends = ""
+        goal = standing = ""
         try:
             mine = _ms.for_agent(_ms.load(self.agents_dir), agent.id)
-            ends = "\n".join(
+            state = _ms.load_state(self.agents_dir)
+            goal = "\n".join(
                 f"- {m['title']}: {str(m.get('intent') or '').strip()} {_ms._why_line(m)}"
                 for m in mine
             )
+            read: list[str] = []
+            for m in mine:
+                conds = (state.get(str(m["mission_id"])) or {}).get("conditions") or {}
+                for cond in m["end_state"]:
+                    seen = conds.get(str(cond["id"])) or {}
+                    if seen.get("met"):
+                        read.append(f"- reads as working: {str(cond['describe'])[:200]}")
+                    elif seen:
+                        read.append(
+                            f"- reads as not so: {str(cond['describe'])[:200]} "
+                            f"({str(seen.get('observed') or '')[:140]})"
+                        )
+            standing = "\n".join(read)
         except Exception:
-            logger.debug("no mission ends for %s", agent.id, exc_info=True)
-        self._meter_model_call(agent, "route")
-        response = await self.consciousness.think(
-            agent_id=agent.id,
-            context=_rt.SYSTEM,
-            prompt=_rt.prompt(task_desc, obstacle, ends),
-            priority=Priority.HIGH,
-            max_tokens=1024,
-            metadata={"call_type": "route", "quick": True},
+            logger.debug("no mission readings for %s", agent.id, exc_info=True)
+
+        async def _ask(prompt: str) -> str:
+            self._meter_model_call(agent, "route")
+            response = await self.consciousness.think(
+                agent_id=agent.id,
+                context=_rt.SYSTEM,
+                prompt=prompt,
+                priority=Priority.HIGH,
+                max_tokens=1024,
+                metadata={"call_type": "route", "quick": True},
+            )
+            return str(response.content or "")
+
+        # First, what is it blocking; then, how else to that.
+        closed, end, untouched = _rt.parse_what(
+            await _ask(_rt.what_prompt(task_desc, obstacle, standing))
         )
-        end, route, bold = _rt.parse(str(response.content or ""))
+        if not end:
+            logger.info("Route: %s could not say what is blocked by: %s", agent.id, obstacle[:120])
+            return obstacle
+        logger.info(
+            "Route: %s says what is blocked is one route (%s) to: %s",
+            agent.id,
+            closed[:100],
+            end[:120],
+        )
+        route, bold = _rt.parse(await _ask(_rt.prompt(end, closed or obstacle, untouched, goal)))
         if agent.task_queue is None:
             agent.task_queue = TaskQueue(tasks=[])
         queue = agent.task_queue.tasks
