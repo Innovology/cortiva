@@ -231,13 +231,26 @@ def waiting_on(token: str, *, limit: int = 8, timeout: float = 8.0) -> list[dict
 
 
 def involved(repo: str, number: int | str, login: str, token: str, timeout: float = 8.0) -> bool:
-    """True when ``login`` is asked to review this pull request or has
-    reviewed it. Such a person may be the one who lands it."""
+    """True when ``login`` is asked to review this pull request, alone or as
+    one of a team, or has reviewed it. Such a person may be the one who lands
+    it."""
     try:
         base = f"{API}/repos/{repo}/pulls/{number}"
         pull = grounding._github_get(base, token, timeout)
         people = [str(u.get("login") or "") for u in pull.get("requested_reviewers") or []]
         people += [str(u.get("login") or "") for u in pull.get("assignees") or []]
+        # A team asked to review asks each of its members. A pull request that
+        # waited on the product team alone had its one product reviewer's
+        # "review and merge" struck as not hers (Mini-2, 2026-11-23).
+        for team in pull.get("requested_teams") or []:
+            members = str(team.get("members_url") or "").split("{")[0]
+            if not members:
+                continue
+            try:
+                listed = grounding._github_get(f"{members}?per_page=100", token, timeout)
+            except Exception:
+                continue
+            people += [str(u.get("login") or "") for u in listed or []]
         for r in grounding._github_get(f"{base}/reviews?per_page=100", token, timeout):
             people.append(str((r.get("user") or {}).get("login") or ""))
     except Exception:

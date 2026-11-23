@@ -321,3 +321,23 @@ async def test_a_step_owed_for_hours_goes_to_the_head_even_when_the_checklist_is
     assert await f._place_what_github_waits_for(agent, leading=False) is True
     assert "o/r#346" in agent.task_queue.tasks[0].description
     assert "- [ ] **[CRITICAL]** o/r#346" in agent.read_identity("plan")
+
+
+def test_a_member_of_the_team_asked_to_review_is_asked(monkeypatch):
+    def _get(url, token, timeout):
+        if url.endswith("/pulls/370"):
+            return {
+                "requested_reviewers": [],
+                "requested_teams": [
+                    {"slug": "product", "members_url": "https://api.test/team/9/members{/member}"}
+                ],
+            }
+        if url.endswith("/reviews?per_page=100"):
+            return [{"user": {"login": "samantha"}, "state": "APPROVED"}]
+        if url == "https://api.test/team/9/members?per_page=100":
+            return [{"login": "yuki"}, {"login": "jess"}]
+        raise AssertionError(url)
+
+    monkeypatch.setattr(grounding, "_github_get", _get)
+    assert ledger.involved("o/r", 370, "Yuki", "t") is True
+    assert ledger.involved("o/r", 370, "andre", "t") is False
