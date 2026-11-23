@@ -341,3 +341,30 @@ def test_a_member_of_the_team_asked_to_review_is_asked(monkeypatch):
     monkeypatch.setattr(grounding, "_github_get", _get)
     assert ledger.involved("o/r", 370, "Yuki", "t") is True
     assert ledger.involved("o/r", 370, "andre", "t") is False
+
+
+def test_an_approved_pull_request_github_still_holds_waits_on_the_one_it_is_held_for():
+    pull = {
+        "repo": "o/r",
+        "number": 370,
+        "title": "content",
+        "author": "amara",
+        "draft": False,
+        "state": "open",
+        "merged": False,
+        "reviewers": ["samantha"],
+        "requested": ["yuki"],
+        "mergeable_state": "blocked",
+        "decisions": {"samantha": ("APPROVED", "2026-11-23T13:15:29Z")},
+        "pushed": "2026-11-23T12:32:32Z",
+        "failing": [],
+        "running": False,
+    }
+    step = ledger.owed(pull, "yuki")
+    assert step is not None and step[0] == "review" and "on GitHub" in step[1]
+    # Where nothing holds it, one review of the head is enough.
+    assert ledger.owed({**pull, "mergeable_state": "clean"}, "yuki") is None
+    # A colleague who asked for changes has handed it back to the author.
+    changes = {"samantha": ("CHANGES_REQUESTED", "2026-11-23T13:15:29Z")}
+    assert ledger.owed({**pull, "decisions": changes}, "yuki") is None
+    assert ledger.owed(pull, "andre") is None

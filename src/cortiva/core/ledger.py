@@ -34,6 +34,22 @@ def _search(query: str, token: str, timeout: float, limit: int) -> list[tuple[st
     return out
 
 
+def _team_members(pull: dict[str, Any], token: str, timeout: float) -> list[str]:
+    """Everyone on the teams this pull request asks to review. A team that
+    cannot be read asks nobody we can name."""
+    out: list[str] = []
+    for team in pull.get("requested_teams") or []:
+        members = str(team.get("members_url") or "").split("{")[0]
+        if not members:
+            continue
+        try:
+            listed = grounding._github_get(f"{members}?per_page=100", token, timeout)
+        except Exception:
+            continue
+        out += [str(u.get("login") or "") for u in listed or [] if u.get("login")]
+    return out
+
+
 def read_pull(repo: str, number: int, token: str, timeout: float = 8.0) -> dict[str, Any]:
     """One pull request as it stands: who wrote it, each reviewer's standing
     decision, when its head was pushed, and which checks fail on that head."""
@@ -74,7 +90,9 @@ def read_pull(repo: str, number: int, token: str, timeout: float = 8.0) -> dict[
         "state": str(pull.get("state") or ""),
         "merged": bool(pull.get("merged")),
         "reviewers": reviewers,
-        "requested": [str(u.get("login") or "") for u in pull.get("requested_reviewers") or []],
+        # A team asked to review asks each of its members.
+        "requested": [str(u.get("login") or "") for u in pull.get("requested_reviewers") or []]
+        + _team_members(pull, token, timeout),
         "mergeable_state": str(pull.get("mergeable_state") or ""),
         "decisions": decisions,
         "pushed": pushed,
@@ -114,7 +132,19 @@ def owed(pull: dict[str, Any], login: str) -> tuple[str, str] | None:
             who != me and state in ("APPROVED", "CHANGES_REQUESTED") and at >= pull["pushed"]
             for who, (state, at) in decisions.items()
         )
-        if not asked or decided:
+        # Unless GitHub still holds the merge for this reviewer: a colleague's
+        # approval stands, the checks pass, and it is blocked all the same. One
+        # sat approved and green for hours waiting on the one member of the team
+        # its repository requires, who was told nothing (Mini-2, 2026-11-23).
+        held_for_me = (
+            asked
+            and pull["mergeable_state"] == "blocked"
+            and any(
+                who != me and state == "APPROVED" and at >= pull["pushed"]
+                for who, (state, at) in decisions.items()
+            )
+        )
+        if not asked or (decided and not held_for_me):
             return None
         if mine is not None:
             return again
@@ -242,15 +272,7 @@ def involved(repo: str, number: int | str, login: str, token: str, timeout: floa
         # A team asked to review asks each of its members. A pull request that
         # waited on the product team alone had its one product reviewer's
         # "review and merge" struck as not hers (Mini-2, 2026-11-23).
-        for team in pull.get("requested_teams") or []:
-            members = str(team.get("members_url") or "").split("{")[0]
-            if not members:
-                continue
-            try:
-                listed = grounding._github_get(f"{members}?per_page=100", token, timeout)
-            except Exception:
-                continue
-            people += [str(u.get("login") or "") for u in listed or []]
+        people += _team_members(pull, token, timeout)
         for r in grounding._github_get(f"{base}/reviews?per_page=100", token, timeout):
             people.append(str((r.get("user") or {}).get("login") or ""))
     except Exception:
