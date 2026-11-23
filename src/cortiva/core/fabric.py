@@ -12321,7 +12321,7 @@ class Fabric:
         ):
             return obstacle
         asked[key] = time.time()
-        goal = standing = have = ""
+        goal = standing = have = page = ""
         try:
             mine = _ms.for_agent(_ms.load(self.agents_dir), agent.id)
             state = _ms.load_state(self.agents_dir)
@@ -12346,6 +12346,7 @@ class Fabric:
                 note, by_whom, when = _ms.have_note(self.agents_dir, m)
                 if note:
                     have = _rt.have_block(note, by_whom, when)
+                    page = note
                     break
         except Exception:
             logger.debug("no mission readings for %s", agent.id, exc_info=True)
@@ -12387,6 +12388,21 @@ class Fabric:
         route, bold = _rt.parse(await _ask(how))
         if by:
             end = needs
+        # A place to start that needs what nobody on the team holds is
+        # declined when its turn comes. Checked now, against the page, it is
+        # kept as a bolder idea and the member names what they can do today.
+        if route and page:
+            held, missing, instead = _rt.parse_held(await _ask(_rt.held_prompt(route, page)))
+            if held is False:
+                logger.info(
+                    "Route: %s's place to start needs what the team does not hold (%s): %s",
+                    agent.id,
+                    missing[:140] or "not said",
+                    route[:140],
+                )
+                lacking = f" It needs: {missing}." if missing else ""
+                bold = [f"{route}{lacking}"[:400], *bold][:3]
+                route = instead
         if taken is not None and route:
             taken.append(route)
         if agent.task_queue is None:

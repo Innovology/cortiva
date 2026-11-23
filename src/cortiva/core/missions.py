@@ -1113,7 +1113,8 @@ def have_note(
     if len(text) < 200:
         return "", "", ""
     when = datetime.fromtimestamp(best[0], UTC).isoformat()
-    return text[:3500], best[1], _clock(when)
+    # The whole page: whoever puts it before a member chooses what of it to show.
+    return text[:20000], best[1], _clock(when)
 
 
 def load_state(agents_dir: Path) -> dict[str, Any]:

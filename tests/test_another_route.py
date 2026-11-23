@@ -29,6 +29,13 @@ HOW = (
     "BOLD: Post the finding on LinkedIn with a link to the contact form\n"
     "WILD: Ring the five firms we most want and ask them straight out"
 )
+HELD = "USES: the team's own mail\nHELD: YES"
+NOT_HELD = (
+    "USES: a LinkedIn account; a list of fifty directors\n"
+    "HELD: NO\n"
+    "MISSING: a LinkedIn account and a list of directors\n"
+    "INSTEAD: Publish the purchasing case study as a page on the site from the repository"
+)
 
 
 def test_the_first_ask_is_what_is_it_blocking():
@@ -201,7 +208,7 @@ def test_a_mission_standing_still_asks_the_team_though_nobody_said_blocked(tmp_p
     # Everyone on the team is asked, the one who showed it first.
     assert [(r["condition"], r["who"]) for r in rows] == [("told", ["andre", "maren"])]
 
-    fab, andre, asked = _fabric(tmp_path, WHAT, HOW, WHAT, HOW)
+    fab, andre, asked = _fabric(tmp_path, WHAT, HOW, NOT_HELD, WHAT, HOW, HELD)
     maren = SimpleNamespace(id="maren", directory=tmp_path / "maren", task_queue=None)
     fab.agents = {"andre": andre, "maren": maren}
     (tmp_path / "andre").mkdir()
@@ -227,14 +234,28 @@ def test_a_mission_standing_still_asks_the_team_though_nobody_said_blocked(tmp_p
     assert "Fourteen articles" in asked[1] and "uses only what it says your team holds" in asked[1]
     # The second is told what the first named, and asked for something different.
     assert "Others on your team have already named" not in asked[1]
-    assert "Email Alex myself" in asked[3] and "Name something different" in asked[3]
+    # The place to start is then walked through against what the team holds.
+    assert "Email Alex myself" in asked[2] and "Fourteen articles" in asked[2]
+    assert "does not say your team holds" in asked[2]
+    # The second is told what the first is taking, and asked for something different.
+    assert "Publish the purchasing case study" in asked[4]
+    assert "Name something different" in asked[4]
     for member in (andre, maren):
         first = member.task_queue.next_pending()
         assert first.description.startswith(rt.MARK) and "has not moved" in first.description
+    # What needed a thing nobody holds is kept as a bolder idea, with what it needs,
+    # and what the member can do today is the route they take.
+    took = [t.description for t in andre.task_queue.tasks]
+    assert "Publish the purchasing case study" in andre.task_queue.next_pending().description
+    assert any(
+        t.startswith(rt.BOLD_MARK) and "Email Alex myself" in t and "It needs: a LinkedIn" in t
+        for t in took
+    )
+    assert "Email Alex myself" in maren.task_queue.next_pending().description
     # Asked once: the next look, minutes later, asks nobody again.
     assert ms.standing_still(tmp_path) == []
     asyncio.run(fab._ask_where_still())
-    assert len(asked) == 4
+    assert len(asked) == 6
 
 
 def test_a_mission_that_moved_today_is_left_to_get_on(tmp_path):
@@ -396,3 +417,22 @@ def test_a_member_already_holding_another_route_is_not_handed_one_more(tmp_path)
     )
     asyncio.run(fab._with_another_route(andre, "Some other piece of work", "Blocked: no key"))
     assert asked == []
+
+
+def test_no_verdict_on_what_is_held_leaves_the_step_as_named():
+    assert rt.parse_held("I am not sure.") == (None, "", "")
+    assert rt.parse_held("HELD: YES\nMISSING: none") == (True, "", "")
+    held, missing, instead = rt.parse_held(NOT_HELD)
+    assert held is False and "LinkedIn" in missing and instead.startswith("Publish")
+
+
+def test_a_long_page_keeps_what_the_team_holds():
+    page = "\n\n".join(f"## {h}\n" + f"{h} line. " * 400 for h in rt.HEADINGS)
+    digest = rt.page_digest(page)
+    assert len(digest) < 6000
+    for heading in rt.HEADINGS:
+        assert f"## {heading}" in digest
+    assert "What we hold line." in rt.have_block(page) and "What we hold line." in rt.held_prompt(
+        "Post it", page
+    )
+    assert rt.page_digest("short page") == "short page"

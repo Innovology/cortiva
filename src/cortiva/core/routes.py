@@ -166,13 +166,41 @@ def look_text(title: str, intent: str, path: str) -> str:
     )
 
 
+HEADINGS = (
+    "What we sell and to whom",
+    "What we have already made or published",
+    "What we hold",
+    "How people find us now",
+)
+
+
+def page_digest(note: str, shares: tuple[int, int, int, int] = (700, 1500, 2600, 700)) -> str:
+    """The page cut to fit a question, each of its four headings keeping a
+    share. Cut from the top alone, a long page loses what the team holds,
+    which is the part a route is chosen by (Mini-2, 2026-11-23: every route
+    named that morning was chosen without it)."""
+    text = note.strip()
+    if len(text) <= sum(shares):
+        return text
+    low = text.lower()
+    at = [low.find(h.lower()) for h in HEADINGS]
+    if any(i < 0 for i in at) or at != sorted(at):
+        return text[: sum(shares)]
+    parts: list[str] = []
+    for n, (start, share) in enumerate(zip(at, shares, strict=True)):
+        end = at[n + 1] if n + 1 < len(at) else len(text)
+        body = text[start:end].rstrip().rstrip("#").rstrip()
+        parts.append(body if len(body) <= share else body[:share].rstrip() + " […]")
+    return "\n\n".join(f"## {part}" for part in parts)
+
+
 def have_block(note: str, who: str = "", when: str = "") -> str:
     """What the business already has, put before the one choosing a route."""
     if not note.strip():
         return ""
     found = f", as {who} found it {when}" if who else ""
     return (
-        f"What your business already has{found}:\n{note.strip()}\n\n"
+        f"What your business already has{found}:\n{page_digest(note)}\n\n"
         "Start from this page. The first thing you name begins with something on it and "
         "uses only what it says your team holds. A way that needs an account, an access "
         "or money the page does not say you hold goes under BOLD, and names whose yes it "
@@ -280,6 +308,54 @@ def parse(answer: str) -> tuple[str, list[str]]:
     if not first or first.upper().startswith("NONE") or len(first) < 12:
         first = ""
     return first[:400], bold[:2]
+
+
+def held_prompt(route: str, note: str) -> str:
+    """Third ask, where the business page exists: can the place to start be
+    done today with what the team holds? Asked of the step the member has
+    just named, because a step that needs what nobody holds is declined when
+    its turn comes and the day is spent."""
+    return (
+        f"The place to start you named: {route.strip()}\n\n"
+        "What your business already has, and what your team holds:\n"
+        f"{page_digest(note, (300, 1200, 4500, 300))}\n\n"
+        "Walk through that step as if you were doing it this hour. List each account, "
+        "list of people, access, tool and sum of money it uses, and look for each one on "
+        "the page. What the page does not say your team holds, your team does not hold.\n"
+        "Answer on these lines:\n"
+        "USES: <each thing the step uses, separated by semicolons>\n"
+        "HELD: <YES if the page says your team holds every one of them, otherwise NO>\n"
+        "MISSING: <what it uses that the page does not say you hold; leave out if none>\n"
+        "INSTEAD: <only if HELD is NO: one thing you can finish this hour with your own "
+        "hands, using only what the page says your team holds, that by itself moves the "
+        "same end: when it is finished something is different out in the world, where the "
+        "people it is for can come upon it. Getting ready for the step that needs the "
+        "missing thing is not this. Say exactly what you will make or change and where>"
+    )
+
+
+def parse_held(answer: str) -> tuple[bool | None, str, str]:
+    """(held, what is missing, what to do instead). ``held`` is None when the
+    member gave no verdict, and the step then stands as named."""
+    held: bool | None = None
+    missing = instead = ""
+    for raw in (answer or "").splitlines():
+        line = raw.strip().lstrip("*-• ").strip()
+        head, _, rest = line.partition(":")
+        key = head.strip().strip("*").upper()
+        said = rest.strip().strip("*").strip()
+        if key == "HELD" and held is None and said:
+            word = said.upper().lstrip("<").split()[0].strip(".,;")
+            held = True if word == "YES" else False if word == "NO" else None
+        elif key == "MISSING" and not missing:
+            missing = said
+        elif key == "INSTEAD" and not instead:
+            instead = said
+    if instead.upper().startswith("NONE") or len(instead) < 12:
+        instead = ""
+    if missing.upper().startswith("NONE"):
+        missing = ""
+    return held, missing[:240], instead[:400]
 
 
 def task_text(route: str, end: str, task: str, *, still: bool = False) -> str:
