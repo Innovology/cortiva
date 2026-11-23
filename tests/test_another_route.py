@@ -205,6 +205,16 @@ def test_a_mission_standing_still_asks_the_team_though_nobody_said_blocked(tmp_p
     maren = SimpleNamespace(id="maren", directory=tmp_path / "maren", task_queue=None)
     fab.agents = {"andre": andre, "maren": maren}
     (tmp_path / "andre").mkdir()
+    # Nobody chooses a route before someone has looked at what the business has.
+    mission = ms.load(tmp_path)[0]
+    asyncio.run(fab._ask_where_still())
+    assert asked == [] and ms.standing_still(tmp_path) != []
+    look = andre.task_queue.next_pending()
+    page = ms.have_path(tmp_path, "andre", str(mission["mission_id"]))
+    assert look.description.startswith(rt.LOOK_MARK) and str(page) in look.description
+    look.status = "done"
+    page.parent.mkdir(parents=True)
+    page.write_text("## What we have already made or published\n" + "Fourteen articles. " * 20)
     (tmp_path / "andre" / "done.jsonl").write_text(
         json.dumps({"at": time.time() - 3600, "description": "Build the deliverability station"})
         + "\n"
@@ -213,6 +223,8 @@ def test_a_mission_standing_still_asks_the_team_though_nobody_said_blocked(tmp_p
     # What was finished is set beside the reading that did not move.
     assert "Build the deliverability station" in asked[0] and "founder_notified = 0" in asked[0]
     assert "Nobody has said no" in asked[0] and "not getting there" in asked[0]
+    # The route is chosen with that page in front of them.
+    assert "Fourteen articles" in asked[1] and "uses only what it says your team holds" in asked[1]
     # The second is told what the first named, and asked for something different.
     assert "Others on your team have already named" not in asked[1]
     assert "Email Alex myself" in asked[3] and "Name something different" in asked[3]
@@ -247,3 +259,140 @@ def test_another_route_is_not_handed_to_the_station_already_built(tmp_path, monk
         task = Task(id="t", description=text, priority=1)
         assert asyncio.run(fab._run_through_station(agent, task)) is False
     assert looked == []
+
+
+def test_a_finished_proof_is_weighed_and_one_found_not_so_does_not_meet_the_condition(tmp_path):
+    import json
+
+    from cortiva.core import missions as ms
+
+    (tmp_path / ms.MISSIONS_FILE).write_text(
+        json.dumps(
+            [
+                {
+                    "mission_id": "m1",
+                    "title": "First client",
+                    "intent": "A client signs.",
+                    "team": ["amara", "yuki", "andre"],
+                    "end_state": [
+                        {
+                            "id": "lead",
+                            "describe": "A real visitor leaves their details on the site",
+                            "check": {"type": "team"},
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+    (tmp_path / ms.PROOFS_FILE).write_text(
+        json.dumps(
+            {
+                "m1": {
+                    "lead": {
+                        "shown": {
+                            "by": "amara",
+                            "url": "https://x.test/leads",
+                            "contains": "lead",
+                            "read_when_shown": {"met": False},
+                        },
+                        "seen": [{"by": "yuki", "saw": "I read the count and it said one lead."}],
+                    }
+                }
+            }
+        )
+    )
+
+    def fetch(url, timeout, bearer=""):
+        return 200, "one lead"
+
+    rows = ms.unweighed(tmp_path, fetch)
+    assert [r["condition"]["id"] for r in rows] == ["lead"]
+    asked = ms.weigh_prompt(rows[0])
+    assert "A real visitor leaves" in asked and "it said one lead" in asked
+    assert "does not make it so" in asked and "SO: YES or NO" in asked
+    assert ms.parse_weigh(
+        "NEEDS: x\nBY: a visitor\nDID: NOT SHOWN\nSO: NO\nWHY: Nobody says who."
+    ) == (
+        False,
+        "Nobody says who.",
+    )
+    assert ms.parse_weigh("I am not sure") == (None, "")
+
+    mission = ms.load(tmp_path)[0]
+    cond = mission["end_state"][0]
+    met, _ = ms.run_team_check(mission, cond, ms.load_proofs(tmp_path), tmp_path, fetch)
+    assert met  # the team's word, until it is weighed
+    ms.record_weigh(tmp_path, "m1", "lead", False, "Nobody says who left them.", "andre")
+    met, observed = ms.run_team_check(mission, cond, ms.load_proofs(tmp_path), tmp_path, fetch)
+    assert not met and "not so: Nobody says who left them." in observed
+    # Weighed once: it is not asked again until a member shows it anew.
+    assert ms.unweighed(tmp_path, fetch) == []
+
+
+def test_the_fabric_weighs_with_a_member_who_took_no_part_and_asks_the_team_at_once(tmp_path):
+    import json
+
+    from cortiva.core import missions as ms
+
+    (tmp_path / ms.MISSIONS_FILE).write_text(
+        json.dumps(
+            [
+                {
+                    "mission_id": "m1",
+                    "title": "First client",
+                    "intent": "A client signs.",
+                    "team": ["amara", "yuki", "andre"],
+                    "end_state": [
+                        {
+                            "id": "lead",
+                            "describe": "A real visitor leaves their details on the site",
+                            "check": {"type": "team"},
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+    row = {
+        "mission": ms.load(tmp_path)[0],
+        "condition": ms.load(tmp_path)[0]["end_state"][0],
+        "proof": {"shown": {"by": "amara"}, "seen": [{"by": "yuki", "saw": "x"}]},
+        "observed": "shown by amara, seen by yuki",
+    }
+    (tmp_path / ms.PROOFS_FILE).write_text(json.dumps({"m1": {"lead": row["proof"]}}))
+    fab, andre, asked = _fabric(tmp_path, "SO: NO\nWHY: Nobody says who left them.")
+    fab.agents = {"andre": andre}
+    weighed_by: list[str] = []
+    real = fab.consciousness.think
+
+    async def think(**kw):
+        weighed_by.append(kw["agent_id"])
+        return await real(**kw)
+
+    fab.consciousness.think = think
+    orig = ms.unweighed
+    ms.unweighed = lambda agents_dir, fetch=None: [row]
+    try:
+        asyncio.run(fab._weigh_proofs())
+    finally:
+        ms.unweighed = orig
+    assert weighed_by == ["andre"]
+    assert ms.load_proofs(tmp_path)["m1"]["lead"]["weighed"]["so"] is False
+    owed = fab._asks_owed[("m1", "lead")]
+    assert "found not so: Nobody says who left them." in owed["observed"] and owed["who"] == [
+        "andre"
+    ]
+
+
+def test_a_member_already_holding_another_route_is_not_handed_one_more(tmp_path):
+    fab, andre, asked = _fabric(tmp_path, WHAT, HOW)
+    andre.task_queue = TaskQueue(
+        tasks=[
+            Task(
+                id="r", description=rt.task_text("Write to five firms", "a lead", TASK), priority=1
+            )
+        ]
+    )
+    asyncio.run(fab._with_another_route(andre, "Some other piece of work", "Blocked: no key"))
+    assert asked == []

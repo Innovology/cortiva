@@ -823,9 +823,9 @@ def owner_guide(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
         "## 🎯 You own this mission's register\n"
         "These conditions wait on one person's confirmation, and while they do the "
         "system tells your team nothing here is theirs to do:\n" + "\n".join(lines) + "\n"
-        "Ask of each: could a member of the team do this and show it as well as that "
-        "person could? If so, make it the team's to prove, in words that say what a "
-        "member does:\n"
+        "Ask of each: if a member of the team did this in that person's place, would the "
+        "end be truly so, or would only its reading move? Only where it would be truly "
+        "so, make it the team's to prove, in words that say what a member does:\n"
         '`cortiva mission amend --condition <id> --prove-by team --describe "<the '
         'condition, as the team will prove it>"`\n'
         "What it said before, and that you changed it, stays on the record and on every "
@@ -834,6 +834,28 @@ def owner_guide(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
 
 
 def run_team_check(
+    mission: dict[str, Any],
+    cond: dict[str, Any],
+    proofs: dict[str, Any],
+    agents_dir: Path,
+    fetch: Fetch | None = None,
+) -> tuple[bool, str]:
+    """A condition the team proves, as it stands once the proof is weighed.
+
+    Shown and seen is the team's word. A proof weighed and found not so does
+    not meet the condition, and says why, until a member shows it again."""
+    met, observed = _team_reading(mission, cond, proofs, agents_dir, fetch)
+    proof = _dict(_dict(proofs.get(str(mission["mission_id"]))).get(str(cond["id"])))
+    weighed = _dict(proof.get("weighed"))
+    if met and weighed and not weighed.get("so"):
+        return False, (
+            f"{observed}. Weighed, {_clock(str(weighed.get('at') or ''))}, and not so: "
+            f"{str(weighed.get('why') or '')[:300]} Show it again when it is truly so"
+        )
+    return met, observed
+
+
+def _team_reading(
     mission: dict[str, Any],
     cond: dict[str, Any],
     proofs: dict[str, Any],
@@ -941,6 +963,157 @@ def team_guide(missions: list[dict[str, Any]], state: dict[str, Any]) -> str:
         "first; your name stands on what you say you saw.\n"
         "- `cortiva mission list` shows every condition as the system last read it."
     )
+
+
+def unweighed(agents_dir: Path, fetch: Fetch | None = None) -> list[dict[str, Any]]:
+    """Proofs the team has finished that nobody has weighed.
+
+    A member told the founder by hand of "a qualified lead", two others said
+    what they saw, and the mission read complete; the lead was one the team
+    had entered itself, and forty minutes later another member's own entry
+    went to the founder as "a genuine enquiry" (Mini-2, 2026-11-20). Each
+    step was honest work on the reading. Nothing asked whether the end was
+    so. One row per finished proof not yet weighed."""
+    proofs = load_proofs(agents_dir)
+    rows: list[dict[str, Any]] = []
+    for m in load(agents_dir):
+        mid = str(m["mission_id"])
+        for cond in m["end_state"]:
+            if str(_dict(cond.get("check")).get("type") or "") != "team":
+                continue
+            proof = _dict(_dict(proofs.get(mid)).get(str(cond["id"])))
+            if not proof or proof.get("weighed"):
+                continue
+            met, observed = _team_reading(m, cond, proofs, Path(agents_dir), fetch)
+            if met:
+                rows.append(
+                    {
+                        "mission": m,
+                        "condition": cond,
+                        "proof": proof,
+                        "observed": observed,
+                    }
+                )
+    return rows
+
+
+def weigh_prompt(row: dict[str, Any]) -> str:
+    """The question put to a member who took no part in a proof."""
+    m, cond, proof = row["mission"], row["condition"], row["proof"]
+    shown = _dict(proof.get("shown"))
+    lines = [
+        f"The mission: {m.get('title')}: {str(m.get('intent') or '').strip()} {_why_line(m)}",
+        f'The condition, as it reads now: "{cond.get("describe")}"',
+    ]
+    first = next((c for c in _as_list(cond.get("amended")) if isinstance(c, dict)), None)
+    if first:
+        lines.append(
+            f'As it was first issued it read: "{first.get("was")}" '
+            f"(changed by {first.get('by')}, a member of the team)"
+        )
+    lines.append(f"What the team showed, and what the system reads: {row.get('observed')}")
+    said = [
+        f"- {_dict(s).get('by')}: {str(_dict(s).get('saw') or '')[:700]}"
+        for s in _as_list(proof.get("seen"))
+    ]
+    lines.append(
+        f"Shown by {shown.get('by')}. What other members said they saw:\n" + "\n".join(said)
+    )
+    lines.append(
+        "Weigh it as someone outside the team would, who takes nothing on trust. A reading "
+        "is how the system looks at the end; it is not the end. Say what has to have "
+        "happened in the real world for this to be truly so, and who has to have done it. "
+        "Where that is someone outside the team (a customer, a visitor, the person who "
+        "issued the mission), something a member did in their place, or an entry the team "
+        "made itself, does not make it so, however real it looks. What the proof does not "
+        "say, it does not show: if it does not say who did the thing, it is not shown that "
+        "they did.\n"
+        "Answer on these lines:\n"
+        "NEEDS: <what has to have happened>\n"
+        "BY: <who has to have done it>\n"
+        "DID: <who, by this proof, did it; NOT SHOWN if the proof does not say>\n"
+        "SO: YES or NO\n"
+        "WHY: <one sentence>"
+    )
+    return "\n\n".join(lines)
+
+
+def parse_weigh(answer: str) -> tuple[bool | None, str]:
+    """``(so, why)`` from a weighing; ``so`` is None when it gave no verdict."""
+    so: bool | None = None
+    why = ""
+    for line in str(answer or "").splitlines():
+        head, _, rest = line.strip().lstrip("*-# ").partition(":")
+        key = head.strip().strip("*").upper()
+        rest = rest.strip().strip("*").strip()
+        if key == "SO" and rest:
+            word = rest.split()[0].strip(".,").upper()
+            so = True if word == "YES" else False if word == "NO" else so
+        elif key == "WHY":
+            why = rest
+    return so, why
+
+
+def record_weigh(
+    agents_dir: Path,
+    mission_id: str,
+    condition: str,
+    so: bool,
+    why: str,
+    by: str,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Keep what a weighing found with the proof it weighed."""
+    proofs = load_proofs(agents_dir)
+    proof = _dict(_dict(proofs.get(mission_id)).get(condition))
+    if not proof:
+        return
+    proof["weighed"] = {
+        "so": bool(so),
+        "why": " ".join(str(why or "").split())[:400],
+        "by": by,
+        "at": (now or datetime.now(UTC)).isoformat(),
+    }
+    proofs[mission_id][condition] = proof
+    _save_proofs(agents_dir, proofs)
+
+
+HAVE_FRESH_DAYS = 7.0
+
+
+def have_path(agents_dir: Path, member: str, mission_id: str) -> Path:
+    """Where a member writes what the business already has for a mission."""
+    return Path(agents_dir) / member / "have" / f"{mission_id}.md"
+
+
+def have_note(
+    agents_dir: Path, mission: dict[str, Any], *, now: datetime | None = None
+) -> tuple[str, str, str]:
+    """``(text, who wrote it, when)``: the newest page a member of the team
+    wrote on what the business already has; empty when none is fresh."""
+    best: tuple[float, str, Path] | None = None
+    for member in (str(t).lower() for t in _as_list(mission.get("team"))):
+        path = have_path(agents_dir, member, str(mission["mission_id"]))
+        try:
+            at = path.stat().st_mtime
+        except OSError:
+            continue
+        if best is None or at > best[0]:
+            best = (at, member, path)
+    if best is None:
+        return "", "", ""
+    age = ((now or datetime.now(UTC)).timestamp() - best[0]) / 86400
+    if age > HAVE_FRESH_DAYS:
+        return "", "", ""
+    try:
+        text = best[2].read_text(encoding="utf-8").strip()
+    except OSError:
+        return "", "", ""
+    if len(text) < 200:
+        return "", "", ""
+    when = datetime.fromtimestamp(best[0], UTC).isoformat()
+    return text[:3500], best[1], _clock(when)
 
 
 def load_state(agents_dir: Path) -> dict[str, Any]:

@@ -141,7 +141,48 @@ def parse_needs(answer: str) -> tuple[str, str]:
     return got["NEEDS"], by
 
 
-def reach_prompt(needs: str, by: str, goal: str = "", taken: list[str] | None = None) -> str:
+LOOK_MARK = "Look before choosing"
+
+
+def look_text(title: str, intent: str, path: str) -> str:
+    """The task that has one member look at what the business already has.
+
+    Asked how to bring a stranger to the site, five members named messages to
+    "agency founders" and "Series B-D companies" over three days; the
+    business sells neither to either, had fourteen articles and case studies
+    of its own nobody mentioned, and no member held an account the messages
+    could go from (Mini-2, 2026-11-20 to 23). The one answering had been
+    shown the mission and not the business."""
+    return (
+        f'{LOOK_MARK}: what does this business already have that bears on "{title}" '
+        f"({intent.strip()})? Read; do not build, and change nothing. Open the business's "
+        "own site, its repositories and what the team has already made, and write one page "
+        f"at {path} under four headings. 'What we sell and to whom'. 'What we have already "
+        "made or published' (titles, dates, where each is). 'What we hold' (the accounts, "
+        "accesses and tools this team can use today with its own hands, and those it "
+        "cannot). 'How people find us now' (with numbers where there are any). Say where "
+        "you found each thing. Write only what you saw; where you could not find "
+        "something, say so."
+    )
+
+
+def have_block(note: str, who: str = "", when: str = "") -> str:
+    """What the business already has, put before the one choosing a route."""
+    if not note.strip():
+        return ""
+    found = f", as {who} found it {when}" if who else ""
+    return (
+        f"What your business already has{found}:\n{note.strip()}\n\n"
+        "Start from this page. The first thing you name begins with something on it and "
+        "uses only what it says your team holds. A way that needs an account, an access "
+        "or money the page does not say you hold goes under BOLD, and names whose yes it "
+        "needs."
+    )
+
+
+def reach_prompt(
+    needs: str, by: str, goal: str = "", taken: list[str] | None = None, have: str = ""
+) -> str:
     """Second ask where the end needs someone outside the team to act: how
     to bring that about. Nothing the team builds or enters does it for them."""
     lines = [
@@ -156,6 +197,8 @@ def reach_prompt(needs: str, by: str, goal: str = "", taken: list[str] | None = 
             + "\n".join(f"- {t.strip()[:200]}" for t in taken)
             + "\nName something different from yours: what you see from where you stand."
         )
+    if have.strip():
+        lines.append(have.strip())
     lines.append(
         "An entry, a test or a stand-in made by the team is not that person acting, however "
         "real it looks, and what already works needs no more testing. The work is reaching "
@@ -180,6 +223,7 @@ def prompt(
     goal: str = "",
     taken: list[str] | None = None,
     needs: str = "",
+    have: str = "",
 ) -> str:
     """Second ask: how else to that sub-goal? ``taken`` is what others on the
     team have already named: a team is worth more than one head because its
@@ -200,6 +244,8 @@ def prompt(
             + "\n".join(f"- {t.strip()[:200]}" for t in taken)
             + "\nName something different from yours: what you see from where you stand."
         )
+    if have.strip():
+        lines.append(have.strip())
     lines.append(
         "Whoever could open that route may say no, or answer too late to matter. Think of "
         "other routes to the same sub-goal. Think widely: the crude, the bold and the "

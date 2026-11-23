@@ -5245,7 +5245,7 @@ class Fabric:
         by submitting it again."""
         from cortiva.core import routes as _rt
 
-        if (task.description or "").startswith((_rt.MARK, _rt.BOLD_MARK)):
+        if (task.description or "").startswith((_rt.MARK, _rt.BOLD_MARK, _rt.LOOK_MARK)):
             return False
         author = ""
         try:
@@ -10078,6 +10078,12 @@ class Fabric:
 
         async def _run() -> None:
             try:
+                # Weighed before it is read: a proof found not so never
+                # reads as the end reached.
+                await self._weigh_proofs()
+            except Exception:
+                logger.exception("weighing the team's proofs failed")
+            try:
                 before = _ms.load_state(self.agents_dir)
                 after = await asyncio.to_thread(_ms.probe, self.agents_dir)
             except Exception:
@@ -12100,44 +12106,186 @@ class Fabric:
             except RuntimeError:
                 pass  # no loop running: nothing to ask on
 
+    async def _weigh_proofs(self) -> None:
+        """Have a member who took no part weigh each proof the team has
+        finished: is the end so, or has its reading moved?"""
+        from datetime import UTC
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        for row in await asyncio.to_thread(_ms.unweighed, self.agents_dir):
+            m, cond, proof = row["mission"], row["condition"], row["proof"]
+            mid, cid = str(m["mission_id"]), str(cond["id"])
+            part = {str((proof.get("shown") or {}).get("by") or "").lower()}
+            part |= {
+                str(s.get("by") or "").lower()
+                for s in proof.get("seen") or []
+                if isinstance(s, dict)
+            }
+            team = [str(t).lower() for t in m.get("team") or [] if str(t).lower() in self.agents]
+            who = next((t for t in team if t not in part), None) or next(iter(team), None)
+            if who is None:
+                continue
+            self._meter_model_call(self.agents[who], "weigh")
+            response = await self.consciousness.think(
+                agent_id=who,
+                context=_rt.SYSTEM,
+                prompt=_ms.weigh_prompt(row),
+                priority=Priority.HIGH,
+                max_tokens=8000,
+                metadata={"call_type": "weigh", "ponder": True},
+            )
+            so, why = _ms.parse_weigh(str(response.content or ""))
+            if so is None:
+                logger.info("Mission %s: %s gave no verdict weighing %s", mid, who, cid)
+                continue
+            _ms.record_weigh(self.agents_dir, mid, cid, so, why, who)
+            logger.info(
+                "Mission %s: %s weighed the team's proof of %s: %s (%s)",
+                mid,
+                who,
+                cid,
+                "so" if so else "NOT SO",
+                why[:300],
+            )
+            if so:
+                continue
+            # A proof refused is the moment to ask how the end is reached:
+            # the team is asked now, not after another half day of standing.
+            entry = _ms.load_state(self.agents_dir).get(mid) or {}
+            since = str(entry.get("first_checked_at") or "")
+            age = _ms._age(_ms._hours_between(since, datetime.now(UTC)))
+            owed: dict[tuple[str, str], dict[str, Any]] = getattr(self, "_asks_owed", None) or {}
+            self._asks_owed = owed
+            owed[(mid, cid)] = {
+                "mission_id": mid,
+                "title": str(m.get("title") or mid),
+                "condition": cid,
+                "describe": str(cond.get("describe") or cid),
+                "observed": f"the team's proof was weighed and found not so: {why[:240]}",
+                "not_met_for": age,
+                "still_for": age,
+                "still_hours": 24.0,
+                # The one who showed it first: they know the ground best.
+                "who": list(
+                    dict.fromkeys(
+                        w
+                        for w in (str((proof.get("shown") or {}).get("by") or "").lower(), *team)
+                        if w in self.agents
+                    )
+                ),
+            }
+
     async def _ask_where_still(self) -> None:
         """Put the two questions to the team where a mission has stood still.
         Nobody has to say they are blocked: the system holds the fact."""
+
+        from cortiva.core import missions as _ms
+
+        if getattr(self, "_asking_still", False):
+            return
+        self._asking_still = True
+        try:
+            owed: dict[tuple[str, str], dict[str, Any]] = getattr(self, "_asks_owed", None) or {}
+            self._asks_owed = owed
+            rows = {(r["mission_id"], r["condition"]): r for r in owed.values()}
+            for r in _ms.standing_still(self.agents_dir):
+                rows[(r["mission_id"], r["condition"])] = r
+            missions = {str(m["mission_id"]): m for m in _ms.load(self.agents_dir)}
+            for key, row in rows.items():
+                m = missions.get(row["mission_id"])
+                if m is None:
+                    owed.pop(key, None)
+                    continue
+                # Nobody chooses a route before someone has looked at what
+                # the business already has.
+                if not _ms.have_note(self.agents_dir, m)[0]:
+                    owed[key] = row
+                    self._ask_to_look(m, row["who"])
+                    continue
+                owed.pop(key, None)
+                await self._ask_team_about(row)
+        finally:
+            self._asking_still = False
+
+    def _ask_to_look(self, mission: dict[str, Any], who: list[str]) -> None:
+        """Have one member write down what the business already has. Asked of
+        the next member if the page is not there six hours on."""
+        import uuid
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        mid = str(mission["mission_id"])
+        asked: dict[str, tuple[float, int]] = getattr(self, "_look_asked", None) or {}
+        self._look_asked = asked
+        at, turn = asked.get(mid, (0.0, -1))
+        if time.time() - at < 6 * 3600:
+            return
+        able = [w for w in who if w in self.agents]
+        if not able:
+            return
+        turn += 1
+        member = able[turn % len(able)]
+        asked[mid] = (time.time(), turn)
+        agent = self.agents[member]
+        if agent.task_queue is None:
+            agent.task_queue = TaskQueue(tasks=[])
+        queue = agent.task_queue.tasks
+        text = _rt.look_text(
+            str(mission.get("title") or mid),
+            str(mission.get("intent") or ""),
+            str(_ms.have_path(self.agents_dir, member, mid)),
+        )
+        if not any(
+            (t.description or "") == text and t.status in ("pending", "in_progress") for t in queue
+        ):
+            top = max((t.priority for t in queue), default=1)
+            queue.insert(0, Task(id=uuid.uuid4().hex[:12], description=text, priority=top))
+        logger.info(
+            "Mission %s: %s is asked to look at what the business already has, before "
+            "anyone chooses a route",
+            mid,
+            member,
+        )
+
+    async def _ask_team_about(self, row: dict[str, Any]) -> None:
+        """Put the two questions to each member named in ``row``."""
         import json as _json
 
         from cortiva.core import missions as _ms
         from cortiva.core import routes as _rt
 
-        for row in _ms.standing_still(self.agents_dir):
-            _ms.record_still_ask(self.agents_dir, row["mission_id"], row["condition"], row["who"])
-            named: list[str] = []
-            logger.info(
-                "Mission %s: condition %s not met for %s and nothing moved for %s; asking %s",
-                row["mission_id"],
-                row["condition"],
-                row["not_met_for"],
-                row["still_for"],
-                ", ".join(row["who"]) or "nobody (no one named on the team)",
-            )
-            for who in row["who"]:
-                agent = self.agents.get(who)
-                if agent is None:
-                    continue
-                finished: list[str] = []
-                try:
-                    floor = time.time() - float(row["still_hours"]) * 3600
-                    ledger = self.agents_dir / who / self._DONE_LEDGER
-                    for line in ledger.read_text(encoding="utf-8").splitlines():
-                        rec = _json.loads(line)
-                        if float(rec.get("at") or 0) >= floor:
-                            finished.append(str(rec.get("description") or "")[:90])
-                except (OSError, ValueError):
-                    pass
-                task, wall = _rt.still_text(row, finished[-8:])
-                try:
-                    await self._with_another_route(agent, task, wall, still=True, taken=named)
-                except Exception:
-                    logger.exception("Asking %s about a mission standing still failed", who)
+        _ms.record_still_ask(self.agents_dir, row["mission_id"], row["condition"], row["who"])
+        named: list[str] = []
+        logger.info(
+            "Mission %s: condition %s not met for %s and nothing moved for %s; asking %s",
+            row["mission_id"],
+            row["condition"],
+            row["not_met_for"],
+            row["still_for"],
+            ", ".join(row["who"]) or "nobody (no one named on the team)",
+        )
+        for who in row["who"]:
+            agent = self.agents.get(who)
+            if agent is None:
+                continue
+            finished: list[str] = []
+            try:
+                floor = time.time() - float(row["still_hours"]) * 3600
+                ledger = self.agents_dir / who / self._DONE_LEDGER
+                for line in ledger.read_text(encoding="utf-8").splitlines():
+                    rec = _json.loads(line)
+                    if float(rec.get("at") or 0) >= floor:
+                        finished.append(str(rec.get("description") or "")[:90])
+            except (OSError, ValueError):
+                pass
+            task, wall = _rt.still_text(row, finished[-8:])
+            try:
+                await self._with_another_route(agent, task, wall, still=True, taken=named)
+            except Exception:
+                logger.exception("Asking %s about a mission standing still failed", who)
 
     async def _with_another_route(
         self,
@@ -12165,8 +12313,15 @@ class Fabric:
         key = (agent.id, task_desc[:120])
         if time.time() - asked.get(key, 0.0) < 6 * 3600:
             return obstacle
+        # A member already holding another route has one to take: thirty-eight
+        # were handed to one member in two days, and none was taken.
+        if not still and any(
+            (t.description or "").startswith(_rt.MARK) and t.status in ("pending", "in_progress")
+            for t in (agent.task_queue.tasks if agent.task_queue else [])
+        ):
+            return obstacle
         asked[key] = time.time()
-        goal = standing = ""
+        goal = standing = have = ""
         try:
             mine = _ms.for_agent(_ms.load(self.agents_dir), agent.id)
             state = _ms.load_state(self.agents_dir)
@@ -12187,6 +12342,11 @@ class Fabric:
                             f"({str(seen.get('observed') or '')[:140]})"
                         )
             standing = "\n".join(read)
+            for m in mine:
+                note, by_whom, when = _ms.have_note(self.agents_dir, m)
+                if note:
+                    have = _rt.have_block(note, by_whom, when)
+                    break
         except Exception:
             logger.debug("no mission readings for %s", agent.id, exc_info=True)
 
@@ -12220,9 +12380,9 @@ class Fabric:
         # Where the end needs someone outside the team to act, the question
         # is how to bring that about, not how else to build it.
         how = (
-            _rt.reach_prompt(needs, by, goal, taken)
+            _rt.reach_prompt(needs, by, goal, taken, have)
             if by
-            else _rt.prompt(end, closed or obstacle, untouched, goal, taken, needs)
+            else _rt.prompt(end, closed or obstacle, untouched, goal, taken, needs, have)
         )
         route, bold = _rt.parse(await _ask(how))
         if by:
