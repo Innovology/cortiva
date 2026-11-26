@@ -12182,6 +12182,7 @@ class Fabric:
         Nobody has to say they are blocked: the system holds the fact."""
 
         from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
 
         if getattr(self, "_asking_still", False):
             return
@@ -12200,16 +12201,24 @@ class Fabric:
                     continue
                 # Nobody chooses a route before someone has looked at what
                 # the business already has.
-                if not _ms.have_note(self.agents_dir, m)[0]:
+                page = _ms.have_note(self.agents_dir, m)[0]
+                if not page:
                     owed[key] = row
                     self._ask_to_look(m, row["who"])
                     continue
+                # A page that lacks a heading is added to while the team
+                # goes on choosing; it does not hold them up.
+                lacking = _rt.missing_headings(page)
+                if lacking:
+                    self._ask_to_look(m, row["who"], lacking)
                 owed.pop(key, None)
                 await self._ask_team_about(row)
         finally:
             self._asking_still = False
 
-    def _ask_to_look(self, mission: dict[str, Any], who: list[str]) -> None:
+    def _ask_to_look(
+        self, mission: dict[str, Any], who: list[str], missing: tuple[str, ...] = ()
+    ) -> None:
         """Have one member write down what the business already has. Asked of
         the next member if the page is not there six hours on."""
         import uuid
@@ -12237,6 +12246,7 @@ class Fabric:
             str(mission.get("title") or mid),
             str(mission.get("intent") or ""),
             str(_ms.have_path(self.agents_dir, member, mid)),
+            missing,
         )
         if not any(
             (t.description or "") == text and t.status in ("pending", "in_progress") for t in queue

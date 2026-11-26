@@ -436,3 +436,25 @@ def test_a_long_page_keeps_what_the_team_holds():
         "Post it", page
     )
     assert rt.page_digest("short page") == "short page"
+
+
+def test_a_page_written_before_a_heading_was_asked_for_is_added_to() -> None:
+    old = "\n\n".join(f"## {h}\nsomething" for h in rt.HEADINGS[:4])
+    assert rt.missing_headings(old) == ("Who is already here",)
+    assert rt.missing_headings(old + "\n\n## Who is already here\n9 sessions") == ()
+    again = rt.look_text("Leads", "a lead", "/p/have.md", rt.missing_headings(old))
+    assert "A page is already there" in again and "'Who is already here'" in again
+    first = rt.look_text("Leads", "a lead", "/p/have.md")
+    assert "A page is already there" not in first
+    assert "one source you cannot open is one source" in first
+
+
+def test_the_one_choosing_is_pointed_at_who_already_comes() -> None:
+    page = "\n\n".join(f"## {h}\n" + f"{h} line. " * 400 for h in rt.HEADINGS)
+    block = rt.have_block(page)
+    assert "Who is already here line." in block
+    assert "already comes and stops short is nearer than a stranger" in block
+    # An older page, without the heading, is still shown by its headings.
+    older = "\n\n".join(f"## {h}\n" + f"{h} line. " * 400 for h in rt.HEADINGS[:4])
+    digest = rt.page_digest(older)
+    assert all(h in digest for h in rt.HEADINGS[:4])

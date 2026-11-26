@@ -144,7 +144,7 @@ def parse_needs(answer: str) -> tuple[str, str]:
 LOOK_MARK = "Look before choosing"
 
 
-def look_text(title: str, intent: str, path: str) -> str:
+def look_text(title: str, intent: str, path: str, missing: tuple[str, ...] = ()) -> str:
     """The task that has one member look at what the business already has.
 
     Asked how to bring a stranger to the site, five members named messages to
@@ -152,17 +152,37 @@ def look_text(title: str, intent: str, path: str) -> str:
     business sells neither to either, had fourteen articles and case studies
     of its own nobody mentioned, and no member held an account the messages
     could go from (Mini-2, 2026-11-20 to 23). The one answering had been
-    shown the mission and not the business."""
+    shown the mission and not the business.
+
+    The first page had four headings and the fourth asked how people find
+    the business. The member found an analytics tag she could not open, wrote
+    that no visitor data existed, and the team spent three days on ways to
+    bring strangers in while the site's own table of sessions, in a
+    repository she held, recorded people arriving every day and leaving
+    (Mini-2, 2026-11-23 to 26). ``missing`` names headings a page already
+    there lacks."""
+    again = (
+        f" A page is already there. Keep what still holds and add what it lacks: "
+        f"{', '.join(repr(h) for h in missing)}."
+        if missing
+        else ""
+    )
     return (
         f'{LOOK_MARK}: what does this business already have that bears on "{title}" '
         f"({intent.strip()})? Read; do not build, and change nothing. Open the business's "
         "own site, its repositories and what the team has already made, and write one page "
-        f"at {path} under four headings. 'What we sell and to whom'. 'What we have already "
+        f"at {path} under five headings. 'What we sell and to whom'. 'What we have already "
         "made or published' (titles, dates, where each is). 'What we hold' (the accounts, "
         "accesses and tools this team can use today with its own hands, and those it "
-        "cannot). 'How people find us now' (with numbers where there are any). Say where "
-        "you found each thing. Write only what you saw; where you could not find "
-        "something, say so."
+        "cannot). 'How people find us now' (with numbers where there are any). 'Who is "
+        "already here' (the people outside the team this depends on who already come to "
+        "the business today: how many in the last week, what can be told of who they are, "
+        "what each does on arriving and where they stop short of what is hoped of them; "
+        "set apart anything the team itself put there). For that last heading read what "
+        "the business itself records, in its own tables, logs and endpoints, before "
+        "writing that nothing is known: one source you cannot open is one source. Say "
+        "where you found each thing. Write only what you saw; where you could not find "
+        f"something, say so and say where you looked.{again}"
     )
 
 
@@ -171,11 +191,19 @@ HEADINGS = (
     "What we have already made or published",
     "What we hold",
     "How people find us now",
+    "Who is already here",
 )
 
 
-def page_digest(note: str, shares: tuple[int, int, int, int] = (700, 1500, 2600, 700)) -> str:
-    """The page cut to fit a question, each of its four headings keeping a
+def missing_headings(note: str) -> tuple[str, ...]:
+    """The headings a page lacks. A page written before a heading was asked
+    for says nothing under it, and silence there reads as nothing to know."""
+    low = note.lower()
+    return tuple(h for h in HEADINGS if h.lower() not in low)
+
+
+def page_digest(note: str, shares: tuple[int, ...] = (500, 1200, 2300, 400, 1300)) -> str:
+    """The page cut to fit a question, each of its headings keeping a
     share. Cut from the top alone, a long page loses what the team holds,
     which is the part a route is chosen by (Mini-2, 2026-11-23: every route
     named that morning was chosen without it)."""
@@ -183,11 +211,13 @@ def page_digest(note: str, shares: tuple[int, int, int, int] = (700, 1500, 2600,
     if len(text) <= sum(shares):
         return text
     low = text.lower()
-    at = [low.find(h.lower()) for h in HEADINGS]
-    if any(i < 0 for i in at) or at != sorted(at):
+    found = [(low.find(h.lower()), s) for h, s in zip(HEADINGS, shares, strict=True)]
+    found = [(i, s) for i, s in found if i >= 0]
+    at = [i for i, _ in found]
+    if len(at) < 2 or at != sorted(at):
         return text[: sum(shares)]
     parts: list[str] = []
-    for n, (start, share) in enumerate(zip(at, shares, strict=True)):
+    for n, (start, share) in enumerate(found):
         end = at[n + 1] if n + 1 < len(at) else len(text)
         body = text[start:end].rstrip().rstrip("#").rstrip()
         parts.append(body if len(body) <= share else body[:share].rstrip() + " […]")
@@ -201,8 +231,11 @@ def have_block(note: str, who: str = "", when: str = "") -> str:
     found = f", as {who} found it {when}" if who else ""
     return (
         f"What your business already has{found}:\n{page_digest(note)}\n\n"
-        "Start from this page. The first thing you name begins with something on it and "
-        "uses only what it says your team holds. A way that needs an account, an access "
+        "Start from this page, and from the people it says are already here: someone who "
+        "already comes and stops short is nearer than a stranger, so say first what would "
+        "carry them the rest of the way. If the page does not say who comes, finding that "
+        "out is a fair place to start. The first thing you name begins with something on "
+        "the page and uses only what it says your team holds. A way that needs an account, an access "
         "or money the page does not say you hold goes under BOLD, and names whose yes it "
         "needs."
     )
@@ -318,7 +351,7 @@ def held_prompt(route: str, note: str) -> str:
     return (
         f"The place to start you named: {route.strip()}\n\n"
         "What your business already has, and what your team holds:\n"
-        f"{page_digest(note, (300, 1200, 4500, 300))}\n\n"
+        f"{page_digest(note, (300, 1200, 4500, 300, 600))}\n\n"
         "Walk through that step as if you were doing it this hour. List each account, "
         "list of people, access, tool and sum of money it uses, and look for each one on "
         "the page. What the page does not say your team holds, your team does not hold.\n"
