@@ -5264,6 +5264,30 @@ class Fabric:
             return False
         if station is None:
             return False
+        from cortiva.core import missions as _ms
+
+        for m in _ms.for_agent(_ms.load(self.agents_dir), agent.id):
+            if _factory.answers_only_to(
+                station, str(m.get("title") or ""), task.description, strict=bool(author)
+            ):
+                # Mentioning the mission is not asking for the station.
+                logger.info(
+                    "Station %s answers only to the name of the mission; %s has it: %s",
+                    station.name,
+                    agent.id,
+                    task.description[:80],
+                )
+                told: set[str] = getattr(self, "_station_named_told", None) or set()
+                self._station_named_told = told
+                if station.name not in told:
+                    told.add(station.name)
+                    _factory.add_notice(
+                        station.directory.parent.parent,
+                        f"Your station '{station.name}' listens for the name of the mission "
+                        "and no more, so it was offered every task that mentions the mission. "
+                        "It takes none of them now. Give it a phrase for the one thing it does.",
+                    )
+                return False
         if not author and _factory.already_failed_on(
             station, agent.directory, task.id, task.description
         ):
@@ -9497,6 +9521,8 @@ class Fabric:
         if not (self.agents_dir / _me.MEASURES_FILE).exists():
             return
         self._measure_probed_at = now
+        since = getattr(self, "_measure_read_wall", 0.0) or time.time() - _me.PROBE_INTERVAL_S
+        self._measure_read_wall = time.time()
 
         async def _run() -> None:
             try:
@@ -9505,8 +9531,22 @@ class Fabric:
                 logger.debug("measure probe failed", exc_info=True)
                 return
             owners = {str(m["id"]): str(m.get("owner")) for m in _me.load(self.agents_dir)}
+            ran: set[str] = set()
+            if moved:
+                # The team's own stations that ran since the last reading.
+                for a in self.agents.values():
+                    for r in _factory.runs(a.directory, since=since - 60.0):
+                        if r.ok and not r.used_by:
+                            ran.add(r.station)
             for mid, before, value in moved:
                 logger.info("Numbers: '%s' moved from %s to %s", mid, before, value)
+                if ran and before is not None:
+                    _me.mark_own(self.agents_dir, mid, value - before, sorted(ran))
+                    logger.info(
+                        "Numbers: '%s' moved while the team's own station %s ran",
+                        mid,
+                        ", ".join(sorted(ran)),
+                    )
                 self._emit(
                     "measure.moved",
                     measure_id=mid,

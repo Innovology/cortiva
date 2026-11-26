@@ -204,3 +204,19 @@ def test_a_credential_must_be_the_owners_own(tmp_path):
         tmp_path, "cfo", name="Cash", url="https://books.test/cash", token_file="../ceo/t"
     )
     assert not ok and "must be under" in why
+
+
+def test_a_number_moved_by_the_teams_own_station_says_so(tmp_path: Path) -> None:
+    from cortiva.core import measures as me
+
+    me._write_json(tmp_path / me.STATE_FILE, {"leads": {"value": 61.0}})
+    me.mark_own(tmp_path, "leads", 1.0, ["lead-capture-mission"])
+    me.mark_own(tmp_path, "leads", 1.0, ["lead-capture-mission"])
+    me.mark_own(tmp_path, "absent", 1.0, ["x"])
+    state = me.load_state(tmp_path)
+    assert state["leads"]["own"] == 2.0
+    block = me.context_block(
+        [{"id": "leads", "name": "Leads captured", "owner": "ceo"}], state, "ceo"
+    )
+    assert "2 of its movement came while the team's own station 'lead-capture-mission' ran" in block
+    assert "is not somebody outside arriving" in block

@@ -817,3 +817,29 @@ def test_a_step_the_station_only_resembles_is_not_learned(tmp_path: Path) -> Non
         "approved+green, reply to comments, close validation loops, log outcomes"
     )
     assert fabric._learned_match_phrases(yuki, "github-feedback-sweep", purpose) == []
+
+
+def test_a_station_named_for_the_mission_does_not_take_every_task_about_it(tmp_path: Path) -> None:
+    from cortiva.core import factory as fa
+
+    st = fa.Station(
+        name="lead-capture-mission",
+        purpose="submit a test lead",
+        matches=["lead capture mission"],
+        run=["python3", "run.py"],
+        directory=tmp_path,
+        ready=True,
+    )
+    title = "Lead capture live on innovology.io"
+    reply = "Reply to Alex's email regarding site visitor analytics to unblock the lead capture mission discussion"
+    assert st.matches_task(reply)
+    assert fa.answers_only_to(st, title, reply)
+    # Asked for by its own name, it is chosen.
+    assert not fa.answers_only_to(st, title, "Run lead-capture-mission once")
+    # A phrase for what it does takes a task that says so.
+    st.matches.append("submit contact form")
+    assert not fa.answers_only_to(st, title, "Submit the contact form for the lead capture mission")
+    assert fa.answers_only_to(st, title, reply)
+    # A station named for an act is untouched.
+    ops = fa.Station(name="lead-capture-ops", purpose="", matches=[], run=[], directory=tmp_path)
+    assert not fa.answers_only_to(ops, title, "lead capture ops check")

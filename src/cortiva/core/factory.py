@@ -259,6 +259,34 @@ def phrase_matches(phrase: str, description: str, *, strict: bool = False) -> bo
     return sum(1 for w in content if len(w) > 2) >= 2 and all(w in words for w in content)
 
 
+def answers_only_to(
+    station: Station, title: str, description: str, *, strict: bool = False
+) -> bool:
+    """Does this station take the task by nothing but the name of the mission?
+
+    A station called after its mission, listening for the mission's name,
+    takes every task that mentions the mission. Andre's 'lead-capture-mission'
+    listened for "lead capture mission" and submitted a made-up lead each
+    time it ran; on 26 November it took "Reply to Alex's email regarding site
+    visitor analytics to unblock the lead capture mission discussion", so
+    the founder's question was answered with one more entry and no reply
+    (Mini-2). A station answers to an act. Asked for by its own hyphenated
+    name it still runs: that is somebody choosing it."""
+    common = set(content_words(title)) | {"mission"}
+    name = station.name.strip().lower()
+    if "-" in name and name in (description or "").lower():
+        return False
+    named = content_words(name.replace("-", " ").replace("_", " "), drop_build_words=True)
+    if not named or any(w not in common for w in named):
+        return False
+    for pat in station.matches:
+        p = str(pat or "").strip()
+        beyond = p.startswith("/") or any(w not in common for w in content_words(p))
+        if beyond and phrase_matches(p, description, strict=strict):
+            return False
+    return True
+
+
 _FLOOR_WORK_RE = re.compile(
     r"factory/|run\.py|station\.yaml|^\W*build[_ ]station"
     r"|\b(?:write|code|fix|repair|debug|build|rebuild|test|tune)\b[^.\n]{0,40}\bstation\b",

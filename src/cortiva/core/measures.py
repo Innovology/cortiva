@@ -253,6 +253,25 @@ def _fmt(value: float) -> str:
     return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
 
+def mark_own(agents_dir: Path, measure_id: str, amount: float, stations: list[str]) -> None:
+    """Record that a number moved while the team's own stations ran.
+
+    A number says how the world stands only when the world moved it. On
+    Mini-2 a station submitted the site's form twelve times in four days and
+    'leads captured' rose with each run; the team's page called the total
+    real leads and a member set out to send them to the founder as
+    prospects. The count is kept beside the number, so no one reads the
+    team's own hand as somebody arriving."""
+    state = load_state(agents_dir)
+    entry = state.get(measure_id)
+    if not isinstance(entry, dict):
+        return
+    entry["own"] = float(entry.get("own") or 0.0) + abs(amount)
+    names = [str(s) for s in entry.get("own_by") or []]
+    entry["own_by"] = sorted(set(names) | set(stations))[:6]
+    _write_json(Path(agents_dir) / STATE_FILE, state)
+
+
 def context_block(
     measures: list[dict[str, Any]],
     state: dict[str, Any],
@@ -290,6 +309,13 @@ def context_block(
         else:
             moved = _hours_between(str(entry.get("moved_at") or ""), now)
             shown = _fmt(value) + (f", unchanged for {_age(moved)}" if moved is not None else "")
+            own = float(entry.get("own") or 0.0)
+            if own:
+                by = ", ".join(f"'{s}'" for s in entry.get("own_by") or [])
+                shown += (
+                    f"; {_fmt(own)} of its movement came while the team's own station {by} ran. "
+                    "What the team puts there itself is not somebody outside arriving"
+                )
             fed_by = drivers.get(str(m["id"])) or []
             # One driver is a funnel step: show how much of it came through.
             if len(fed_by) == 1 and not down:
