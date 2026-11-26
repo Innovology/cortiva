@@ -843,3 +843,18 @@ def test_a_station_named_for_the_mission_does_not_take_every_task_about_it(tmp_p
     # A station named for an act is untouched.
     ops = fa.Station(name="lead-capture-ops", purpose="", matches=[], run=[], directory=tmp_path)
     assert not fa.answers_only_to(ops, title, "lead capture ops check")
+
+
+def test_the_teams_own_station_runs_are_counted(tmp_path: Path) -> None:
+    from cortiva.core import factory as fa
+
+    a, b = tmp_path / "andre", tmp_path / "ceo"
+    for d in (a, b):
+        d.mkdir()
+    now = time.time()
+    for at in (now - 100, now - 200):
+        fa.record_run(b, fa.StationRun("form", "t", "d", True, at=at, author="andre"))
+        fa.record_run(a, fa.StationRun("form", "t", "d", True, at=at, used_by="ceo"))
+    fa.record_run(a, fa.StationRun("form", "t", "d", False, at=now - 50))
+    fa.record_run(a, fa.StationRun("old", "t", "d", True, at=now - 9 * 86400))
+    assert fa.own_acts([a, b], since=now - 7 * 86400) == [("form", 2, "")]

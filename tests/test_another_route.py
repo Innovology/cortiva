@@ -458,3 +458,14 @@ def test_the_one_choosing_is_pointed_at_who_already_comes() -> None:
     older = "\n\n".join(f"## {h}\n" + f"{h} line. " * 400 for h in rt.HEADINGS[:4])
     digest = rt.page_digest(older)
     assert all(h in digest for h in rt.HEADINGS[:4])
+
+
+def test_what_the_teams_own_stations_did_is_set_before_the_one_choosing() -> None:
+    page = "\n\n".join(f"## {h}\n89 leads captured" for h in rt.HEADINGS) + " " * 200
+    acts = [("lead-capture-mission", 12, "submit a test lead via the contact form")]
+    block = rt.have_block(page, "andre", "26 Nov", acts)
+    assert "'lead-capture-mission' ran 12 time(s): submit a test lead" in block
+    assert "nobody outside did it" in block
+    assert block.index("lead-capture-mission") < block.index("89 leads captured")
+    assert "own stations" not in rt.have_block(page)
+    assert "'lead-capture-mission' ran 12" in rt.look_text("Leads", "a lead", "/p", (), acts)

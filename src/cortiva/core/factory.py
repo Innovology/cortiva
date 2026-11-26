@@ -793,6 +793,27 @@ def runs(agent_dir: Path, *, since: float | None = None) -> list[StationRun]:
     return out
 
 
+def own_acts(agent_dirs: list[Path], *, since: float) -> list[tuple[str, int, str]]:
+    """What the team's own stations did since ``since``, as ``(station, runs
+    that worked, what it is for)``, most runs first.
+
+    The system holds this and a member looking at the business does not. On
+    Mini-2 the member whose station had submitted the site's form for a week
+    wrote "89 leads captured" under who is already here, and "74 people who
+    filled the form" (2026-11-26); two colleagues then planned to write to
+    them."""
+    count: dict[str, int] = {}
+    purpose: dict[str, str] = {}
+    for d in agent_dirs:
+        for st in stations(d):
+            purpose.setdefault(st.name, st.purpose)
+        for r in runs(d, since=since):
+            if r.ok and not r.used_by:
+                count[r.station] = count.get(r.station, 0) + 1
+    rows = [(name, n, " ".join(purpose.get(name, "").split())[:200]) for name, n in count.items()]
+    return sorted(rows, key=lambda row: (-row[1], row[0]))[:8]
+
+
 def _age_s(path: Path) -> float:
     try:
         return time.time() - path.stat().st_mtime

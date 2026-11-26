@@ -12256,6 +12256,16 @@ class Fabric:
         finally:
             self._asking_still = False
 
+    def _own_acts(self, mission: dict[str, Any]) -> list[tuple[str, int, str]]:
+        """What the mission's team's own stations did in the last week."""
+        team = {str(t).lower() for t in mission.get("team") or []}
+        dirs = [a.directory for aid, a in sorted(self.agents.items()) if aid in team]
+        try:
+            return _factory.own_acts(dirs, since=time.time() - 7 * 86400)
+        except Exception:
+            logger.debug("could not read the team's own station runs", exc_info=True)
+            return []
+
     def _ask_to_look(
         self, mission: dict[str, Any], who: list[str], missing: tuple[str, ...] = ()
     ) -> None:
@@ -12287,6 +12297,7 @@ class Fabric:
             str(mission.get("intent") or ""),
             str(_ms.have_path(self.agents_dir, member, mid)),
             missing,
+            self._own_acts(mission),
         )
         if not any(
             (t.description or "") == text and t.status in ("pending", "in_progress") for t in queue
@@ -12395,7 +12406,7 @@ class Fabric:
             for m in mine:
                 note, by_whom, when = _ms.have_note(self.agents_dir, m)
                 if note:
-                    have = _rt.have_block(note, by_whom, when)
+                    have = _rt.have_block(note, by_whom, when, self._own_acts(m))
                     page = note
                     break
         except Exception:

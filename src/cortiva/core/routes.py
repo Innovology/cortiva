@@ -144,7 +144,13 @@ def parse_needs(answer: str) -> tuple[str, str]:
 LOOK_MARK = "Look before choosing"
 
 
-def look_text(title: str, intent: str, path: str, missing: tuple[str, ...] = ()) -> str:
+def look_text(
+    title: str,
+    intent: str,
+    path: str,
+    missing: tuple[str, ...] = (),
+    acts: list[tuple[str, int, str]] | None = None,
+) -> str:
     """The task that has one member look at what the business already has.
 
     Asked how to bring a stranger to the site, five members named messages to
@@ -183,7 +189,7 @@ def look_text(title: str, intent: str, path: str, missing: tuple[str, ...] = ())
         "writing that nothing is known: one source you cannot open is one source. Say "
         "where you found each thing. Write only what you saw; where you could not find "
         f"something, say so and say where you looked.{again}"
-    )
+    ) + (f"\n\n{own_block(acts)}" if acts else "")
 
 
 HEADINGS = (
@@ -224,12 +230,30 @@ def page_digest(note: str, shares: tuple[int, ...] = (500, 1200, 2300, 400, 1300
     return "\n\n".join(f"## {part}" for part in parts)
 
 
-def have_block(note: str, who: str = "", when: str = "") -> str:
+def own_block(acts: list[tuple[str, int, str]]) -> str:
+    """What the team's own stations did, said so nobody counts it as anyone
+    outside arriving."""
+    if not acts:
+        return ""
+    return (
+        "What the system saw your team's own stations do in the last week. Whatever they "
+        "entered, sent or submitted is the team's own doing: nobody outside did it, and "
+        "nobody is there to write to, count or hand on because of it.\n"
+        + "\n".join(
+            f"- '{name}' ran {n} time(s): {what or 'purpose not given'}" for name, n, what in acts
+        )
+    )
+
+
+def have_block(
+    note: str, who: str = "", when: str = "", acts: list[tuple[str, int, str]] | None = None
+) -> str:
     """What the business already has, put before the one choosing a route."""
     if not note.strip():
         return ""
     found = f", as {who} found it {when}" if who else ""
-    return (
+    own = own_block(acts or [])
+    return (f"{own}\n\n" if own else "") + (
         f"What your business already has{found}:\n{page_digest(note)}\n\n"
         "Start from this page, and from the people it says are already here: someone who "
         "already comes and stops short is nearer than a stranger, so say first what would "
