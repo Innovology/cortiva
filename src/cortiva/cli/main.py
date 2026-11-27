@@ -1525,6 +1525,18 @@ def cmd_allhands(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_image(args: argparse.Namespace) -> None:
+    """One picture, made on the business's own machine."""
+    from pathlib import Path
+
+    from cortiva.core import images
+
+    ok, said = images.make(args.brief, Path(args.out), shape=args.shape)
+    print(said)
+    if not ok:
+        sys.exit(1)
+
+
 def cmd_measure(args: argparse.Namespace) -> None:
     """Numbers the company is held to, from inside a work session."""
     import os
@@ -2185,6 +2197,11 @@ def build_parser() -> argparse.ArgumentParser:
     allhands_sub.add_parser("status", help="The last one held, as minutes")
     allhands_sched = allhands_sub.add_parser("schedule", help="Set the daily time, UTC")
     allhands_sched.add_argument("--at", default="", help="HH:MM; leave empty to stop")
+    image_top = subparsers.add_parser("image", help="Make one picture, from a work session")
+    image_top.add_argument("brief", help="What the picture shows, and its style")
+    image_top.add_argument("--out", required=True, help="Where to write the PNG")
+    image_top.add_argument("--shape", default="wide", choices=["wide", "square", "tall"])
+
     measure_top = subparsers.add_parser(
         "measure", help="Numbers the company is held to, from a work session"
     )
@@ -2440,6 +2457,8 @@ def main() -> None:
             cmd_mission(args)
         else:
             parser.parse_args(["mission", "--help"])
+    elif args.command == "image":
+        cmd_image(args)
     elif args.command == "measure":
         if args.measure_command in ("declare", "list"):
             cmd_measure(args)

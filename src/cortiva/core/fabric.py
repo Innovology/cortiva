@@ -4308,6 +4308,10 @@ class Fabric:
             from cortiva.core import measures as _me
 
             prompt += "\n\n" + _me.guide()
+            from cortiva.core import images as _im
+
+            if _im.config():
+                prompt += "\n\n" + _im.guide()
             proving = self._mission_team_guide(agent)
             if proving:
                 prompt += "\n\n" + proving
