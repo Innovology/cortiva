@@ -51,6 +51,8 @@ SHAPES: dict[str, tuple[int, int]] = {
 MAX_BRIEF = 600
 WAITING_DIR = "image-waiting"
 KEEP_DAYS = 7.0
+# How long one picture is taken to need before any has been made here.
+TYPICAL_S = 120.0
 # Said to the model whatever the brief says. A made-up face or a made-up
 # photograph of work done is a false statement about the business.
 ALWAYS = "illustration, no text, no lettering, no logos, no people, no faces"
@@ -93,12 +95,15 @@ def guide(home: Path | None = None, by: str = "") -> str:
     """How a work session asks for a picture, and what is in the line."""
     text = (
         "## 🖼 Pictures\n"
-        '- `cortiva image "<what the picture shows and its style>" --out <path.png> '
+        '- `cortiva image "<what the picture shows and its style>" [--out <path.png>] '
         "[--shape wide|square|tall]` asks for one picture from the business's own machine. "
-        "Pictures are made one at a time, in the order asked. Yours may be written within "
-        "minutes or take hours; either way it is in the line, it is written to the path "
-        "when made, and you are told. Ask and carry on; do not ask twice for the same one.\n"
-        "- `cortiva image --list` shows the line.\n"
+        "Pictures are made one at a time, in the order asked. You are given a job and how "
+        "long it should be, from the line ahead of it. Yours may be written within minutes "
+        "or take hours; either way it is in the line, it is written to the path when made "
+        "(your own `pictures/` folder when you name none), and you are told where. Ask and "
+        "carry on; do not ask twice for the same one.\n"
+        "- `cortiva image --list` shows what is being made and what waits; "
+        "`cortiva image --job <job>` says where one stands.\n"
         "- It draws illustrations and diagrams. It does not draw people, logos or words, "
         "and nothing it makes is to be passed off as a photograph of real work or of a "
         "real client.\n"
@@ -130,6 +135,30 @@ def _call(
         return int(exc.code), exc.read()
 
 
+def own_place(brief: str, agent_dir: Path) -> Path:
+    """Where a picture goes when the one asking names no place: her own
+    ``pictures`` folder, named for what it shows."""
+    words = "".join(c if c.isalnum() else "-" for c in brief.lower()).split("-")
+    name = "-".join(w for w in words if w)[:48].rstrip("-") or "picture"
+    return Path(agent_dir) / "pictures" / f"{name}-{time.strftime('%m%d-%H%M%S')}.png"
+
+
+def about(seconds: float) -> str:
+    """A wait, said the way a person would say it."""
+    minutes = max(1, round(seconds / 60))
+    if minutes < 90:
+        return f"about {minutes} minute{'s' if minutes != 1 else ''}"
+    return f"about {round(minutes / 60)} hours"
+
+
+def _standing(job: dict[str, Any]) -> str:
+    """Where a picture not yet made stands, with how long it should be."""
+    wait = about(float(job.get("eta_s") or 0))
+    if job.get("state") == "making":
+        return f"It is being made now, {wait} to go."
+    return f"It is in the line with {int(job.get('ahead') or 0)} ahead of it, {wait} to go."
+
+
 def _fetch(cfg: dict[str, str], ask: dict[str, Any]) -> tuple[str, str]:
     """Where one asked-for picture stands: ``(state, what happened)``.
     When it is made it is written to where it was asked for."""
@@ -143,10 +172,7 @@ def _fetch(cfg: dict[str, str], ask: dict[str, Any]) -> tuple[str, str]:
     if state == "failed":
         return "failed", str(job.get("error") or "no picture")[:300]
     if state != "done":
-        ahead = int(job.get("ahead") or 0)
-        if state == "making":
-            return state, "It is being made now."
-        return "queued", f"It is in the line with {ahead} ahead of it."
+        return ("making" if state == "making" else "queued"), _standing(job)
     code, data = _call(cfg, f"/job/{ask['id']}/png", timeout=60.0)
     if code != 200 or not data.startswith(b"\x89PNG"):
         return "failed", "What came back was not a picture."
@@ -203,7 +229,7 @@ def make(
     note = _home(home) / WAITING_DIR / f"{ask['id']}.json"
     note.parent.mkdir(parents=True, exist_ok=True)
     note.write_text(json.dumps(ask), encoding="utf-8")
-    said = f"It is in the line with {int(job.get('ahead') or 0)} ahead of it."
+    said = _standing(job)
     until = time.time() + wait
     while time.time() < until:
         time.sleep(min(5.0, max(0.2, wait / 20)))
@@ -217,9 +243,34 @@ def make(
                 return True, said
             return False, f"The picture was not made: {said}"
     return True, (
-        f"Asked for. {said} It will be written to {out} when it is made and you will be "
-        "told; carry on with the rest."
+        f"Asked for, job {ask['id']}. {said} It will be written to {out} when it is made "
+        f"and you will be told; carry on with the rest. `cortiva image --job {ask['id']}` "
+        "says where it stands."
     )
+
+
+def track(job_id: str, home: Path | None = None) -> str:
+    """Where one asked-for picture stands."""
+    cfg = config(home)
+    if not cfg:
+        return "Pictures are not set up on this machine."
+    try:
+        code, raw = _call(cfg, f"/job/{job_id.strip()}")
+        job = json.loads(raw) if code == 200 else None
+    except (OSError, TimeoutError, ValueError) as exc:
+        return f"The machine that makes pictures did not answer ({exc})."
+    if not isinstance(job, dict):
+        return "No picture is known by that job."
+    where = next((str(a["out"]) for a in waiting(home) if str(a["id"]) == job.get("id")), "")
+    state = str(job.get("state") or "")
+    if state == "failed":
+        return f"It was not made: {str(job.get('error') or 'no picture')[:300]}"
+    if state == "done":
+        took = about(float(job.get("took") or 0))
+        if where:
+            return f"It is made (it took {took}) and is on its way to {where}."
+        return f"It is made (it took {took}) and was written where it was asked for."
+    return _standing(job) + (f" It will be written to {where}." if where else "")
 
 
 def collect(home: Path | None = None) -> list[dict[str, Any]]:
@@ -260,8 +311,8 @@ def line(home: Path | None = None) -> str:
         where = mine.get(str(j.get("id")), {}).get("out", "")
         who = f" [{j['by']}]" if j.get("by") else ""
         rows.append(
-            f"- {j.get('state')}{who}: {str(j.get('brief') or '')[:80]}"
-            + (f" -> {where}" if where else "")
+            f"- {j.get('state')}{who}, job {j.get('id')}, {about(float(j.get('eta_s') or 0))} "
+            f"to go: {str(j.get('brief') or '')[:80]}" + (f" -> {where}" if where else "")
         )
     return "\n".join(rows) if rows else "The line is empty; a picture asked for now is made next."
 
@@ -302,6 +353,31 @@ class Line:
             key=lambda j: float(j["asked"]),
         )
 
+    def _typical(self) -> float:
+        """How long one picture has been taking here, in seconds."""
+        took = [
+            float(j["took"])
+            for j in sorted(self.jobs.values(), key=lambda j: float(j.get("finished") or 0))
+            if j["state"] == "done" and j.get("took")
+        ][-10:]
+        return max(5.0, sum(took) / len(took)) if took else TYPICAL_S
+
+    def _eta(self, job: dict[str, Any]) -> float:
+        """Seconds until this picture should be made, from the line ahead
+        of it and how long pictures have been taking."""
+        typical = self._typical()
+        now = time.time()
+        total = 0.0
+        for j in self.jobs.values():
+            if j["state"] == "making":
+                left = max(typical - (now - float(j.get("started") or now)), typical * 0.1)
+                if j is job:
+                    return left
+                total += left
+            elif j["state"] == "queued" and j is not job and j["asked"] < job["asked"]:
+                total += typical
+        return total + typical
+
     def add(self, brief: str, shape: str, by: str) -> dict[str, Any]:
         with self._lock:
             ahead = sum(1 for j in self.jobs.values() if j["state"] in ("queued", "making"))
@@ -315,8 +391,9 @@ class Line:
             }
             self.jobs[job["id"]] = job
             self._save(job)
+            receipt = {**job, "ahead": ahead, "eta_s": round(self._eta(job))}
         self._wake.set()
-        return {**job, "ahead": ahead}
+        return receipt
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -331,7 +408,8 @@ class Line:
                     if j["state"] == "making"
                     or (j["state"] == "queued" and j["asked"] < job["asked"])
                 )
-            return {**job, "ahead": ahead}
+            live = job["state"] in ("queued", "making")
+            return {**job, "ahead": ahead, "eta_s": round(self._eta(job)) if live else 0}
 
     def picture(self, job_id: str) -> Path:
         return self.root / f"{job_id}.png"
@@ -339,6 +417,7 @@ class Line:
     def listing(self) -> list[dict[str, Any]]:
         with self._lock:
             live = [j for j in self.jobs.values() if j["state"] in ("queued", "making")]
+            live = [{**j, "eta_s": round(self._eta(j))} for j in live]
             return sorted(live, key=lambda j: (j["state"] != "making", float(j["asked"])))
 
     def busy(self) -> int:
@@ -424,8 +503,12 @@ def _handler(line_: Line, token: str) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             parts = [p for p in self.path.split("?")[0].split("/") if p]
             if not parts:
-                n = line_.busy()
-                self._say(200, f"busy, {n} in the line" if n else "ready")
+                live = line_.listing()
+                if live:
+                    last = about(max(float(j["eta_s"]) for j in live))
+                    self._say(200, f"busy, {len(live)} in the line, {last} to clear")
+                else:
+                    self._say(200, "ready")
                 return
             if not self._allowed():
                 return

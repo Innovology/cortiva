@@ -1532,14 +1532,16 @@ def cmd_image(args: argparse.Namespace) -> None:
 
     from cortiva.core import images
 
+    if args.job:
+        print(images.track(args.job))
+        return
     if args.list or not args.brief:
         print(images.line())
         return
-    if not args.out:
-        print("Say where the picture goes: --out <path.png>")
-        sys.exit(1)
-    by = Path(os.environ.get("CORTIVA_AGENT_DIR", "")).name
-    ok, said = images.make(args.brief, Path(args.out), shape=args.shape, by=by, wait=args.wait)
+    home = os.environ.get("CORTIVA_AGENT_DIR", "")
+    by = Path(home).name
+    out = Path(args.out) if args.out else images.own_place(args.brief, Path(home or "."))
+    ok, said = images.make(args.brief, out, shape=args.shape, by=by, wait=args.wait)
     print(said)
     if not ok:
         sys.exit(1)
@@ -2208,6 +2210,7 @@ def build_parser() -> argparse.ArgumentParser:
     image_top = subparsers.add_parser("image", help="Ask for one picture, from a work session")
     image_top.add_argument("brief", nargs="?", default="", help="What it shows, and its style")
     image_top.add_argument("--out", default="", help="Where to write the PNG")
+    image_top.add_argument("--job", default="", help="Where one asked-for picture stands")
     image_top.add_argument("--list", action="store_true", help="Show the line")
     image_top.add_argument("--wait", type=float, default=180.0, help="Seconds to wait for it")
     image_top.add_argument("--shape", default="wide", choices=["wide", "square", "tall"])

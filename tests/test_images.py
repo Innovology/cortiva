@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -56,6 +57,8 @@ def test_a_slow_picture_stays_in_the_line_and_is_collected(tmp_path: Path) -> No
         out = tmp_path / "pics" / "slow.png"
         ok, said = images.make(BRIEF, out, home=tmp_path, by="andre", wait=0)
         assert ok and "in the line" in said and "you will be told" in said
+        # She has a job to track and how long it should be.
+        assert "with 0 ahead of it, about 2 minutes to go" in said
         assert not out.exists()
         asks = images.waiting(tmp_path)
         assert [a["by"] for a in asks] == ["andre"]
@@ -66,6 +69,11 @@ def test_a_slow_picture_stays_in_the_line_and_is_collected(tmp_path: Path) -> No
         assert again[0] and "already in the line" in again[1]
         assert server.line.busy() == 1  # type: ignore[attr-defined]
         assert "queued [andre]" in images.line(tmp_path)
+        assert "about 2 minutes to go" in images.line(tmp_path)
+        assert f"--job {asks[0]['id']}" in said
+        assert "0 ahead of it" in images.track(asks[0]["id"], tmp_path)
+        assert str(out) in images.track(asks[0]["id"], tmp_path)
+        assert "No picture is known" in images.track("nope", tmp_path)
         # Whoever waits on it holds it; nobody else collects until then.
         assert images.collect(tmp_path) == []
         note = tmp_path / images.WAITING_DIR / f"{asks[0]['id']}.json"
@@ -76,8 +84,33 @@ def test_a_slow_picture_stays_in_the_line_and_is_collected(tmp_path: Path) -> No
         assert [(f["by"], f["ok"]) for f in finished] == [("andre", True)]
         assert out.read_bytes().startswith(b"\x89PNG")
         assert images.waiting(tmp_path) == []
+        assert "It is made" in images.track(asks[0]["id"], tmp_path)
     finally:
         server.shutdown()
+
+
+def test_the_wait_is_told_from_the_line_and_how_long_pictures_take(tmp_path: Path) -> None:
+    line = images.Line(FAKE, tmp_path / "line")
+    # Three have been made here, each taking an hour.
+    for n in range(3):
+        j = line.add(f"{BRIEF} {n}", "wide", "")
+        line.jobs[j["id"]].update(state="done", took=3600, finished=float(n + 1))
+    first = line.add(BRIEF, "wide", "yuki")
+    second = line.add(BRIEF + " again", "wide", "amara")
+    third = line.add(BRIEF + " once more", "wide", "andre")
+    assert (first["eta_s"], second["eta_s"], third["eta_s"]) == (3600, 7200, 10800)
+    assert images.about(third["eta_s"]) == "about 3 hours"
+    # One is half an hour into being made: those behind it are that much nearer.
+    line.jobs[first["id"]].update(state="making", started=time.time() - 1800)
+    assert 1790 <= line.get(first["id"])["eta_s"] <= 1810  # type: ignore[index]
+    assert 8990 <= line.get(third["id"])["eta_s"] <= 9010  # type: ignore[index]
+    assert images.about(45) == "about 1 minute" and images.about(600) == "about 10 minutes"
+
+
+def test_a_picture_with_no_place_named_goes_to_her_own_folder(tmp_path: Path) -> None:
+    place = images.own_place("A funnel of dots, flat style!", tmp_path / "andre")
+    assert place.parent == tmp_path / "andre" / "pictures"
+    assert place.name.startswith("a-funnel-of-dots-flat-style-") and place.suffix == ".png"
 
 
 def test_the_line_outlives_a_restart(tmp_path: Path) -> None:
