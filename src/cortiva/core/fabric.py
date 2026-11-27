@@ -4311,7 +4311,7 @@ class Fabric:
             from cortiva.core import images as _im
 
             if _im.config():
-                prompt += "\n\n" + _im.guide()
+                prompt += "\n\n" + _im.guide(by=agent.directory.name)
             proving = self._mission_team_guide(agent)
             if proving:
                 prompt += "\n\n" + proving
@@ -9512,6 +9512,55 @@ class Fabric:
         text = self._measures_context(agent) if agent is not None else ""
         return {"ok": True, "text": text or "No numbers have been declared."}
 
+    def _kick_picture_collect(self) -> None:
+        """Fetch pictures the team asked for that are now made, write each
+        where it was asked for, and tell the one who asked. A picture may
+        take hours; whoever asked has long since moved on."""
+        from cortiva.core import images as _im
+
+        running = getattr(self, "_picture_task", None)
+        if running is not None and not running.done():
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_picture_at", 0.0) < 60.0:
+            return
+        self._picture_at = now
+        if not _im.waiting():
+            return
+
+        async def _run() -> None:
+            try:
+                finished = await asyncio.to_thread(_im.collect)
+            except Exception:
+                logger.debug("picture collect failed", exc_info=True)
+                return
+            by_dir = {a.directory.name: a for a in self.agents.values()}
+            for f in finished:
+                brief = str(f.get("brief") or "")[:120]
+                logger.info(
+                    "Picture %s for %s: %s (%s)",
+                    "made" if f.get("ok") else "not made",
+                    f.get("by") or "?",
+                    f.get("out"),
+                    brief[:60],
+                )
+                asker = by_dir.get(str(f.get("by") or ""))
+                if asker is None:
+                    continue
+                if f.get("ok"):
+                    text = (
+                        f"The picture you asked for is made and is at {f.get('out')}: "
+                        f'"{brief}". Look at it before you use it.'
+                    )
+                else:
+                    text = (
+                        f"The picture you asked for was not made ({f.get('said')}): "
+                        f'"{brief}". Ask again if it is still wanted.'
+                    )
+                _factory.add_notice(asker.directory, text)
+
+        self._picture_task = asyncio.create_task(_run())
+
     def _kick_measure_probe(self) -> None:
         """Read every declared number if a read is due and none is running.
         Network calls, so off the loop; the heartbeat never waits."""
@@ -13173,6 +13222,7 @@ class Fabric:
         # Observe mission end states off the loop; a wake only reads the file.
         self._kick_mission_probe()
         self._kick_measure_probe()
+        self._kick_picture_collect()
         self._kick_allhands()
 
         # Process scheduled actions
