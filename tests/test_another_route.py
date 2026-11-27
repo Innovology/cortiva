@@ -469,3 +469,23 @@ def test_what_the_teams_own_stations_did_is_set_before_the_one_choosing() -> Non
     assert block.index("lead-capture-mission") < block.index("89 leads captured")
     assert "own stations" not in rt.have_block(page)
     assert "'lead-capture-mission' ran 12" in rt.look_text("Leads", "a lead", "/p", (), acts)
+
+
+def test_what_the_team_can_make_known_becomes_work() -> None:
+    unknown, can, build = rt.parse_see(
+        "UNKNOWN: how many people visit the site\nCAN: YES\n"
+        "BUILD: add /api/metrics/visits reading the sessions table the site already keeps"
+    )
+    assert can is True and "visit" in unknown and "sessions table" in build
+    task = rt.see_text(unknown, build, "/p/have.md")
+    assert task.startswith(rt.SEE_MARK) and "enter nothing yourself" in task
+    assert rt.parse_see("UNKNOWN: NONE") == ("", None, "")
+    assert (
+        rt.parse_see("UNKNOWN: search rankings\nCAN: NO\nBUILD: needs the owner's yes")[1] is False
+    )
+    page = "\n\n".join(f"## {h}\n" + "not known from any source. " * 300 for h in rt.HEADINGS)
+    prompt = rt.see_prompt(page)
+    assert "Who is already here" in prompt and "What we hold" in prompt
+    # The second answer the team's model gave on Mini-2 was an open endpoint
+    # of every lead's name and address.
+    assert "never who a person is" in prompt and "no person's name or details" in task

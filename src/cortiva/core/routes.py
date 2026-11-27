@@ -391,6 +391,72 @@ def held_prompt(route: str, note: str) -> str:
     )
 
 
+SEE_MARK = "Make it seen"
+
+
+def see_prompt(note: str) -> str:
+    """Asked of the one who wrote the page: of what it says is not known,
+    what could the team make known?
+
+    A page may say something cannot be seen, and that was taken as the end
+    of it. On Mini-2 the page said the number of visitors was "not known
+    from any source this team can open today"; the team held the site's
+    repository, the site already kept a table of every session, and one
+    endpoint would have shown it. Five members were then asked for a route
+    and none named it (2026-11-26 to 27). What a team can change, it can
+    make report on itself."""
+    return (
+        "Your team's page on its business:\n"
+        f"{page_digest(note, (200, 400, 3000, 600, 2600))}\n\n"
+        "Find what the page says is not known, could not be found or cannot be opened, "
+        "about the people or the thing your team's end depends on. Not knowing is not "
+        "always the end of it: a thing your team is able to change, it can also change so "
+        "that it records what happens and reports it. What is wanted is how many, from "
+        "where and what they do: never who a person is, and nothing that puts anyone's "
+        "name or details where someone outside the team could read them. Take the one "
+        "unknown that most "
+        "matters for choosing what to do next and say whether your team could make it "
+        "known using only what the page says it holds, first looking at what the thing "
+        "already records.\n"
+        "Answer on these lines:\n"
+        "UNKNOWN: <the one thing, in a few words>\n"
+        "CAN: <YES or NO>\n"
+        "BUILD: <if YES, the one piece of work that makes it readable from now on, and "
+        "where the whole team will read it. If NO, whose yes or what access it needs>\n"
+        "If the page leaves nothing that matters unknown, write UNKNOWN: NONE."
+    )
+
+
+def parse_see(answer: str) -> tuple[str, bool | None, str]:
+    """(what is not known, whether the team can make it known, the work)."""
+    got = {"UNKNOWN": "", "CAN": "", "BUILD": ""}
+    for raw in (answer or "").splitlines():
+        line = raw.strip().lstrip("*-• ").strip()
+        head, _, rest = line.partition(":")
+        key = head.strip().strip("*").upper()
+        if key in got and not got[key]:
+            got[key] = rest.strip().strip("*").strip()
+    unknown = "" if got["UNKNOWN"].upper().startswith("NONE") else got["UNKNOWN"][:240]
+    word = (got["CAN"].upper().lstrip("<").split() or [""])[0].strip(".,;")
+    can = True if word == "YES" else False if word == "NO" else None
+    build = got["BUILD"][:500] if len(got["BUILD"]) >= 12 else ""
+    return unknown, can, build
+
+
+def see_text(unknown: str, build: str, path: str) -> str:
+    """The task that has a member make something seen."""
+    return (
+        f"{SEE_MARK}: your team's page says this is not known: {unknown.strip()}. You said "
+        f"the team can make it known with what it holds: {build.strip()} Do that before "
+        "any other way to the end: until this can be read, nobody can tell which way is "
+        "working. Record only what happens; enter nothing yourself to try it. Show counts "
+        "and what was done, and no person's name or details where anyone outside the team "
+        "could read them. When it can "
+        f"be read, write what it shows into the page at {path} under 'Who is already here', "
+        "with where anyone on the team can read it again."
+    )
+
+
 def parse_held(answer: str) -> tuple[bool | None, str, str]:
     """(held, what is missing, what to do instead). ``held`` is None when the
     member gave no verdict, and the step then stands as named."""

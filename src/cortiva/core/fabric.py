@@ -5245,7 +5245,9 @@ class Fabric:
         by submitting it again."""
         from cortiva.core import routes as _rt
 
-        if (task.description or "").startswith((_rt.MARK, _rt.BOLD_MARK, _rt.LOOK_MARK)):
+        if (task.description or "").startswith(
+            (_rt.MARK, _rt.BOLD_MARK, _rt.LOOK_MARK, _rt.SEE_MARK)
+        ):
             return False
         author = ""
         try:
@@ -12251,10 +12253,77 @@ class Fabric:
                 lacking = _rt.missing_headings(page)
                 if lacking:
                     self._ask_to_look(m, row["who"], lacking)
+                else:
+                    try:
+                        await self._ask_to_see(m)
+                    except Exception:
+                        logger.exception("asking what could be made seen failed")
                 owed.pop(key, None)
                 await self._ask_team_about(row)
         finally:
             self._asking_still = False
+
+    async def _ask_to_see(self, mission: dict[str, Any]) -> None:
+        """Ask the one who wrote the page what of the unknown the team could
+        make known, and give them that as work. Once for each page."""
+        import hashlib
+        import uuid
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        note, who, _when = _ms.have_note(self.agents_dir, mission)
+        agent = self.agents.get(who)
+        if not note or agent is None:
+            return
+        mid = str(mission["mission_id"])
+        seen: dict[str, str] = getattr(self, "_see_asked", None) or {}
+        self._see_asked = seen
+        stamp = hashlib.sha256(note.encode()).hexdigest()
+        if seen.get(mid) == stamp:
+            return
+        if agent.task_queue is None:
+            agent.task_queue = TaskQueue(tasks=[])
+        queue = agent.task_queue.tasks
+        if any(
+            (t.description or "").startswith(_rt.SEE_MARK)
+            and t.status in ("pending", "in_progress")
+            for t in queue
+        ):
+            return
+        seen[mid] = stamp
+        self._meter_model_call(agent, "route")
+        response = await self.consciousness.think(
+            agent_id=agent.id,
+            context=_rt.SYSTEM,
+            prompt=_rt.see_prompt(note),
+            priority=Priority.HIGH,
+            max_tokens=8000,
+            metadata={"call_type": "route", "ponder": True},
+        )
+        unknown, can, build = _rt.parse_see(str(response.content or ""))
+        if not unknown:
+            logger.info("Mission %s: %s finds nothing that matters unknown on the page", mid, who)
+            return
+        if not can or not build:
+            logger.info(
+                "Mission %s: %s says the team cannot make known '%s' with what it holds (%s)",
+                mid,
+                who,
+                unknown[:120],
+                build[:160],
+            )
+            return
+        text = _rt.see_text(unknown, build, str(_ms.have_path(self.agents_dir, who, mid)))
+        top = max((t.priority for t in queue), default=1)
+        queue.insert(0, Task(id=uuid.uuid4().hex[:12], description=text, priority=top))
+        logger.info(
+            "Mission %s: %s is to make seen what the page says is not known (%s): %s",
+            mid,
+            who,
+            unknown[:120],
+            build[:200],
+        )
 
     def _own_acts(self, mission: dict[str, Any]) -> list[tuple[str, int, str]]:
         """What the mission's team's own stations did in the last week."""
