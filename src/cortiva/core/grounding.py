@@ -198,12 +198,57 @@ def _day(iso: str) -> Any:
         return None
 
 
+_ADDRESS_RE = re.compile(r"https?://[^\s<>\"')\]]+", re.I)
+
+
+def _hides_private(address: str) -> bool:
+    host = address.split("://", 1)[-1].split("/", 1)[0].lower()
+    return host == "github.com" or host.endswith((".github.com", "githubusercontent.com"))
+
+
+def check_address(text: str, timeout: float = 8.0, fetch: Any = None) -> dict[str, Any]:
+    """Read the first web address in ``text`` and say what came back.
+
+    A reconciled ledger, a trade confirmation and a published page are
+    receipts the same way a merged pull request is: the system can read
+    them or it cannot. Only what is certain is a verdict — it was read
+    (2xx), or it is not there (404, 410). A sign-in wall, a server error or
+    no answer is unknown."""
+    found = _ADDRESS_RE.search(text or "")
+    if not found:
+        return {"ok": None, "reason": "not an address the system can read"}
+    address = found.group(0).rstrip(".,;")
+    sent_credential = False
+    if fetch is None:
+        from cortiva.core.missions import _default_fetch as fetch
+    try:
+        status, _body = fetch(address, timeout)
+    except Exception as e:
+        return {"ok": None, "reason": f"no answer from {address} ({type(e).__name__})"}
+    if 200 <= status < 300:
+        return {"ok": True, "reason": f"the system read it: HTTP {status}", "url": address}
+    if status in (404, 410):
+        if not sent_credential and _hides_private(address):
+            # Read without a sign-in, a private page here answers 404 exactly
+            # as a missing one does: not certain, so not a verdict.
+            return {
+                "ok": None,
+                "reason": f"HTTP {status} without a sign-in, which this host also "
+                "answers for a private page",
+                "url": address,
+            }
+        return {"ok": False, "reason": f"nothing is there (HTTP {status})", "url": address}
+    return {"ok": None, "reason": f"the system could not read it (HTTP {status})", "url": address}
+
+
 def check_artifact(
     token: str, url: str, promised_at: str = "", timeout: float = 8.0
 ) -> dict[str, Any]:
-    """Test a 'delivered' artifact against GitHub. Returns ``{"ok": bool,
-    "reason": str, ...ref fields}``. Only GitHub issue/PR URLs are checkable
-    here; anything else returns ``ok=None`` (unknown), never a verdict.
+    """Test a 'delivered' artifact by reading it. Returns ``{"ok": bool,
+    "reason": str, ...ref fields}``. A GitHub issue/PR is read with the
+    claimant's token; any other web address is read as it stands (see
+    :func:`check_address`); anything that is not an address returns
+    ``ok=None`` (unknown), never a verdict.
 
     A claim fails when the link does not resolve with the claimant's own
     token, when the thing is not theirs, or when it predates the promise
@@ -212,7 +257,7 @@ def check_artifact(
     """
     refs = extract_github_refs(url or "")
     if not refs:
-        return {"ok": None, "reason": "not a GitHub issue/PR link — not checkable here"}
+        return check_address(url or "", timeout=timeout)
     ref = read_github_ref(refs[0], token, timeout=timeout)
     if ref.get("status") != "read":
         return {"ok": False, "reason": f"could not read it ({ref.get('reason')})", **ref}

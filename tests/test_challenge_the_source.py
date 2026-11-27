@@ -29,6 +29,31 @@ def _reader(**fields):
     return _read
 
 
+def test_any_address_the_system_can_read_is_a_receipt() -> None:
+    """A reconciled ledger or a trade confirmation, the same as a merged PR."""
+
+    def at(status):
+        return lambda url, timeout: (status, "")
+
+    ledger = "Reconciled: https://books.example/ledgers/2026-10."
+    ok = grounding.check_address(ledger, fetch=at(200))
+    assert ok["ok"] is True and ok["url"] == "https://books.example/ledgers/2026-10"
+    gone = grounding.check_address("https://broker.example/fills/881", fetch=at(404))
+    assert gone["ok"] is False and "nothing is there" in gone["reason"]
+    # Only what is certain is a verdict.
+    assert grounding.check_address("https://books.example/x", fetch=at(302))["ok"] is None
+    assert grounding.check_address("https://books.example/x", fetch=at(503))["ok"] is None
+
+    def dead(url, timeout):
+        raise OSError("no route")
+
+    assert grounding.check_address("https://books.example/x", fetch=dead)["ok"] is None
+    assert grounding.check_address("the ledger in the shared drive")["ok"] is None
+    # A private page that answers 404 to a stranger is not a missing page.
+    private = grounding.check_address("https://github.com/acme/books/actions/runs/7", fetch=at(404))
+    assert private["ok"] is None
+
+
 def test_check_artifact_verdicts(monkeypatch) -> None:
     monkeypatch.setattr(grounding, "github_login", lambda token, timeout=8.0: "samantha-innovology")
     # Not a GitHub link → unknown, never a verdict.

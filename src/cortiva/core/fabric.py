@@ -418,6 +418,11 @@ class Fabric:
 
         for path in sorted(self.agents_dir.iterdir()):
             if path.is_dir() and not path.name.startswith("."):
+                if path.name not in self.agents and self._only_mail_left_for_a_name(path):
+                    logger.info(
+                        "%s holds only files left for that name; nobody here is it", path.name
+                    )
+                    continue
                 if path.name not in self.agents:
                     agent = Agent.from_directory(path)
                     agent.migrate_flat_layout()
@@ -440,6 +445,38 @@ class Fabric:
             self.refresh_org_from_agents()
 
         return discovered
+
+    @staticmethod
+    def _only_mail_left_for_a_name(path: Path) -> bool:
+        """A directory that holds nothing but an inbox is not a person.
+
+        Work sessions left notes for "samantha" and "maren" in directories
+        they made by first name; the people are `cto` and `ceo`. Each
+        directory was registered as an agent, so chat to "samantha" went to
+        the directory and not to her: 37 messages unread in three days, 8
+        more to "maren" (Mini-2, 17-19 November 2026)."""
+        try:
+            names = {p.name for p in path.iterdir() if not p.name.startswith(".")}
+        except OSError:
+            return False
+        return bool(names) and names <= {"inbox", "workspace"}
+
+    def _redeliver_chat_left_for_a_name(self) -> int:
+        """Chat waiting under a name that is not an agent's id goes to the
+        agent who answers to that name."""
+        from cortiva.core import teamchat as _tc
+
+        moved = 0
+        for name in _tc.unread_names(self.agents_dir):
+            if name in self.agents:
+                continue
+            rid = self._chat_resolve(name)
+            if rid is None:
+                continue
+            n = _tc.readdress(self.agents_dir, name, rid)
+            moved += n
+            logger.info("Chat: %d message(s) left for %s delivered to %s", n, name, rid)
+        return moved
 
     def refresh_org_from_agents(self) -> None:
         """Rebuild ``self.org`` from each agent's ``deploy.yaml``.
@@ -3752,6 +3789,13 @@ class Fabric:
                 # the colleague no model call.
                 if self._chat_from_mind(agent, msg):
                     self.communication_tracker.record(agent.id, recipient)
+                    if str(msg.get("kind") or "") == "blocked":
+                        # Telling a colleague you are blocked is the same
+                        # moment as telling a manager.
+                        try:
+                            await self._with_another_route(agent, task.description, str(content))
+                        except Exception:
+                            logger.debug("another-route ask failed", exc_info=True)
                     continue
                 if recipient.lower() in local_keys and self.channel:
                     await self.channel.send(
@@ -3803,8 +3847,13 @@ class Fabric:
             logger.warning(
                 f"Agent {agent.id} escalation on '{task.description}': {suffix.escalation}"
             )
+            said = str(suffix.escalation)
             try:
-                self._route_escalation(agent, task.description, str(suffix.escalation))
+                said = await self._with_another_route(agent, task.description, said)
+            except Exception:
+                logger.debug("another-route ask failed for %s", agent.id, exc_info=True)
+            try:
+                self._route_escalation(agent, task.description, said)
             except Exception:
                 logger.exception("Escalation routing failed for %s", agent.id)
 
@@ -4259,6 +4308,10 @@ class Fabric:
             from cortiva.core import measures as _me
 
             prompt += "\n\n" + _me.guide()
+            from cortiva.core import images as _im
+
+            if _im.config():
+                prompt += "\n\n" + _im.guide(by=agent.directory.name)
             proving = self._mission_team_guide(agent)
             if proving:
                 prompt += "\n\n" + proving
@@ -5188,7 +5241,18 @@ class Fabric:
         her directory, her credentials — and stays its builder's. On
         Mini-2, 5-12 November 2026, one agent's station took "Track to
         delivery; mark the commitment delivered" while the other four did
-        the identical step by hand about 350 times."""
+        the identical step by hand about 350 times.
+
+        Another route is not the floor's to take. A station is the route
+        already built; on 20 November two members' "another route" tasks
+        were taken by the station that submits the form, which answered each
+        by submitting it again."""
+        from cortiva.core import routes as _rt
+
+        if (task.description or "").startswith(
+            (_rt.MARK, _rt.BOLD_MARK, _rt.LOOK_MARK, _rt.SEE_MARK)
+        ):
+            return False
         author = ""
         try:
             station = _factory.match(
@@ -5205,6 +5269,42 @@ class Fabric:
             logger.debug("station lookup failed for %s", agent.id, exc_info=True)
             return False
         if station is None:
+            return False
+        from cortiva.core import missions as _ms
+
+        for m in _ms.for_agent(_ms.load(self.agents_dir), agent.id):
+            if _factory.answers_only_to(
+                station, str(m.get("title") or ""), task.description, strict=bool(author)
+            ):
+                # Mentioning the mission is not asking for the station.
+                logger.info(
+                    "Station %s answers only to the name of the mission; %s has it: %s",
+                    station.name,
+                    agent.id,
+                    task.description[:80],
+                )
+                told: set[str] = getattr(self, "_station_named_told", None) or set()
+                self._station_named_told = told
+                if station.name not in told:
+                    told.add(station.name)
+                    _factory.add_notice(
+                        station.directory.parent.parent,
+                        f"Your station '{station.name}' listens for the name of the mission "
+                        "and no more, so it was offered every task that mentions the mission. "
+                        "It takes none of them now. Give it a phrase for the one thing it does.",
+                    )
+                return False
+        if not author and _factory.already_failed_on(
+            station, agent.directory, task.id, task.description
+        ):
+            # The station has not changed since it failed on this very task:
+            # the task is hers to do, and her floor report says why.
+            logger.info(
+                "Station %s unchanged since it failed on this task; %s has it: %s",
+                station.name,
+                agent.id,
+                task.description[:80],
+            )
             return False
         run = await _factory.run_station(
             station,
@@ -5628,9 +5728,7 @@ class Fabric:
 
     def _schedule_artifact_check(self, agent: Agent, c: Any) -> None:
         """Resolve a 'delivered' artifact off the event loop; no loop → skip."""
-        from cortiva.core.grounding import extract_github_refs
-
-        if not extract_github_refs(str(getattr(c, "artifact", "") or "")):
+        if "://" not in str(getattr(c, "artifact", "") or ""):
             return
         try:
             loop = asyncio.get_running_loop()
@@ -5641,8 +5739,9 @@ class Fabric:
     async def _verify_artifact(
         self, agent: Agent, commitment_id: str, artifact: str, promised_at: str
     ) -> dict[str, Any]:
-        """Test a delivered artifact against GitHub with the claimant's own
-        token and write the verdict onto the commitment. A failed check
+        """Read a delivered artifact (a GitHub link with the claimant's own
+        token, any other address as it stands) and write the verdict onto
+        the commitment. A failed check
         reopens the claim as unproven, with the reason the manager will see."""
         from cortiva.core import commitments as _cm
         from cortiva.core.grounding import agent_github_token, check_artifact
@@ -9223,6 +9322,7 @@ class Fabric:
         path: str = "",
         drives: str = "",
         better: str = "up",
+        token_file: str = "",
         **_: Any,
     ) -> dict[str, Any]:
         """A work session declares a number its agent is held to."""
@@ -9240,11 +9340,12 @@ class Fabric:
             path=path,
             drives=drives,
             better=better,
+            token_file=token_file,
         )
         if not ok:
             return {"ok": False, "error": said}
         row = next((m for m in _me.load(self.agents_dir) if m["id"] == said), {})
-        value, note = await asyncio.to_thread(_me.read_one, row)
+        value, note = await asyncio.to_thread(_me.read_one, row, None, self.agents_dir)
         logger.info("Numbers: %s declared '%s' (%s)", who[0], said, note or f"reads {value}")
         self._measure_probed_at = 0.0  # read it into the record on the next tick
         return {
@@ -9262,6 +9363,7 @@ class Fabric:
         minimum: float | None = None,
         contains: str = "",
         token_file: str = "",
+        sent_to: str = "",
         mission: str = "",
         **_: Any,
     ) -> dict[str, Any]:
@@ -9284,6 +9386,7 @@ class Fabric:
             minimum=minimum,
             contains=contains,
             token_file=token_file,
+            sent_to=sent_to,
             mission_id=mission,
         )
         if not ok:
@@ -9409,6 +9512,55 @@ class Fabric:
         text = self._measures_context(agent) if agent is not None else ""
         return {"ok": True, "text": text or "No numbers have been declared."}
 
+    def _kick_picture_collect(self) -> None:
+        """Fetch pictures the team asked for that are now made, write each
+        where it was asked for, and tell the one who asked. A picture may
+        take hours; whoever asked has long since moved on."""
+        from cortiva.core import images as _im
+
+        running = getattr(self, "_picture_task", None)
+        if running is not None and not running.done():
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_picture_at", 0.0) < 60.0:
+            return
+        self._picture_at = now
+        if not _im.waiting():
+            return
+
+        async def _run() -> None:
+            try:
+                finished = await asyncio.to_thread(_im.collect)
+            except Exception:
+                logger.debug("picture collect failed", exc_info=True)
+                return
+            by_dir = {a.directory.name: a for a in self.agents.values()}
+            for f in finished:
+                brief = str(f.get("brief") or "")[:120]
+                logger.info(
+                    "Picture %s for %s: %s (%s)",
+                    "made" if f.get("ok") else "not made",
+                    f.get("by") or "?",
+                    f.get("out"),
+                    brief[:60],
+                )
+                asker = by_dir.get(str(f.get("by") or ""))
+                if asker is None:
+                    continue
+                if f.get("ok"):
+                    text = (
+                        f"The picture you asked for is made and is at {f.get('out')}: "
+                        f'"{brief}". Look at it before you use it.'
+                    )
+                else:
+                    text = (
+                        f"The picture you asked for was not made ({f.get('said')}): "
+                        f'"{brief}". Ask again if it is still wanted.'
+                    )
+                _factory.add_notice(asker.directory, text)
+
+        self._picture_task = asyncio.create_task(_run())
+
     def _kick_measure_probe(self) -> None:
         """Read every declared number if a read is due and none is running.
         Network calls, so off the loop; the heartbeat never waits."""
@@ -9424,6 +9576,8 @@ class Fabric:
         if not (self.agents_dir / _me.MEASURES_FILE).exists():
             return
         self._measure_probed_at = now
+        since = getattr(self, "_measure_read_wall", 0.0) or time.time() - _me.PROBE_INTERVAL_S
+        self._measure_read_wall = time.time()
 
         async def _run() -> None:
             try:
@@ -9432,8 +9586,22 @@ class Fabric:
                 logger.debug("measure probe failed", exc_info=True)
                 return
             owners = {str(m["id"]): str(m.get("owner")) for m in _me.load(self.agents_dir)}
+            ran: set[str] = set()
+            if moved:
+                # The team's own stations that ran since the last reading.
+                for a in self.agents.values():
+                    for r in _factory.runs(a.directory, since=since - 60.0):
+                        if r.ok and not r.used_by:
+                            ran.add(r.station)
             for mid, before, value in moved:
                 logger.info("Numbers: '%s' moved from %s to %s", mid, before, value)
+                if ran and before is not None:
+                    _me.mark_own(self.agents_dir, mid, value - before, sorted(ran))
+                    logger.info(
+                        "Numbers: '%s' moved while the team's own station %s ran",
+                        mid,
+                        ", ".join(sorted(ran)),
+                    )
                 self._emit(
                     "measure.moved",
                     measure_id=mid,
@@ -9621,6 +9789,15 @@ class Fabric:
         )
         if out.get("ok"):
             self._chat_note(who, "sent " + _tc.line(out["message"]))
+            sender = self.agents.get(who[0])
+            if out["message"]["kind"] == "blocked" and sender is not None:
+                doing = (getattr(self, "_session_tasks", None) or {}).get(who, "")
+                if doing:
+                    held: set[Any] = getattr(self, "_route_asks", None) or set()
+                    self._route_asks = held
+                    ask = asyncio.create_task(self._with_another_route(sender, doing, body))
+                    held.add(ask)
+                    ask.add_done_callback(held.discard)
             logger.info(
                 "Chat: %s %s -> %s (%s)",
                 who[0],
@@ -9996,6 +10173,12 @@ class Fabric:
 
         async def _run() -> None:
             try:
+                # Weighed before it is read: a proof found not so never
+                # reads as the end reached.
+                await self._weigh_proofs()
+            except Exception:
+                logger.exception("weighing the team's proofs failed")
+            try:
                 before = _ms.load_state(self.agents_dir)
                 after = await asyncio.to_thread(_ms.probe, self.agents_dir)
             except Exception:
@@ -10021,6 +10204,13 @@ class Fabric:
                 if entry.get("complete") and not (before.get(mid) or {}).get("complete"):
                     logger.info("Mission %s: end state reached", mid)
                     self._emit("mission.end_state_reached", mission_id=mid)
+            # Asked apart from the probe: the answers are pondered, minutes
+            # each, and the next look at the end state does not wait on them.
+            held: set[Any] = getattr(self, "_route_asks", None) or set()
+            self._route_asks = held
+            asking = asyncio.get_running_loop().create_task(self._ask_where_still())
+            held.add(asking)
+            asking.add_done_callback(held.discard)
 
         try:
             self._mission_probe_task = asyncio.get_running_loop().create_task(_run())
@@ -11998,6 +12188,427 @@ class Fabric:
                 )
             except Exception:
                 logger.exception("Tripwire escalation failed for %s", agent.id)
+            # Failing on the same thing over and over is being blocked without
+            # saying so: the same question is asked.
+            try:
+                held: set[Any] = getattr(self, "_route_asks", None) or set()
+                self._route_asks = held
+                ask = asyncio.get_running_loop().create_task(
+                    self._with_another_route(agent, task.description, detail)
+                )
+                held.add(ask)
+                ask.add_done_callback(held.discard)
+            except RuntimeError:
+                pass  # no loop running: nothing to ask on
+
+    async def _weigh_proofs(self) -> None:
+        """Have a member who took no part weigh each proof the team has
+        finished: is the end so, or has its reading moved?"""
+        from datetime import UTC
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        for row in await asyncio.to_thread(_ms.unweighed, self.agents_dir):
+            m, cond, proof = row["mission"], row["condition"], row["proof"]
+            mid, cid = str(m["mission_id"]), str(cond["id"])
+            part = {str((proof.get("shown") or {}).get("by") or "").lower()}
+            part |= {
+                str(s.get("by") or "").lower()
+                for s in proof.get("seen") or []
+                if isinstance(s, dict)
+            }
+            team = [str(t).lower() for t in m.get("team") or [] if str(t).lower() in self.agents]
+            who = next((t for t in team if t not in part), None) or next(iter(team), None)
+            if who is None:
+                continue
+            self._meter_model_call(self.agents[who], "weigh")
+            response = await self.consciousness.think(
+                agent_id=who,
+                context=_rt.SYSTEM,
+                prompt=_ms.weigh_prompt(row),
+                priority=Priority.HIGH,
+                max_tokens=8000,
+                metadata={"call_type": "weigh", "ponder": True},
+            )
+            so, why = _ms.parse_weigh(str(response.content or ""))
+            if so is None:
+                logger.info("Mission %s: %s gave no verdict weighing %s", mid, who, cid)
+                continue
+            _ms.record_weigh(self.agents_dir, mid, cid, so, why, who)
+            logger.info(
+                "Mission %s: %s weighed the team's proof of %s: %s (%s)",
+                mid,
+                who,
+                cid,
+                "so" if so else "NOT SO",
+                why[:300],
+            )
+            if so:
+                continue
+            # A proof refused is the moment to ask how the end is reached:
+            # the team is asked now, not after another half day of standing.
+            entry = _ms.load_state(self.agents_dir).get(mid) or {}
+            since = str(entry.get("first_checked_at") or "")
+            age = _ms._age(_ms._hours_between(since, datetime.now(UTC)))
+            owed: dict[tuple[str, str], dict[str, Any]] = getattr(self, "_asks_owed", None) or {}
+            self._asks_owed = owed
+            owed[(mid, cid)] = {
+                "mission_id": mid,
+                "title": str(m.get("title") or mid),
+                "condition": cid,
+                "describe": str(cond.get("describe") or cid),
+                "observed": f"the team's proof was weighed and found not so: {why[:240]}",
+                "not_met_for": age,
+                "still_for": age,
+                "still_hours": 24.0,
+                # The one who showed it first: they know the ground best.
+                "who": list(
+                    dict.fromkeys(
+                        w
+                        for w in (str((proof.get("shown") or {}).get("by") or "").lower(), *team)
+                        if w in self.agents
+                    )
+                ),
+            }
+
+    async def _ask_where_still(self) -> None:
+        """Put the two questions to the team where a mission has stood still.
+        Nobody has to say they are blocked: the system holds the fact."""
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        if getattr(self, "_asking_still", False):
+            return
+        self._asking_still = True
+        try:
+            owed: dict[tuple[str, str], dict[str, Any]] = getattr(self, "_asks_owed", None) or {}
+            self._asks_owed = owed
+            rows = {(r["mission_id"], r["condition"]): r for r in owed.values()}
+            for r in _ms.standing_still(self.agents_dir):
+                rows[(r["mission_id"], r["condition"])] = r
+            missions = {str(m["mission_id"]): m for m in _ms.load(self.agents_dir)}
+            for key, row in rows.items():
+                m = missions.get(row["mission_id"])
+                if m is None:
+                    owed.pop(key, None)
+                    continue
+                # Nobody chooses a route before someone has looked at what
+                # the business already has.
+                page = _ms.have_note(self.agents_dir, m)[0]
+                if not page:
+                    owed[key] = row
+                    self._ask_to_look(m, row["who"])
+                    continue
+                # A page that lacks a heading is added to while the team
+                # goes on choosing; it does not hold them up.
+                lacking = _rt.missing_headings(page)
+                if lacking:
+                    self._ask_to_look(m, row["who"], lacking)
+                else:
+                    try:
+                        await self._ask_to_see(m)
+                    except Exception:
+                        logger.exception("asking what could be made seen failed")
+                owed.pop(key, None)
+                await self._ask_team_about(row)
+        finally:
+            self._asking_still = False
+
+    async def _ask_to_see(self, mission: dict[str, Any]) -> None:
+        """Ask the one who wrote the page what of the unknown the team could
+        make known, and give them that as work. Once for each page."""
+        import hashlib
+        import uuid
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        note, who, _when = _ms.have_note(self.agents_dir, mission)
+        agent = self.agents.get(who)
+        if not note or agent is None:
+            return
+        mid = str(mission["mission_id"])
+        seen: dict[str, str] = getattr(self, "_see_asked", None) or {}
+        self._see_asked = seen
+        stamp = hashlib.sha256(note.encode()).hexdigest()
+        if seen.get(mid) == stamp:
+            return
+        if agent.task_queue is None:
+            agent.task_queue = TaskQueue(tasks=[])
+        queue = agent.task_queue.tasks
+        if any(
+            (t.description or "").startswith(_rt.SEE_MARK)
+            and t.status in ("pending", "in_progress")
+            for t in queue
+        ):
+            return
+        seen[mid] = stamp
+        self._meter_model_call(agent, "route")
+        response = await self.consciousness.think(
+            agent_id=agent.id,
+            context=_rt.SYSTEM,
+            prompt=_rt.see_prompt(note),
+            priority=Priority.HIGH,
+            max_tokens=8000,
+            metadata={"call_type": "route", "ponder": True},
+        )
+        unknown, can, build = _rt.parse_see(str(response.content or ""))
+        if not unknown:
+            logger.info("Mission %s: %s finds nothing that matters unknown on the page", mid, who)
+            return
+        if not can or not build:
+            logger.info(
+                "Mission %s: %s says the team cannot make known '%s' with what it holds (%s)",
+                mid,
+                who,
+                unknown[:120],
+                build[:160],
+            )
+            return
+        text = _rt.see_text(unknown, build, str(_ms.have_path(self.agents_dir, who, mid)))
+        top = max((t.priority for t in queue), default=1)
+        queue.insert(0, Task(id=uuid.uuid4().hex[:12], description=text, priority=top))
+        logger.info(
+            "Mission %s: %s is to make seen what the page says is not known (%s): %s",
+            mid,
+            who,
+            unknown[:120],
+            build[:200],
+        )
+
+    def _own_acts(self, mission: dict[str, Any]) -> list[tuple[str, int, str]]:
+        """What the mission's team's own stations did in the last week."""
+        team = {str(t).lower() for t in mission.get("team") or []}
+        dirs = [a.directory for aid, a in sorted(self.agents.items()) if aid in team]
+        try:
+            return _factory.own_acts(dirs, since=time.time() - 7 * 86400)
+        except Exception:
+            logger.debug("could not read the team's own station runs", exc_info=True)
+            return []
+
+    def _ask_to_look(
+        self, mission: dict[str, Any], who: list[str], missing: tuple[str, ...] = ()
+    ) -> None:
+        """Have one member write down what the business already has. Asked of
+        the next member if the page is not there six hours on."""
+        import uuid
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        mid = str(mission["mission_id"])
+        asked: dict[str, tuple[float, int]] = getattr(self, "_look_asked", None) or {}
+        self._look_asked = asked
+        at, turn = asked.get(mid, (0.0, -1))
+        if time.time() - at < 6 * 3600:
+            return
+        able = [w for w in who if w in self.agents]
+        if not able:
+            return
+        turn += 1
+        member = able[turn % len(able)]
+        asked[mid] = (time.time(), turn)
+        agent = self.agents[member]
+        if agent.task_queue is None:
+            agent.task_queue = TaskQueue(tasks=[])
+        queue = agent.task_queue.tasks
+        text = _rt.look_text(
+            str(mission.get("title") or mid),
+            str(mission.get("intent") or ""),
+            str(_ms.have_path(self.agents_dir, member, mid)),
+            missing,
+            self._own_acts(mission),
+        )
+        if not any(
+            (t.description or "") == text and t.status in ("pending", "in_progress") for t in queue
+        ):
+            top = max((t.priority for t in queue), default=1)
+            queue.insert(0, Task(id=uuid.uuid4().hex[:12], description=text, priority=top))
+        logger.info(
+            "Mission %s: %s is asked to look at what the business already has, before "
+            "anyone chooses a route",
+            mid,
+            member,
+        )
+
+    async def _ask_team_about(self, row: dict[str, Any]) -> None:
+        """Put the two questions to each member named in ``row``."""
+        import json as _json
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        _ms.record_still_ask(self.agents_dir, row["mission_id"], row["condition"], row["who"])
+        named: list[str] = []
+        logger.info(
+            "Mission %s: condition %s not met for %s and nothing moved for %s; asking %s",
+            row["mission_id"],
+            row["condition"],
+            row["not_met_for"],
+            row["still_for"],
+            ", ".join(row["who"]) or "nobody (no one named on the team)",
+        )
+        for who in row["who"]:
+            agent = self.agents.get(who)
+            if agent is None:
+                continue
+            finished: list[str] = []
+            try:
+                floor = time.time() - float(row["still_hours"]) * 3600
+                ledger = self.agents_dir / who / self._DONE_LEDGER
+                for line in ledger.read_text(encoding="utf-8").splitlines():
+                    rec = _json.loads(line)
+                    if float(rec.get("at") or 0) >= floor:
+                        finished.append(str(rec.get("description") or "")[:90])
+            except (OSError, ValueError):
+                pass
+            task, wall = _rt.still_text(row, finished[-8:])
+            try:
+                await self._with_another_route(agent, task, wall, still=True, taken=named)
+            except Exception:
+                logger.exception("Asking %s about a mission standing still failed", who)
+
+    async def _with_another_route(
+        self,
+        agent: Agent,
+        task_desc: str,
+        obstacle: str,
+        *,
+        still: bool = False,
+        taken: list[str] | None = None,
+    ) -> str:
+        """Ask a member who cannot go on what the work was for and how else
+        to get there, queue their answer as their next task, and return what
+        they said was in the way with what they are doing meanwhile."""
+        import uuid
+
+        from cortiva.core import missions as _ms
+        from cortiva.core import routes as _rt
+
+        if not _rt.is_obstacle(obstacle) or task_desc.startswith(_rt.MARK):
+            return obstacle
+        # One ask per piece of work: the same wall told to three people is
+        # one wall.
+        asked: dict[tuple[str, str], float] = getattr(self, "_route_asked", None) or {}
+        self._route_asked = asked
+        key = (agent.id, task_desc[:120])
+        if time.time() - asked.get(key, 0.0) < 6 * 3600:
+            return obstacle
+        # A member already holding another route has one to take: thirty-eight
+        # were handed to one member in two days, and none was taken.
+        if not still and any(
+            (t.description or "").startswith(_rt.MARK) and t.status in ("pending", "in_progress")
+            for t in (agent.task_queue.tasks if agent.task_queue else [])
+        ):
+            return obstacle
+        asked[key] = time.time()
+        goal = standing = have = page = ""
+        try:
+            mine = _ms.for_agent(_ms.load(self.agents_dir), agent.id)
+            state = _ms.load_state(self.agents_dir)
+            goal = "\n".join(
+                f"- {m['title']}: {str(m.get('intent') or '').strip()} {_ms._why_line(m)}"
+                for m in mine
+            )
+            read: list[str] = []
+            for m in mine:
+                conds = (state.get(str(m["mission_id"])) or {}).get("conditions") or {}
+                for cond in m["end_state"]:
+                    seen = conds.get(str(cond["id"])) or {}
+                    if seen.get("met"):
+                        read.append(f"- reads as working: {str(cond['describe'])[:200]}")
+                    elif seen:
+                        read.append(
+                            f"- reads as not so: {str(cond['describe'])[:200]} "
+                            f"({str(seen.get('observed') or '')[:140]})"
+                        )
+            standing = "\n".join(read)
+            for m in mine:
+                note, by_whom, when = _ms.have_note(self.agents_dir, m)
+                if note:
+                    have = _rt.have_block(note, by_whom, when, self._own_acts(m))
+                    page = note
+                    break
+        except Exception:
+            logger.debug("no mission readings for %s", agent.id, exc_info=True)
+
+        async def _ask(prompt: str) -> str:
+            self._meter_model_call(agent, "route")
+            response = await self.consciousness.think(
+                agent_id=agent.id,
+                context=_rt.SYSTEM,
+                prompt=prompt,
+                priority=Priority.HIGH,
+                # Pondered, not answered: see the adapter's note on "ponder".
+                max_tokens=8000,
+                metadata={"call_type": "route", "ponder": True},
+            )
+            return str(response.content or "")
+
+        # First, what is it blocking; then, how else to that.
+        first = await _ask(_rt.what_prompt(task_desc, obstacle, standing, still=still, goal=goal))
+        closed, end, untouched = _rt.parse_what(first)
+        needs, by = _rt.parse_needs(first)
+        if not end:
+            logger.info("Route: %s could not say what is blocked by: %s", agent.id, obstacle[:120])
+            return obstacle
+        logger.info(
+            "Route: %s says what is blocked is one route (%s) to: %s; it needs: %s",
+            agent.id,
+            closed[:100],
+            end[:120],
+            f"{needs[:140]} (by: {by[:60] or 'the team'})" if needs else "(not said)",
+        )
+        # Where the end needs someone outside the team to act, the question
+        # is how to bring that about, not how else to build it.
+        how = (
+            _rt.reach_prompt(needs, by, goal, taken, have)
+            if by
+            else _rt.prompt(end, closed or obstacle, untouched, goal, taken, needs, have)
+        )
+        route, bold = _rt.parse(await _ask(how))
+        if by:
+            end = needs
+        # A place to start that needs what nobody on the team holds is
+        # declined when its turn comes. Checked now, against the page, it is
+        # kept as a bolder idea and the member names what they can do today.
+        if route and page:
+            held, missing, instead = _rt.parse_held(await _ask(_rt.held_prompt(route, page)))
+            if held is False:
+                logger.info(
+                    "Route: %s's place to start needs what the team does not hold (%s): %s",
+                    agent.id,
+                    missing[:140] or "not said",
+                    route[:140],
+                )
+                lacking = f" It needs: {missing}." if missing else ""
+                bold = [f"{route}{lacking}"[:400], *bold][:3]
+                route = instead
+        if taken is not None and route:
+            taken.append(route)
+        if agent.task_queue is None:
+            agent.task_queue = TaskQueue(tasks=[])
+        queue = agent.task_queue.tasks
+        open_now = {t.description or "" for t in queue if t.status in ("pending", "in_progress")}
+        # The queue works the highest number first: the place to start goes
+        # ahead of whatever was next, the bolder ideas behind it.
+        top = max((t.priority for t in queue), default=1)
+        low = min((t.priority for t in queue), default=1)
+        for idea in bold:
+            text = _rt.bold_text(idea, end)
+            if text not in open_now:
+                queue.append(Task(id=uuid.uuid4().hex[:12], description=text, priority=low))
+            logger.info("Route: %s has a bolder idea for '%s': %s", agent.id, end[:80], idea[:160])
+        if not route:
+            logger.info("Route: %s named nowhere to start past: %s", agent.id, obstacle[:120])
+            return f"{obstacle}\n\n{_rt.meanwhile('', end, bold)}"
+        text = _rt.task_text(route, end, task_desc, still=still)
+        if text not in open_now:
+            queue.insert(0, Task(id=uuid.uuid4().hex[:12], description=text, priority=top))
+        logger.info("Route: %s takes another way to '%s': %s", agent.id, end[:80], route[:160])
+        return f"{obstacle}\n\n{_rt.meanwhile(route, end, bold)}"
 
     def _route_escalation(self, agent: Agent, task_desc: str, escalation: str) -> None:
         """Send a blocked agent's escalation to a human who can act on it.
@@ -12516,12 +13127,12 @@ class Fabric:
                     "status, a task that isn't actually blocked, or something "
                     "you've already handled — no real blocker means no "
                     "escalation. A genuine block must not sit as a dead exception; "
-                    "a non-block must not become noise in someone's inbox. And "
-                    "TEST a blocker before you escalate or work around it: check "
-                    "the live capability check above, or just try the real action "
-                    "once. A workaround that avoids the blocked thing keeps you "
-                    "blocked — most 'blockers' you've assumed for a while are "
-                    "already cleared.\n\n"
+                    "a non-block must not become noise in someone's inbox. Test "
+                    "a blocker before you act on it: try the real action once. "
+                    "A route being closed is not the end being out of reach: when "
+                    "the answer is no, or does not come in time, ask what the work "
+                    "was for and take another way to it, cruder if need be, and "
+                    "say that you did.\n\n"
                     "Output ONLY the updated checklist of remaining + new tasks."
                 )
             self._meter_model_call(agent, "replan")
@@ -12611,6 +13222,7 @@ class Fabric:
         # Observe mission end states off the loop; a wake only reads the file.
         self._kick_mission_probe()
         self._kick_measure_probe()
+        self._kick_picture_collect()
         self._kick_allhands()
 
         # Process scheduled actions
@@ -13437,6 +14049,10 @@ class Fabric:
 
         # Register local node
         self.discover_agents()
+        try:
+            self._redeliver_chat_left_for_a_name()
+        except Exception:
+            logger.debug("could not redeliver chat left for a name", exc_info=True)
         self._load_persisted_schedules()
         self._reconcile_orphaned_sessions()
         local_node = ClusterNode(

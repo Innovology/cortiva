@@ -259,6 +259,34 @@ def phrase_matches(phrase: str, description: str, *, strict: bool = False) -> bo
     return sum(1 for w in content if len(w) > 2) >= 2 and all(w in words for w in content)
 
 
+def answers_only_to(
+    station: Station, title: str, description: str, *, strict: bool = False
+) -> bool:
+    """Does this station take the task by nothing but the name of the mission?
+
+    A station called after its mission, listening for the mission's name,
+    takes every task that mentions the mission. Andre's 'lead-capture-mission'
+    listened for "lead capture mission" and submitted a made-up lead each
+    time it ran; on 26 November it took "Reply to Alex's email regarding site
+    visitor analytics to unblock the lead capture mission discussion", so
+    the founder's question was answered with one more entry and no reply
+    (Mini-2). A station answers to an act. Asked for by its own hyphenated
+    name it still runs: that is somebody choosing it."""
+    common = set(content_words(title)) | {"mission"}
+    name = station.name.strip().lower()
+    if "-" in name and name in (description or "").lower():
+        return False
+    named = content_words(name.replace("-", " ").replace("_", " "), drop_build_words=True)
+    if not named or any(w not in common for w in named):
+        return False
+    for pat in station.matches:
+        p = str(pat or "").strip()
+        beyond = p.startswith("/") or any(w not in common for w in content_words(p))
+        if beyond and phrase_matches(p, description, strict=strict):
+            return False
+    return True
+
+
 _FLOOR_WORK_RE = re.compile(
     r"factory/|run\.py|station\.yaml|^\W*build[_ ]station"
     r"|\b(?:write|code|fix|repair|debug|build|rebuild|test|tune)\b[^.\n]{0,40}\bstation\b",
@@ -366,6 +394,46 @@ _TAKES_CALLER = re.compile(r"agent_dir|CORTIVA_AGENT_DIR")
 
 
 _TRIP_AFTER = 3
+_KEPT = 200  # how much of a task's wording a run record keeps
+
+
+def _touched(station: Station) -> float:
+    """When the station's code or manifest was last changed (0 if unreadable)."""
+    try:
+        return max(
+            f.stat().st_mtime for f in station.directory.iterdir() if f.suffix in (".py", ".yaml")
+        )
+    except (OSError, ValueError):
+        return 0.0
+
+
+def failing_unchanged(station: Station, agent_dir: Path) -> list[StationRun]:
+    """The builder's own runs of this station that failed, one after another,
+    since it last worked and since it was last changed — oldest first. Empty
+    when its last run worked, or when it has been changed since it failed."""
+    own = [r for r in runs(agent_dir) if r.station == station.name and not r.author]
+    own = [r for r in own if not r.used_by]
+    touched = _touched(station)
+    tail: list[StationRun] = []
+    for r in reversed(own):
+        if r.ok or r.at < touched:
+            break
+        tail.append(r)
+    return tail[::-1]
+
+
+def already_failed_on(station: Station, agent_dir: Path, task_id: str, description: str) -> bool:
+    """This station, as it stands, has already failed on this very task.
+
+    Andre's `lead-pipeline-verification` failed with the same 422 on one task
+    twelve times in two hours on 19 November 2026. The task was "Message yuki
+    … so I can adjust the lead-pipeline-verification station logic to resolve
+    the 422": his own answer to the failure, taken each time by the station
+    it was about."""
+    return any(
+        r.task_id == task_id and r.description == description[:_KEPT]
+        for r in failing_unchanged(station, agent_dir)
+    )
 
 
 def _tripped(station: Station, builder_dir: Path) -> bool:
@@ -616,7 +684,7 @@ async def run_station(
             return StationRun(
                 station=station.name,
                 task_id=task_id,
-                description=description[:200],
+                description=description[:_KEPT],
                 ok=False,
                 error=f"could not start: {exc}"[:300],
             )
@@ -635,7 +703,7 @@ async def run_station(
         return StationRun(
             station=station.name,
             task_id=task_id,
-            description=description[:200],
+            description=description[:_KEPT],
             ok=False,
             error=f"could not start: {exc}"[:300],
         )
@@ -651,7 +719,7 @@ async def run_station(
         return StationRun(
             station=station.name,
             task_id=task_id,
-            description=description[:200],
+            description=description[:_KEPT],
             ok=False,
             error=f"timed out after {station.timeout_s:.0f}s",
             seconds=round(time.monotonic() - started, 2),
@@ -664,7 +732,7 @@ async def run_station(
         return StationRun(
             station=station.name,
             task_id=task_id,
-            description=description[:200],
+            description=description[:_KEPT],
             ok=False,
             error=f"exit {proc.returncode}: {(err or out).strip()[-300:]}",
             seconds=seconds,
@@ -673,7 +741,7 @@ async def run_station(
         return StationRun(
             station=station.name,
             task_id=task_id,
-            description=description[:200],
+            description=description[:_KEPT],
             ok=False,
             error=f"no JSON result on stdout: {out.strip()[-200:]}",
             seconds=seconds,
@@ -682,7 +750,7 @@ async def run_station(
     return StationRun(
         station=station.name,
         task_id=task_id,
-        description=description[:200],
+        description=description[:_KEPT],
         ok=ok,
         summary=str(result.get("summary") or "")[:400],
         artifact=str(result.get("artifact") or "")[:300],
@@ -725,11 +793,37 @@ def runs(agent_dir: Path, *, since: float | None = None) -> list[StationRun]:
     return out
 
 
+def own_acts(agent_dirs: list[Path], *, since: float) -> list[tuple[str, int, str]]:
+    """What the team's own stations did since ``since``, as ``(station, runs
+    that worked, what it is for)``, most runs first.
+
+    The system holds this and a member looking at the business does not. On
+    Mini-2 the member whose station had submitted the site's form for a week
+    wrote "89 leads captured" under who is already here, and "74 people who
+    filled the form" (2026-11-26); two colleagues then planned to write to
+    them."""
+    count: dict[str, int] = {}
+    purpose: dict[str, str] = {}
+    for d in agent_dirs:
+        for st in stations(d):
+            purpose.setdefault(st.name, st.purpose)
+        for r in runs(d, since=since):
+            if r.ok and not r.used_by:
+                count[r.station] = count.get(r.station, 0) + 1
+    rows = [(name, n, " ".join(purpose.get(name, "").split())[:200]) for name, n in count.items()]
+    return sorted(rows, key=lambda row: (-row[1], row[0]))[:8]
+
+
 def _age_s(path: Path) -> float:
     try:
         return time.time() - path.stat().st_mtime
     except OSError:
         return 0.0
+
+
+def _clock(at: float) -> str:
+    then = datetime.fromtimestamp(at)
+    return then.strftime("%H:%M") if then.date() == date.today() else then.strftime("%d %b %H:%M")
 
 
 def _midnight() -> float:
@@ -795,6 +889,20 @@ def floor_report(
         if failed:
             last = failed[-1]
             lines.append(f"  last failure: {last.error[:160]} (task: {last.description[:60]})")
+        streak = failing_unchanged(st, agent_dir) if st.ready else []
+        if len(streak) > 1:
+            same = len({r.error for r in streak}) == 1
+            changed = _touched(st)
+            lines.append(
+                f"  it has failed {len(streak)} times running since {_clock(streak[0].at)}"
+                + (", each time with that same failure" if same else "")
+                + (
+                    f"; its code was last changed {_clock(changed)}, before the first of them"
+                    if changed
+                    else ""
+                )
+                + ". A task it has already failed on is in your hands, not its."
+            )
         lent_failed = [r for r in lent if not r.ok]
         if lent_failed:
             last = lent_failed[-1]

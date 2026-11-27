@@ -35,6 +35,7 @@ from cortiva.core.missions import (
     _hours_between,
     _is_http_url,
     _json_at,
+    _secret,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,17 +89,28 @@ def declare(
     path: str = "",
     drives: str = "",
     better: str = "up",
+    token_file: str = "",
     now: datetime | None = None,
 ) -> tuple[bool, str]:
     """Declare a number, or change one the same agent declared.
 
     A number may be declared before anything exposes it: it then stands in
-    the chain as having no source, which is the fact the team has to fix."""
+    the chain as having no source, which is the fact the team has to fix.
+
+    A source that needs a credential is read with one its owner keeps in a
+    file under their own directory. A ledger balance or the value of a
+    portfolio sits behind a sign-in; a number that could only be read at an
+    open address could be held by a team that builds web pages and by no
+    other."""
     mid = _slug(name)
     if not mid:
         return False, "a number needs a name"
     if url and not _is_http_url(url):
         return False, "the source must be an http(s) address the system can read"
+    if token_file:
+        _, problem = _secret(agents_dir, owner, token_file)
+        if problem:
+            return False, problem
     measures = load(agents_dir)
     by_id = {str(m["id"]): m for m in measures}
     drives_id = _slug(drives) if drives else ""
@@ -126,7 +138,11 @@ def declare(
         "name": str(name).strip()[:120],
         "what": str(what).strip()[:400],
         "owner": owner,
-        "source": {"url": str(url).strip(), "path": str(path).strip()},
+        "source": {
+            "url": str(url).strip(),
+            "path": str(path).strip(),
+            **({"token_file": str(token_file)} if token_file else {}),
+        },
         "drives": drives_id,
         "better": better,
         "declared_at": (now or datetime.now(UTC)).isoformat(),
@@ -139,15 +155,28 @@ def declare(
     return True, mid
 
 
-def read_one(measure: dict[str, Any], fetch: Fetch | None = None) -> tuple[float | None, str]:
+def read_one(
+    measure: dict[str, Any], fetch: Fetch | None = None, agents_dir: Path | None = None
+) -> tuple[float | None, str]:
     """Read one number from its source. ``(value, note)``; never raises.
     A number that could not be read is ``None`` with the reason."""
     source = measure.get("source") if isinstance(measure.get("source"), dict) else {}
     url = str((source or {}).get("url") or "")
     if not url:
         return None, "no source yet: nothing exposes this number"
+    secret = ""
+    token_file = str((source or {}).get("token_file") or "")
+    if token_file:
+        if agents_dir is None:
+            return None, "the source needs its owner's credential"
+        secret, problem = _secret(agents_dir, str(measure.get("owner") or ""), token_file)
+        if problem:
+            return None, problem
     try:
-        status, body = (fetch or _default_fetch)(url, CHECK_TIMEOUT_S)
+        if fetch is None:
+            status, body = _default_fetch(url, CHECK_TIMEOUT_S, secret)
+        else:
+            status, body = fetch(url, CHECK_TIMEOUT_S)
     except Exception as e:
         return None, f"no answer from the source ({type(e).__name__})"
     if status != 200:
@@ -181,7 +210,7 @@ def probe(
         mid = str(m["id"])
         prev = state.get(mid) if isinstance(state.get(mid), dict) else {}
         prev = prev or {}
-        value, note = read_one(m, fetch)
+        value, note = read_one(m, fetch, agents_dir)
         entry = dict(prev)
         entry["read_at"] = now_iso
         entry["note"] = note
@@ -224,6 +253,25 @@ def _fmt(value: float) -> str:
     return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
 
+def mark_own(agents_dir: Path, measure_id: str, amount: float, stations: list[str]) -> None:
+    """Record that a number moved while the team's own stations ran.
+
+    A number says how the world stands only when the world moved it. On
+    Mini-2 a station submitted the site's form twelve times in four days and
+    'leads captured' rose with each run; the team's page called the total
+    real leads and a member set out to send them to the founder as
+    prospects. The count is kept beside the number, so no one reads the
+    team's own hand as somebody arriving."""
+    state = load_state(agents_dir)
+    entry = state.get(measure_id)
+    if not isinstance(entry, dict):
+        return
+    entry["own"] = float(entry.get("own") or 0.0) + abs(amount)
+    names = [str(s) for s in entry.get("own_by") or []]
+    entry["own_by"] = sorted(set(names) | set(stations))[:6]
+    _write_json(Path(agents_dir) / STATE_FILE, state)
+
+
 def context_block(
     measures: list[dict[str, Any]],
     state: dict[str, Any],
@@ -261,6 +309,13 @@ def context_block(
         else:
             moved = _hours_between(str(entry.get("moved_at") or ""), now)
             shown = _fmt(value) + (f", unchanged for {_age(moved)}" if moved is not None else "")
+            own = float(entry.get("own") or 0.0)
+            if own:
+                by = ", ".join(f"'{s}'" for s in entry.get("own_by") or [])
+                shown += (
+                    f"; {_fmt(own)} of its movement came while the team's own station {by} ran. "
+                    "What the team puts there itself is not somebody outside arriving"
+                )
             fed_by = drivers.get(str(m["id"])) or []
             # One driver is a funnel step: show how much of it came through.
             if len(fed_by) == 1 and not down:
